@@ -1,8 +1,8 @@
+import { findCoin } from '@syscoin/sysweb3-network';
 import { bech32 } from 'bech32';
 import { ethers } from 'ethers';
 
 import { isContractAddress } from '.';
-import { findCoin } from '@pollum-io/sysweb3-network';
 
 export const isValidEthereumAddress = (address: string) =>
   ethers.utils.isAddress(address);

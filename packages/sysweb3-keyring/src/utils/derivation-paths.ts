@@ -1,5 +1,5 @@
 // Import coins data from the relative package in the monorepo
-import { findCoin } from '@pollum-io/sysweb3-network';
+import { findCoin } from '@syscoin/sysweb3-network';
 
 /**
  * Get coin information by coin shortcut or slip44

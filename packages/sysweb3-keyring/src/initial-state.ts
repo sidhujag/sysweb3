@@ -1,6 +1,7 @@
+import { INetworkType } from '@syscoin/sysweb3-network';
+
 import { getDefaultUTXONetworks } from './network-utils';
 import { IKeyringAccountState } from './types';
-import { INetworkType } from '@pollum-io/sysweb3-network';
 
 export const initialActiveHdAccountState: IKeyringAccountState = {
   address: '',

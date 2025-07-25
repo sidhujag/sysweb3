@@ -3,13 +3,18 @@ module.exports = {
   testEnvironment: 'node',
   moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx'],
   transform: {
-    '^.+\\.(ts|tsx)$': 'ts-jest',
+    '^.+\\.(ts|tsx)$': [
+      'ts-jest',
+      {
+        isolatedModules: true,
+      },
+    ],
   },
   testMatch: ['**/test/**/*.spec.ts'],
   moduleNameMapper: {
-    '^@pollum-io/sysweb3-utils$': '<rootDir>/../sysweb3-utils/src',
-    '^@pollum-io/sysweb3-network$': '<rootDir>/../sysweb3-network/src',
-    '^@pollum-io/sysweb3-core$': '<rootDir>/../sysweb3-core/src',
+    '^@syscoin/sysweb3-utils$': '<rootDir>/../sysweb3-utils/src',
+    '^@syscoin/sysweb3-network$': '<rootDir>/../sysweb3-network/src',
+    '^@syscoin/sysweb3-core$': '<rootDir>/../sysweb3-core/src',
     '^@ledgerhq/devices/hid-framing$':
       '<rootDir>/test/__mocks__/ledger-mock.js',
     '^@ledgerhq/hw-transport-webhid$':

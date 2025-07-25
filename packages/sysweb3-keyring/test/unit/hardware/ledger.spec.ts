@@ -1,7 +1,8 @@
+import { INetworkType } from '@syscoin/sysweb3-network';
+
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
 import { setupMocks } from '../../helpers/setup';
-import { INetworkType } from '@pollum-io/sysweb3-network';
 
 // Use global createMockVaultState
 const createMockVaultState = (global as any).createMockVaultState;

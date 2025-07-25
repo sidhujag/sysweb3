@@ -2,7 +2,7 @@ import {
   INetwork,
   INetworkType,
   coins as utxoCoins,
-} from '@pollum-io/sysweb3-network';
+} from '@syscoin/sysweb3-network';
 
 /**
  * Generate default UTXO networks from coins.ts data

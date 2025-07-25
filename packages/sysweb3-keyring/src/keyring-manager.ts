@@ -1,4 +1,10 @@
 import ecc from '@bitcoinerlab/secp256k1';
+import * as sysweb3 from '@syscoin/sysweb3-core';
+import {
+  INetwork,
+  INetworkType,
+  getNetworkConfig,
+} from '@syscoin/sysweb3-network';
 import { BIP32Factory } from 'bip32';
 import { generateMnemonic, validateMnemonic } from 'bip39';
 import BIP84 from 'bip84';
@@ -29,12 +35,6 @@ import {
   IKeyringManager,
 } from './types';
 import { getAddressDerivationPath, isEvmCoin } from './utils/derivation-paths';
-import * as sysweb3 from '@pollum-io/sysweb3-core';
-import {
-  INetwork,
-  INetworkType,
-  getNetworkConfig,
-} from '@pollum-io/sysweb3-network';
 
 export interface ISysAccount {
   address: string;

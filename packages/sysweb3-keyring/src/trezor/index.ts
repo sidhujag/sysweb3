@@ -11,7 +11,7 @@ import bitcoinops from 'bitcoin-ops';
 import { Transaction, payments, script } from 'bitcoinjs-lib';
 import { Buffer } from 'buffer';
 import { TypedDataUtils, TypedMessage, Version } from 'eth-sig-util';
-import Web3 from 'web3';
+import { stripHexPrefix } from 'ethereumjs-util';
 
 import {
   HardwareWalletManager,
@@ -701,7 +701,7 @@ export class TrezorKeyring {
 
           TrezorConnect.ethereumSignMessage({
             path: this.hdPath,
-            message: Web3.utils.stripHexPrefix(message),
+            message: stripHexPrefix(message),
             hex: true,
           })
             .then((response: any) => {

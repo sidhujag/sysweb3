@@ -1,9 +1,9 @@
+import { INetworkType } from '@syscoin/sysweb3-network';
 import { encrypt } from 'eth-sig-util';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
 import { setupMocks } from '../../helpers/setup';
-import { INetworkType } from '@pollum-io/sysweb3-network';
 
 describe('Ethereum Transactions', () => {
   let keyringManager: KeyringManager;

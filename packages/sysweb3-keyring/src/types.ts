@@ -1,19 +1,13 @@
 import { TransactionResponse } from '@ethersproject/abstract-provider';
+import { INetwork, INetworkType } from '@syscoin/sysweb3-network';
+import { ITxid } from '@syscoin/sysweb3-utils';
 import { TypedData, TypedMessage } from 'eth-sig-util';
 import { ethers, BigNumber, BigNumberish } from 'ethers';
 import { CustomJsonRpcProvider, CustomL2JsonRpcProvider } from 'providers';
-import {
-  EncryptedKeystoreV3Json,
-  Sign,
-  SignedTransaction,
-  TransactionConfig,
-} from 'web3-core';
 
 import { LedgerKeyring } from './ledger';
 import { SyscoinHDSigner } from './signers';
 import { TrezorKeyring } from './trezor';
-import { INetwork, INetworkType } from '@pollum-io/sysweb3-network';
-import { ITxid } from '@pollum-io/sysweb3-utils';
 
 export interface ISendTransaction {
   amount: number;
@@ -316,15 +310,6 @@ export type IKeyringBalances = {
   [INetworkType.Syscoin]: number;
   [INetworkType.Ethereum]: number;
 };
-
-export interface IWeb3Account extends IKeyringAccountState {
-  encrypt: (password: string) => EncryptedKeystoreV3Json;
-  sign: (data: string) => Sign;
-  signTransaction: (
-    transactionConfig: TransactionConfig,
-    callback?: (signTransaction: SignedTransaction) => void
-  ) => Promise<SignedTransaction>;
-}
 
 interface INetworkParams {
   bech32: string;

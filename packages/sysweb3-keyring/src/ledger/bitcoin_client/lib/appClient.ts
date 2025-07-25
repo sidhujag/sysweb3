@@ -2,6 +2,7 @@ import * as descriptors from '@bitcoinerlab/descriptors';
 import * as secp256k1 from '@bitcoinerlab/secp256k1';
 const { Descriptor } = descriptors.DescriptorsFactory(secp256k1);
 import Transport from '@ledgerhq/hw-transport';
+import { findCoin, getNetworkConfigFromCoin } from '@syscoin/sysweb3-network';
 
 import { pathElementsToBuffer, pathStringToArray } from './bip32';
 import { ClientCommandInterpreter } from './clientCommands';
@@ -10,7 +11,6 @@ import { hashLeaf, Merkle } from './merkle';
 import { WalletPolicy } from './policy';
 import { PsbtV2 } from './psbtv2';
 import { createVarint, parseVarint } from './varint';
-import { findCoin, getNetworkConfigFromCoin } from '@pollum-io/sysweb3-network';
 
 const CLA_BTC = 0xe1;
 const CLA_FRAMEWORK = 0xf8;

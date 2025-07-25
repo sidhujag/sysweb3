@@ -31,11 +31,11 @@
         ],
         "pathGroups": [
           {
-            "pattern": "@pollum-io/**",
+            "pattern": "syscoin/**",
             "group": "index"
           }
         ],
-        "pathGroupsExcludedImportTypes": ["@pollum-io/**"],
+        "pathGroupsExcludedImportTypes": ["syscoin/**"],
         "newlines-between": "always",
         "alphabetize": {
           "order": "asc",

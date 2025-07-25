@@ -1,9 +1,9 @@
+import { INetworkType } from '@syscoin/sysweb3-network';
 import * as sjs from 'syscoinjs-lib';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
 import { setupMocks } from '../../helpers/setup';
-import { INetworkType } from '@pollum-io/sysweb3-network';
 
 describe('Syscoin Transactions', () => {
   let keyringManager: KeyringManager;

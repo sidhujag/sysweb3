@@ -1,3 +1,4 @@
+import { retryableFetch } from '@syscoin/sysweb3-network';
 import camelcaseKeys from 'camelcase-keys';
 import { ethers as ethersModule } from 'ethers';
 import * as sys from 'syscoinjs-lib';
@@ -7,7 +8,6 @@ import ABI1155 from './abi/erc1155.json';
 import abi20 from './abi/erc20.json';
 import ABI721 from './abi/erc721.json';
 import tokens from './tokens.json';
-import { retryableFetch } from '@pollum-io/sysweb3-network';
 
 import type {
   Contract,

@@ -1,20 +1,20 @@
 {
-  "name": "@pollum-io/sysweb3-network",
+  "name": "@syscoin/sysweb3-network",
   "version": "1.0.96",
   "description": "A network management tool for multi-chain accounts.",
   "main": "cjs/index.js",
   "types": "types/index.d.ts",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Pollum-io/sysweb3.git"
+    "url": "git+https://github.com/syscoin/sysweb3.git"
   },
   "author": "Pali Wallet",
   "license": "MIT",
   "private": false,
   "bugs": {
-    "url": "https://github.com/Pollum-io/sysweb3/issues"
+    "url": "https://github.com/syscoin/sysweb3/issues"
   },
-  "homepage": "https://github.com/Pollum-io/sysweb3#readme",
+  "homepage": "https://github.com/syscoin/sysweb3#readme",
   "engines": {
     "yarn": ">= 1.0.0"
   },

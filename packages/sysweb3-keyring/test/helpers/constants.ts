@@ -1,6 +1,6 @@
+import { INetworkType } from '@syscoin/sysweb3-network';
 import * as dotenv from 'dotenv';
 
-import { INetworkType } from '@pollum-io/sysweb3-network';
 dotenv.config();
 export const FAKE_PASSWORD = 'Asdqwe123!';
 export const FAKE_INVALID_PASSWORD = '12345';

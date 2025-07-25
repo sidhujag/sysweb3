@@ -1,3 +1,5 @@
+import { INetwork } from '@syscoin/sysweb3-network';
+import { ITxid, txUtils } from '@syscoin/sysweb3-utils';
 import * as syscoinjs from 'syscoinjs-lib';
 // import { BIP_84, ONE_HUNDRED_MILLION, SYSCOIN_BASIC_FEE } from 'utils';
 
@@ -12,8 +14,6 @@ import {
 } from '../types';
 import { getAccountDerivationPath } from '../utils/derivation-paths';
 import { PsbtUtils } from '../utils/psbt';
-import { INetwork } from '@pollum-io/sysweb3-network';
-import { ITxid, txUtils } from '@pollum-io/sysweb3-utils';
 
 type EstimateFeeParams = {
   changeAddress: string;

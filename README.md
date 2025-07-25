@@ -6,10 +6,10 @@ SysWeb3 is a JavaScript API for Syscoin multi-chain, providing a collection of u
 
 This monorepo contains the following packages:
 
-- **@pollum-io/sysweb3-keyring**: A keyring manager for UTXO and Web3 wallets, providing functions for handling wallets, addresses, accounts, transactions, and Trezor wallet integration.
-- **@pollum-io/sysweb3-network**: A network management tool for multi-chain accounts, offering functions to validate RPC URLs and manage network configurations.
-- **@pollum-io/sysweb3-utils**: A helper library for multi-chain accounts, providing TypeScript interfaces and utility functions for contract interactions, token validation, and more.
-- **@pollum-io/sysweb3-core**: A localStorage manager for private keys, offering browser interaction functions for setting, getting, and deleting storage.
+- **@syscoin/sysweb3-keyring**: A keyring manager for UTXO and Web3 wallets, providing functions for handling wallets, addresses, accounts, transactions, and Trezor wallet integration.
+- **@syscoin/sysweb3-network**: A network management tool for multi-chain accounts, offering functions to validate RPC URLs and manage network configurations.
+- **@syscoin/sysweb3-utils**: A helper library for multi-chain accounts, providing TypeScript interfaces and utility functions for contract interactions, token validation, and more.
+- **@syscoin/sysweb3-core**: A localStorage manager for private keys, offering browser interaction functions for setting, getting, and deleting storage.
 
 ## Setup
 
@@ -23,7 +23,7 @@ This monorepo contains the following packages:
 To install the packages, run:
 
 ```bash
-yarn add @pollum-io/sysweb3-keyring @pollum-io/sysweb3-network @pollum-io/sysweb3-utils @pollum-io/sysweb3-core
+yarn add @syscoin/sysweb3-keyring @syscoin/sysweb3-network @syscoin/sysweb3-utils @syscoin/sysweb3-core
 ```
 
 ## Usage
@@ -33,7 +33,7 @@ yarn add @pollum-io/sysweb3-keyring @pollum-io/sysweb3-network @pollum-io/sysweb
 The SysWeb3 Keyring package provides functions for managing accounts, addresses, and transactions. Here's a simple example:
 
 ```js
-import sysweb3 from '@pollum-io/sysweb3-keyring';
+import sysweb3 from '@syscoin/sysweb3-keyring';
 
 console.log(sysweb3);
 // Outputs available functions like Web3Accounts, SyscoinAddress, initialize, TrezorTransactions, etc.
@@ -44,7 +44,7 @@ console.log(sysweb3);
 The SysWeb3 Network package offers functions for network management. Example:
 
 ```js
-import sysweb3 from '@pollum-io/sysweb3-network';
+import sysweb3 from '@syscoin/sysweb3-network';
 
 console.log(sysweb3);
 // Outputs functions like validateCurrentRpcUrl, validateSysRpc, setSignerNetwork, etc.
@@ -55,7 +55,7 @@ console.log(sysweb3);
 The SysWeb3 Utils package provides utility functions for multi-chain accounts. Example:
 
 ```js
-import sysweb3 from '@pollum-io/sysweb3-utils';
+import sysweb3 from '@syscoin/sysweb3-utils';
 
 console.log(sysweb3);
 // Outputs functions like isValidSYSAddress, isValidEthereumAddress, getNftImage, createContractUsingAbi, etc.
@@ -66,7 +66,7 @@ console.log(sysweb3);
 The SysWeb3 Core package offers browser interaction functions. Example:
 
 ```js
-import sysweb3 from '@pollum-io/sysweb3-core';
+import sysweb3 from '@syscoin/sysweb3-core';
 
 console.log(sysweb3);
 // Outputs functions like useLocalStorageClient, getStateStorageDb, etc.

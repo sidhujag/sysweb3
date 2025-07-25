@@ -13,15 +13,15 @@ For use this library, is nice to have:
 
 For install, you can follow these commands:
 
-- `yarn add @pollum-io/sysweb3-network`
-- `npm install @pollum-io/sysweb3-network`
+- `yarn add @syscoin/sysweb3-network`
+- `npm install @syscoin/sysweb3-network`
 
 ## Usage
 
 The sysweb3-network was builded to have a really simple usability. For example, you can import package and console it to know what kind of functions you'll find:
 
 ```js
-import sysweb3 from '@pollum-io/sysweb3-network';
+import sysweb3 from '@syscoin/sysweb3-network';
 
 console.log(sysweb3);
 

@@ -95,7 +95,7 @@ describe('PSBT Transaction Flow Integration', () => {
   describe('Complete Token Transaction Flow', () => {
     it('should handle token transaction from creation to broadcast', async () => {
       // Mock token lookup
-      jest.doMock('@pollum-io/sysweb3-utils', () => ({
+      jest.doMock('@syscoin/sysweb3-utils', () => ({
         getAsset: jest.fn().mockResolvedValue({
           assetGuid: 'token123',
           decimals: 8,

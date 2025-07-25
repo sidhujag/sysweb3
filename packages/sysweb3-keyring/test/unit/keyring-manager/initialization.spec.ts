@@ -1,3 +1,5 @@
+import { INetworkType } from '@syscoin/sysweb3-network';
+
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import {
   FAKE_PASSWORD,
@@ -5,7 +7,6 @@ import {
   SECOND_FAKE_SEED_PHRASE,
 } from '../../helpers/constants';
 import { setupMocks } from '../../helpers/setup';
-import { INetworkType } from '@pollum-io/sysweb3-network';
 
 describe('KeyringManager Initialization', () => {
   let keyringManager: KeyringManager;

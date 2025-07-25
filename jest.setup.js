@@ -209,7 +209,7 @@ afterAll(() => {
 });
 
 // Mock sysweb3 storage
-jest.mock('@pollum-io/sysweb3-core', () => {
+jest.mock('@syscoin/sysweb3-core', () => {
   const mockStorage = {
     vault: null,
     set: jest.fn((key, value) => {

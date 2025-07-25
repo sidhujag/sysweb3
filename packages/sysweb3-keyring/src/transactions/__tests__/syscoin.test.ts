@@ -1,12 +1,12 @@
+import { INetworkType } from '@syscoin/sysweb3-network';
+import { getAsset } from '@syscoin/sysweb3-utils';
 import * as syscoinjs from 'syscoinjs-lib';
 
 import { KeyringAccountType } from '../../types';
 import { SyscoinTransactions } from '../syscoin';
-import { INetworkType } from '@pollum-io/sysweb3-network';
-import { getAsset } from '@pollum-io/sysweb3-utils';
 
 // Mock dependencies
-jest.mock('@pollum-io/sysweb3-utils', () => ({
+jest.mock('@syscoin/sysweb3-utils', () => ({
   getAsset: jest.fn(),
   isBase64: jest.fn().mockReturnValue(true),
   countDecimals: jest.fn().mockReturnValue(8),

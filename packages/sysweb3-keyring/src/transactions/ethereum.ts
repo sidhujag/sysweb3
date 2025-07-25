@@ -1,4 +1,11 @@
 import { TransactionResponse } from '@ethersproject/abstract-provider';
+import { INetwork, INetworkType } from '@syscoin/sysweb3-network';
+import {
+  createContractUsingAbi,
+  getErc20Abi,
+  getErc21Abi,
+  getErc55Abi,
+} from '@syscoin/sysweb3-utils';
 import { EthereumTransactionEIP1559 } from '@trezor/connect-web';
 import {
   concatSig,
@@ -38,13 +45,6 @@ import {
   accountType,
   IGasParams,
 } from '../types';
-import { INetwork, INetworkType } from '@pollum-io/sysweb3-network';
-import {
-  createContractUsingAbi,
-  getErc20Abi,
-  getErc21Abi,
-  getErc55Abi,
-} from '@pollum-io/sysweb3-utils';
 
 /**
  * Chain IDs for zkSync Era networks that require specialized L2 provider functionality.

@@ -17,9 +17,9 @@ The sysweb3-keyring provides a unified interface for managing accounts, transact
 ## Installation
 
 ```bash
-npm install @pollum-io/sysweb3-keyring
+npm install @syscoin/sysweb3-keyring
 # or
-yarn add @pollum-io/sysweb3-keyring
+yarn add @syscoin/sysweb3-keyring
 ```
 
 ## Usage
@@ -27,7 +27,7 @@ yarn add @pollum-io/sysweb3-keyring
 ### Basic Setup
 
 ```javascript
-import { KeyringManager } from '@pollum-io/sysweb3-keyring';
+import { KeyringManager } from '@syscoin/sysweb3-keyring';
 
 // Create a vault state getter function (e.g., from Redux store)
 const vaultStateGetter = () => store.getState().vault;

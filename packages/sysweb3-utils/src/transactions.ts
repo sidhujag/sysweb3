@@ -1,6 +1,6 @@
 import * as syscoinjs from 'syscoinjs-lib';
 
-// import { web3Provider } from '@pollum-io/sysweb3-network';
+// import { web3Provider } from '@syscoin/sysweb3-network';
 
 export const txUtils = () => {
   const getRawTransaction = (explorerUrl: string, txid: string) =>
