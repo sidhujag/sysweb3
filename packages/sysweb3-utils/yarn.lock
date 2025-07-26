@@ -902,10 +902,10 @@
   resolved "https://registry.yarnpkg.com/@scure/base/-/base-1.2.6.tgz#ca917184b8231394dd8847509c67a0be522e59f6"
   integrity sha512-g/nm5FgUa//MCj1gV09zTJTaM6KBAHqLN907YVQqf7zC49+DcO4B1so4ZX07Ef10Twr6nuqYEH9GEggFXA4Fmg==
 
-"@sidhujag/sysweb3-network@^1.0.96":
-  version "1.0.96"
-  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-network/-/sysweb3-network-1.0.96.tgz#ab9d91dd9d36a3d708fbff57907555b53e1949af"
-  integrity sha512-fG9SMKJug/5U8io5nTvpWESUgpjgGIZ9GmZxVXkfddzZ8maRWOmp4MqyT2OdZEUsfYsg9a5LFJFvYU92UG+VUA==
+"@sidhujag/sysweb3-network@^1.0.97":
+  version "1.0.97"
+  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-network/-/sysweb3-network-1.0.97.tgz#e6c5710b1d58345098a4f495c2eaecf5f15d2898"
+  integrity sha512-EMbXRCokgCbKGQUMk03faTehtiL+J43lC/PySX38B+Rqe09kyrLRjfjNfw35y3Il7KB1UwlPcF3HjC29iVzE+Q==
   dependencies:
     eth-chains "^1.0.0"
     ethers "^5.7.2"
