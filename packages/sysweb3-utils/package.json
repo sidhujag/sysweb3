@@ -1,5 +1,5 @@
 {
-  "name": "@syscoin/sysweb3-utils",
+  "name": "@sidhujag/sysweb3-utils",
   "version": "1.1.237",
   "description": "A helper for multi-chain accounts.",
   "main": "cjs/index.js",
@@ -28,7 +28,7 @@
   },
   "dependencies": {
     "@ethersproject/contracts": "^5.8.0",
-    "@syscoin/sysweb3-network": "^1.0.96",
+    "@sidhujag/sysweb3-network": "^1.0.96",
     "axios": "^0.26.1",
     "bech32": "^2.0.0",
     "bip84": "^0.2.7",

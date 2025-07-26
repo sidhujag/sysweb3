@@ -1,6 +1,6 @@
 import { TransactionResponse } from '@ethersproject/abstract-provider';
-import { INetwork, INetworkType } from '@syscoin/sysweb3-network';
-import { ITxid } from '@syscoin/sysweb3-utils';
+import { INetwork, INetworkType } from '@sidhujag/sysweb3-network';
+import { ITxid } from '@sidhujag/sysweb3-utils';
 import { TypedData, TypedMessage } from 'eth-sig-util';
 import { ethers, BigNumber, BigNumberish } from 'ethers';
 import { CustomJsonRpcProvider, CustomL2JsonRpcProvider } from 'providers';

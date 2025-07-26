@@ -1,10 +1,10 @@
 import ecc from '@bitcoinerlab/secp256k1';
-import * as sysweb3 from '@syscoin/sysweb3-core';
+import * as sysweb3 from '@sidhujag/sysweb3-core';
 import {
   INetwork,
   INetworkType,
   getNetworkConfig,
-} from '@syscoin/sysweb3-network';
+} from '@sidhujag/sysweb3-network';
 import { BIP32Factory } from 'bip32';
 import { generateMnemonic, validateMnemonic } from 'bip39';
 import BIP84 from 'bip84';

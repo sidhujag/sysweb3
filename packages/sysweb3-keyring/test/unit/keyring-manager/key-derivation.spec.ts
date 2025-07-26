@@ -1,4 +1,4 @@
-import { INetworkType } from '@syscoin/sysweb3-network';
+import { INetworkType } from '@sidhujag/sysweb3-network';
 import { ethers } from 'ethers';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';

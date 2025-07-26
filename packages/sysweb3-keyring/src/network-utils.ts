@@ -2,7 +2,7 @@ import {
   INetwork,
   INetworkType,
   coins as utxoCoins,
-} from '@syscoin/sysweb3-network';
+} from '@sidhujag/sysweb3-network';
 
 /**
  * Generate default UTXO networks from coins.ts data

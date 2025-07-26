@@ -2,7 +2,7 @@ import * as descriptors from '@bitcoinerlab/descriptors';
 import * as secp256k1 from '@bitcoinerlab/secp256k1';
 const { Descriptor } = descriptors.DescriptorsFactory(secp256k1);
 import Transport from '@ledgerhq/hw-transport';
-import { findCoin, getNetworkConfigFromCoin } from '@syscoin/sysweb3-network';
+import { findCoin, getNetworkConfigFromCoin } from '@sidhujag/sysweb3-network';
 
 import { pathElementsToBuffer, pathStringToArray } from './bip32';
 import { ClientCommandInterpreter } from './clientCommands';

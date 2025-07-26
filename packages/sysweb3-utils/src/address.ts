@@ -1,4 +1,4 @@
-import { findCoin } from '@syscoin/sysweb3-network';
+import { findCoin } from '@sidhujag/sysweb3-network';
 import { bech32 } from 'bech32';
 import { ethers } from 'ethers';
 

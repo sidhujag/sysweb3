@@ -1,4 +1,4 @@
-import { INetworkType } from '@syscoin/sysweb3-network';
+import { INetworkType } from '@sidhujag/sysweb3-network';
 import * as dotenv from 'dotenv';
 
 dotenv.config();

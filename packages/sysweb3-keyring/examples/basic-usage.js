@@ -2,7 +2,7 @@
  * Basic usage example of the stateless KeyringManager
  */
 
-import { KeyringManager, KeyringAccountType } from '@syscoin/sysweb3-keyring';
+import { KeyringManager, KeyringAccountType } from '@sidhujag/sysweb3-keyring';
 
 // Example state structure (similar to Redux store)
 let vaultState = {

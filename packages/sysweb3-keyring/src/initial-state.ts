@@ -1,4 +1,4 @@
-import { INetworkType } from '@syscoin/sysweb3-network';
+import { INetworkType } from '@sidhujag/sysweb3-network';
 
 import { getDefaultUTXONetworks } from './network-utils';
 import { IKeyringAccountState } from './types';

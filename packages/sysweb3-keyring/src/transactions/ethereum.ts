@@ -1,11 +1,11 @@
 import { TransactionResponse } from '@ethersproject/abstract-provider';
-import { INetwork, INetworkType } from '@syscoin/sysweb3-network';
+import { INetwork, INetworkType } from '@sidhujag/sysweb3-network';
 import {
   createContractUsingAbi,
   getErc20Abi,
   getErc21Abi,
   getErc55Abi,
-} from '@syscoin/sysweb3-utils';
+} from '@sidhujag/sysweb3-utils';
 import { EthereumTransactionEIP1559 } from '@trezor/connect-web';
 import {
   concatSig,

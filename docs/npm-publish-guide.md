@@ -18,7 +18,7 @@ node scripts/migrate-to-syscoin-npm.js
 ```
 
 This script will:
-- Update all package names from `syscoin/package-name` to `@syscoin/package-name`
+- Update all package names from `syscoin/package-name` to `@sidhujag/package-name`
 - Update inter-package dependencies to use the new names
 - Update pali-wallet's package.json to reference the new names
 
@@ -107,7 +107,7 @@ cd pali-wallet
 rm -rf node_modules/@syscoin
 
 # Install from npm
-yarn add @syscoin/sysweb3-core@latest @syscoin/sysweb3-network@latest @syscoin/sysweb3-utils@latest @syscoin/sysweb3-keyring@latest
+yarn add @sidhujag/sysweb3-core@latest @sidhujag/sysweb3-network@latest @sidhujag/sysweb3-utils@latest @sidhujag/sysweb3-keyring@latest
 ```
 
 ## Version Management
@@ -137,7 +137,7 @@ npm version patch
 If you get a permission error when publishing:
 
 ```bash
-npm ERR! 403 Forbidden - You do not have permission to publish "@syscoin/package-name"
+npm ERR! 403 Forbidden - You do not have permission to publish "@sidhujag/package-name"
 ```
 
 Make sure:
@@ -203,7 +203,7 @@ yarn publish:all
 ```
 
 Your packages are now available at:
-- https://www.npmjs.com/package/@syscoin/sysweb3-core
-- https://www.npmjs.com/package/@syscoin/sysweb3-network
-- https://www.npmjs.com/package/@syscoin/sysweb3-utils
-- https://www.npmjs.com/package/@syscoin/sysweb3-keyring 
+- https://www.npmjs.com/package/@sidhujag/sysweb3-core
+- https://www.npmjs.com/package/@sidhujag/sysweb3-network
+- https://www.npmjs.com/package/@sidhujag/sysweb3-utils
+- https://www.npmjs.com/package/@sidhujag/sysweb3-keyring 

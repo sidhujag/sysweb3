@@ -1,5 +1,5 @@
 // Test setup file
-import { INetworkType } from '@syscoin/sysweb3-network';
+import { INetworkType } from '@sidhujag/sysweb3-network';
 import { randomBytes, createHmac } from 'crypto';
 import { TextEncoder, TextDecoder } from 'util';
 
@@ -215,7 +215,7 @@ jest.mock('../../src/providers', () => ({
 const mockStorage = new Map();
 
 // Mock sysweb3-core storage
-jest.mock('@syscoin/sysweb3-core', () => ({
+jest.mock('@sidhujag/sysweb3-core', () => ({
   sysweb3Di: {
     getStateStorageDb: () => ({
       get: jest.fn(async (key: string) => {
@@ -239,8 +239,8 @@ jest.mock('@syscoin/sysweb3-core', () => ({
 }));
 
 // Mock sysweb3-utils to support token operations
-jest.mock('@syscoin/sysweb3-utils', () => {
-  const actualUtils = jest.requireActual('@syscoin/sysweb3-utils');
+jest.mock('@sidhujag/sysweb3-utils', () => {
+  const actualUtils = jest.requireActual('@sidhujag/sysweb3-utils');
   return {
     ...actualUtils,
     getAsset: jest.fn().mockResolvedValue({
@@ -377,7 +377,7 @@ afterEach(() => {
 
 // Helper function to set up a basic vault for tests
 global.setupTestVault = async (password = 'Asdqwe123!') => {
-  const { sysweb3Di } = jest.requireMock('@syscoin/sysweb3-core');
+  const { sysweb3Di } = jest.requireMock('@sidhujag/sysweb3-core');
   const storage = sysweb3Di.getStateStorageDb();
 
   // Check if vault-keys already exist - if so, don't recreate them (idempotent)
@@ -468,7 +468,9 @@ global.createMockVaultState = (options = {}) => {
   } else {
     // For UTXO, use syscoinjs to derive real xpub and address from test seed
     const { getSyscoinSigners } = jest.requireActual('../../src/signers');
-    const { getNetworkConfig } = jest.requireActual('@syscoin/sysweb3-network');
+    const { getNetworkConfig } = jest.requireActual(
+      '@sidhujag/sysweb3-network'
+    );
     const CryptoJS = jest.requireActual('crypto-js');
     const crypto = jest.requireActual('crypto');
 

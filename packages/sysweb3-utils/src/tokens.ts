@@ -1,4 +1,4 @@
-import { retryableFetch } from '@syscoin/sysweb3-network';
+import { retryableFetch } from '@sidhujag/sysweb3-network';
 import camelcaseKeys from 'camelcase-keys';
 import { ethers as ethersModule } from 'ethers';
 import * as sys from 'syscoinjs-lib';

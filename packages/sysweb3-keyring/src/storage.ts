@@ -1,4 +1,4 @@
-import { sysweb3Di } from '@syscoin/sysweb3-core';
+import { sysweb3Di } from '@sidhujag/sysweb3-core';
 import CryptoJS from 'crypto-js';
 
 const storage = sysweb3Di.getStateStorageDb();

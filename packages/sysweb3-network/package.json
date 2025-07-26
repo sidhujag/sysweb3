@@ -1,5 +1,5 @@
 {
-  "name": "@syscoin/sysweb3-network",
+  "name": "@sidhujag/sysweb3-network",
   "version": "1.0.96",
   "description": "A network management tool for multi-chain accounts.",
   "main": "cjs/index.js",

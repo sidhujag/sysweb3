@@ -1,4 +1,4 @@
-import { INetworkType, INetwork } from '@syscoin/sysweb3-network';
+import { INetworkType, INetwork } from '@sidhujag/sysweb3-network';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';

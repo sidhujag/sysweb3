@@ -1,5 +1,5 @@
-import { INetwork } from '@syscoin/sysweb3-network';
-import { ITxid, txUtils } from '@syscoin/sysweb3-utils';
+import { INetwork } from '@sidhujag/sysweb3-network';
+import { ITxid, txUtils } from '@sidhujag/sysweb3-utils';
 import * as syscoinjs from 'syscoinjs-lib';
 // import { BIP_84, ONE_HUNDRED_MILLION, SYSCOIN_BASIC_FEE } from 'utils';
 

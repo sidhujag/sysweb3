@@ -1,4 +1,4 @@
-import { INetworkType } from '@syscoin/sysweb3-network';
+import { INetworkType } from '@sidhujag/sysweb3-network';
 import { encrypt } from 'eth-sig-util';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';

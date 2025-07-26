@@ -1,4 +1,4 @@
-import { BitcoinNetwork, IPubTypes, INetwork } from '@syscoin/sysweb3-network';
+import { BitcoinNetwork, IPubTypes, INetwork } from '@sidhujag/sysweb3-network';
 import { BIP32Interface } from 'bip32';
 import { Psbt } from 'bitcoinjs-lib';
 import * as syscoinjs from 'syscoinjs-lib';

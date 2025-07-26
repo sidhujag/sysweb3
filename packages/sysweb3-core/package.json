@@ -1,5 +1,5 @@
 {
-  "name": "@syscoin/sysweb3-core",
+  "name": "@sidhujag/sysweb3-core",
   "version": "1.0.27",
   "description": "The localStorage Manager For PrivKeys",
   "main": "cjs/index.js",
@@ -19,7 +19,7 @@
     "build": "tsc && tsc -p tsconfig.json",
     "prerelease": "yarn build",
     "copy": "node ../../scripts/package/copy",
-    "release:npm": "yarn publish ./dist --access=public --no-git-tag-version",
+    "release:npm": "yarn publish ./dist --access public --no-git-tag-version",
     "release:preflight": "yarn pack ./dist --dry-run",
     "publishCode": "yarn prebuild && yarn prerelease && yarn copy && yarn release:npm",
     "type-check": "tsc --pretty --noEmit",

@@ -12,9 +12,9 @@ module.exports = {
   },
   testMatch: ['**/test/**/*.spec.ts'],
   moduleNameMapper: {
-    '^@syscoin/sysweb3-utils$': '<rootDir>/../sysweb3-utils/src',
-    '^@syscoin/sysweb3-network$': '<rootDir>/../sysweb3-network/src',
-    '^@syscoin/sysweb3-core$': '<rootDir>/../sysweb3-core/src',
+    '^@sidhujag/sysweb3-utils$': '<rootDir>/../sysweb3-utils/src',
+    '^@sidhujag/sysweb3-network$': '<rootDir>/../sysweb3-network/src',
+    '^@sidhujag/sysweb3-core$': '<rootDir>/../sysweb3-core/src',
     '^@ledgerhq/devices/hid-framing$':
       '<rootDir>/test/__mocks__/ledger-mock.js',
     '^@ledgerhq/hw-transport-webhid$':
