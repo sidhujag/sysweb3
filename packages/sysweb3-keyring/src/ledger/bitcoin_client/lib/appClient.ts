@@ -1,6 +1,6 @@
 import * as descriptors from '@bitcoinerlab/descriptors';
 import * as secp256k1 from '@bitcoinerlab/secp256k1';
-const { Descriptor } = descriptors.DescriptorsFactory(secp256k1);
+const { Output } = descriptors.DescriptorsFactory(secp256k1);
 import Transport from '@ledgerhq/hw-transport';
 import { findCoin, getNetworkConfigFromCoin } from '@sidhujag/sysweb3-network';
 
@@ -457,8 +457,8 @@ export class AppClient {
     let thirdPartyValidationApplicable = true;
     let thirdPartyGeneratedAddress = '';
     try {
-      thirdPartyGeneratedAddress = new Descriptor({
-        expression,
+      thirdPartyGeneratedAddress = new Output({
+        descriptor: expression,
         network,
       }).getAddress();
     } catch (err) {
