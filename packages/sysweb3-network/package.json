@@ -1,6 +1,6 @@
 {
   "name": "@sidhujag/sysweb3-network",
-  "version": "1.0.96",
+  "version": "1.0.97",
   "description": "A network management tool for multi-chain accounts.",
   "main": "cjs/index.js",
   "types": "types/index.d.ts",
@@ -34,7 +34,6 @@
     "ethers": "^5.7.2"
   },
   "devDependencies": {
-    "@types/lodash": "^4.14.191",
     "rimraf": "^6.0.1"
   }
 }

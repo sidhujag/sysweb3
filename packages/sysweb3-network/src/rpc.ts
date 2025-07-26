@@ -39,6 +39,19 @@ export const clearRpcCaches = () => {
   console.log('[RPC] Cleared all RPC caches');
 };
 
+/**
+ * Get chain details by chain ID
+ * @param chainId - The chain ID to look up
+ * @returns Chain details object or undefined if not found
+ */
+export const getChainById = (chainId: number): Chain | undefined => {
+  try {
+    return chains.getById(chainId);
+  } catch (error) {
+    return undefined;
+  }
+};
+
 export const validateChainId = (
   chainId: number | string
 ): { hexChainId: string; valid: boolean } => {
@@ -209,7 +222,7 @@ export const validateEthRpc = async (
     }
 
     const { valid, hexChainId } = validateChainId(chainId);
-    const details = chains.getById(chainId);
+    const details = getChainById(chainId);
     if (!valid) {
       throw new Error('RPC has an invalid chain ID');
     }
