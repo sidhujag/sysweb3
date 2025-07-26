@@ -1,6 +1,6 @@
 import { retryableFetch } from '@sidhujag/sysweb3-network';
 import camelcaseKeys from 'camelcase-keys';
-import { ethers as ethersModule } from 'ethers';
+import { Contract, ContractFunction, Event } from 'ethers';
 import * as sys from 'syscoinjs-lib';
 
 import { createContractUsingAbi } from '.';
@@ -9,11 +9,6 @@ import abi20 from './abi/erc20.json';
 import ABI721 from './abi/erc721.json';
 import tokens from './tokens.json';
 
-import type {
-  Contract,
-  ContractFunction,
-  Event,
-} from '@ethersproject/contracts';
 import type { BaseProvider, JsonRpcProvider } from '@ethersproject/providers';
 
 const COINGECKO_API = 'https://api.coingecko.com/api/v3';
@@ -155,7 +150,7 @@ export const getERC1155StandardBalance = async (
   tokenId: number
 ) => {
   try {
-    const config = { provider, ethers: ethersModule };
+    const config = { provider, ethers: { Contract } };
     const loaded = await loadEthers(config);
 
     return await fetchBalanceOfERC1155Contract(
@@ -177,7 +172,7 @@ export const getERC721StandardBalance = async (
   provider: JsonRpcProvider
 ) => {
   try {
-    const config = { provider, ethers: ethersModule };
+    const config = { provider, ethers: { Contract } };
     const loaded = await loadEthers(config);
 
     return await fetchBalanceOfERC721Contract(contractAddress, address, loaded);
@@ -263,7 +258,7 @@ export const loadEthers = async (
 
   try {
     const ethers = await Promise.resolve()
-      .then(() => import('@ethersproject/contracts'))
+      .then(() => import('ethers'))
       .then((m) => (m.default ? m.default : m));
 
     if (!ethers.Contract) {
@@ -403,7 +398,7 @@ export const getTokenStandardMetadata = async (
   provider: JsonRpcProvider
 ) => {
   try {
-    const config = { provider, ethers: ethersModule };
+    const config = { provider, ethers: { Contract } };
     const loaded = await loadEthers(config);
 
     return await fetchStandardTokenContractData(
@@ -423,7 +418,7 @@ export const getNftStandardMetadata = async (
   provider: JsonRpcProvider
 ) => {
   try {
-    const config = { provider, ethers: ethersModule };
+    const config = { provider, ethers: { Contract } };
     const loaded = await loadEthers(config);
 
     return await fetchStandardNftContractData(contractAddress, loaded);
