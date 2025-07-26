@@ -1,6 +1,6 @@
 {
   "name": "@sidhujag/sysweb3-utils",
-  "version": "1.1.241",
+  "version": "1.1.240",
   "description": "A helper for multi-chain accounts.",
   "main": "cjs/index.js",
   "types": "types/index.d.ts",
@@ -33,7 +33,7 @@
   "peerDependencies": {
     "syscoinjs-lib": "^1.0.245",
     "ethers": "~5.7.0",
-    "@sidhujag/sysweb3-network": "^1.0.101",
+    "@sidhujag/sysweb3-network": "^1.0.100",
     "axios": "^0.26.1",
     "bip84": "^0.2.7",
     "crypto-js": "^4.1.1"
@@ -44,7 +44,7 @@
     "jest": "^29.7.0",
     "rimraf": "^6.0.1",
     "syscoinjs-lib": "^1.0.245",
-    "@sidhujag/sysweb3-network": "^1.0.101",
+    "@sidhujag/sysweb3-network": "^1.0.100",
     "axios": "^0.26.1",
     "bip84": "^0.2.7",
     "crypto-js": "^4.1.1"
