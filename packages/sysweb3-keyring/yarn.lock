@@ -1037,13 +1037,13 @@
     eth-chains "^1.0.0"
     ethers "^5.7.2"
 
-"@sidhujag/sysweb3-utils@^1.1.237":
-  version "1.1.237"
-  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-utils/-/sysweb3-utils-1.1.237.tgz#27233f3fd2088addc186d5dbf44bcbe6fee811f2"
-  integrity sha512-aE/mS0Bhw4PY24ew1hYj41cBaZXffyazVTBSKxmJTKDjCp72VEZYUaTS5523w/wTKO7crEx0nM4VAg46dPi5Bg==
+"@sidhujag/sysweb3-utils@^1.1.238":
+  version "1.1.238"
+  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-utils/-/sysweb3-utils-1.1.238.tgz#f69f0ec8c44b4414359240ad9d4de4b0ec163b35"
+  integrity sha512-iNyiw3GBfHK1Ia7qsVsab0Qzf+PNcK8FqtkIDFUcky69LHRdB6FLnjrCNj+G3qUnsOzsI56yzjmJDb7jugsDUw==
   dependencies:
     "@ethersproject/contracts" "^5.8.0"
-    "@sidhujag/sysweb3-network" "^1.0.96"
+    "@sidhujag/sysweb3-network" "^1.0.97"
     axios "^0.26.1"
     bech32 "^2.0.0"
     bip84 "^0.2.7"
