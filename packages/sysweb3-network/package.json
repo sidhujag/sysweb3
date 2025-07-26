@@ -1,6 +1,6 @@
 {
   "name": "@sidhujag/sysweb3-network",
-  "version": "1.0.101",
+  "version": "1.0.97",
   "description": "A network management tool for multi-chain accounts.",
   "main": "cjs/index.js",
   "types": "types/index.d.ts",
@@ -30,12 +30,10 @@
     "localTest": "yarn prebuild && yarn build && yarn copy"
   },
   "dependencies": {
-    "eth-chains": "^1.0.0"
+    "eth-chains": "^1.0.0",
+    "ethers": "^5.7.2"
   },
   "devDependencies": {
     "rimraf": "^6.0.1"
-  },
-  "peerDependencies": {
-    "ethers": "~5.7.0"
   }
 }
