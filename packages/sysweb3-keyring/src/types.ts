@@ -131,52 +131,6 @@ export interface IEthereumTransactions {
   getTxGasLimit: (tx: SimpleTransactionRequest) => Promise<ethers.BigNumber>;
 }
 
-/**
- * Error structure for Syscoin transaction operations.
- * This interface documents the error format that consumers (like Pali) should expect
- * when catching errors from ISyscoinTransactions methods.
- *
- * @example
- * try {
- *   const result = await syscoinTransaction.getEstimateSysTransactionFee({...});
- * } catch (error: unknown) {
- *   const sysError = error as ISyscoinTransactionError;
- *   if (sysError.code === 'INSUFFICIENT_FUNDS') {
- *     console.log(`Short by ${sysError.shortfall} SYS`);
- *   }
- * }
- */
-export interface ISyscoinTransactionError {
-  error: boolean;
-  code:
-    | 'INSUFFICIENT_FUNDS'
-    | 'INVALID_FEE_RATE'
-    | 'INVALID_AMOUNT'
-    | 'INVALID_MEMO'
-    | 'INVALID_BLOB'
-    | 'INVALID_OUTPUT_COUNT'
-    | 'INVALID_ASSET_ALLOCATION'
-    | 'INVALID_PARENT_NODES'
-    | 'INVALID_TX_VALUE'
-    | 'INVALID_RECEIPT_VALUE'
-    | 'SUBTRACT_FEE_FAILED'
-    | 'TRANSACTION_CREATION_FAILED'
-    | 'TRANSACTION_SEND_FAILED';
-  message: string;
-  fee?: number; // in SYS (not satoshis)
-  remainingFee?: number; // in SYS (not satoshis)
-  shortfall?: number; // in SYS (not satoshis)
-  details?: {
-    inputTotal?: any; // BN object in satoshis
-    outputTotal?: any; // BN object in satoshis
-    requiredFee?: any; // BN object in satoshis
-    message?: string; // Additional context about the error
-    markedOutputs?: number; // For SUBTRACT_FEE_FAILED
-    removedOutputs?: number; // For SUBTRACT_FEE_FAILED
-    guid?: string; // For INVALID_ASSET_ALLOCATION
-  };
-}
-
 export interface ISyscoinTransactions {
   getEstimateSysTransactionFee: ({
     txOptions,
