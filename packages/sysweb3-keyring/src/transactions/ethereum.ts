@@ -29,7 +29,6 @@ import {
 } from 'ethereumjs-util';
 import { BigNumber, ethers } from 'ethers';
 import { Deferrable } from 'ethers/lib/utils';
-import floor from 'lodash/floor';
 import omit from 'lodash/omit';
 
 import { LedgerKeyring } from '../ledger';
@@ -2017,9 +2016,7 @@ export class EthereumTransactions implements IEthereumTransactions {
       const balance = await this.web3Provider.getBalance(address);
       const formattedBalance = ethers.utils.formatEther(balance);
 
-      const roundedBalance = floor(parseFloat(formattedBalance), 4);
-
-      return roundedBalance;
+      return parseFloat(formattedBalance); // Return full precision
     } catch (error) {
       throw error;
     }

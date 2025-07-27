@@ -1037,10 +1037,10 @@
     eth-chains "^1.0.0"
     ethers "^5.7.2"
 
-"@sidhujag/sysweb3-utils@^1.1.244":
-  version "1.1.244"
-  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-utils/-/sysweb3-utils-1.1.244.tgz#459da2b01cbcf5e9a9065af4a317e57ae8229685"
-  integrity sha512-V9y72+GSOWJvLJQfRUZ/Wr93MVFg3D5PvSuwBL2dOnWtzs2Cg86uctNPDH3D9ZG9ZLfFm9x+tt/Ykn2xH8A+3w==
+"@sidhujag/sysweb3-utils@^1.1.245":
+  version "1.1.245"
+  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-utils/-/sysweb3-utils-1.1.245.tgz#e12deda7fdd11acd3f2e64c26a6bc0091ce32030"
+  integrity sha512-mOyINzS1C9Xx0vyZgLzsR86rmL4nrgw60FT+veFrAc4riRWH3IdMzxgL/1X/g6WpcYhTf8gWenAtmv1aJsOE+A==
   dependencies:
     "@ethersproject/contracts" "^5.8.0"
     "@sidhujag/sysweb3-network" "^1.0.102"
