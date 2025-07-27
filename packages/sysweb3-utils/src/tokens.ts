@@ -7,7 +7,6 @@ import { createContractUsingAbi } from '.';
 import ABI1155 from './abi/erc1155.json';
 import abi20 from './abi/erc20.json';
 import ABI721 from './abi/erc721.json';
-import tokens from './tokens.json';
 
 import type {
   Contract,
@@ -607,8 +606,6 @@ export const validateToken = async (
     return console.error('Token not found, verify the Token Contract Address.');
   }
 };
-
-export const getTokenJson = (): any => tokens;
 
 export const getAsset = async (
   explorerUrl: string,
