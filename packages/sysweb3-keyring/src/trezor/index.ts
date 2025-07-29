@@ -460,6 +460,18 @@ export class TrezorKeyring {
     return addressN;
   }
   public isScriptHash(address: string, networkInfo: any) {
+    if (!networkInfo) {
+      // If network info is not available, make a best guess based on address format
+      // This is a fallback for hardware wallet scenarios
+      if (this.isBech32(address)) {
+        const decoded = fromBech32(address);
+        return decoded.data.length === 32; // 32 bytes = P2WSH
+      }
+      // For non-bech32, we can't reliably determine without network info
+      // Default to false (P2PKH) as it's more common
+      return false;
+    }
+
     if (!this.isBech32(address)) {
       const decoded = fromBase58Check(address);
       if (decoded.version === networkInfo.pubKeyHash) {
@@ -504,8 +516,7 @@ export class TrezorKeyring {
     return false;
   }
 
-  public convertToTrezorFormat({ psbt, pathIn, coin }: any) {
-    const { hd } = this.getSigner();
+  public convertToTrezorFormat({ psbt, pathIn, coin, network }: any) {
     const trezortx: any = {};
 
     trezortx.coin = coin;
@@ -574,10 +585,7 @@ export class TrezorKeyring {
             outputItem.script_type = 'PAYTOWITNESS';
           }
         } else {
-          outputItem.script_type = this.isScriptHash(
-            output.address,
-            hd.Signer.network
-          )
+          outputItem.script_type = this.isScriptHash(output.address, network)
             ? 'PAYTOSCRIPTHASH'
             : 'PAYTOADDRESS';
         }

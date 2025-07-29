@@ -1,4 +1,4 @@
-import { INetwork } from '@sidhujag/sysweb3-network';
+import { INetwork, getNetworkConfig } from '@sidhujag/sysweb3-network';
 import { ITxid, txUtils } from '@sidhujag/sysweb3-utils';
 import * as syscoinjs from 'syscoinjs-lib';
 // import { BIP_84, ONE_HUNDRED_MILLION, SYSCOIN_BASIC_FEE } from 'utils';
@@ -97,7 +97,8 @@ export class SyscoinTransactions implements ISyscoinTransactions {
     xpub,
     feeRateBN,
   }: EstimateFeeParams) => {
-    const { main } = this.getSigner();
+    // Use read-only signer since we're just creating an unsigned PSBT
+    const { main } = this.getReadOnlySigner();
 
     try {
       // Use syscoinjs-lib directly for transaction creation
@@ -183,7 +184,8 @@ export class SyscoinTransactions implements ISyscoinTransactions {
     // Ensure RBF is enabled by default if not explicitly set
     const finalTxOptions = { rbf: true, ...txOptions };
     const { activeAccountId, accounts, activeAccountType } = this.getState();
-    const { main } = this.getSigner();
+    // Use read-only signer since we're just creating an unsigned PSBT
+    const { main } = this.getReadOnlySigner();
     const account = accounts[activeAccountType]?.[activeAccountId];
     if (!account) {
       throw new Error('Active account not found');
@@ -322,10 +324,21 @@ export class SyscoinTransactions implements ISyscoinTransactions {
       return enhancedPsbt;
     } else if (isTrezor) {
       // Handle Trezor signing for UTXO
+      // Get network configuration for Trezor
+      const networkConfig = getNetworkConfig(
+        activeNetwork.slip44,
+        activeNetwork.currency
+      );
+      const isTestnet = activeNetwork.slip44 === 1;
+      const bitcoinjsNetwork = isTestnet
+        ? networkConfig?.networks?.testnet
+        : networkConfig?.networks?.mainnet;
+
       const trezorTx = this.trezor.convertToTrezorFormat({
         psbt,
         pathIn, // Pass pathIn to Trezor
         coin: activeNetwork.currency.toLowerCase(),
+        network: bitcoinjsNetwork || undefined, // Pass network config for isScriptHash check
       });
       const signedPsbt = await this.trezor.signUtxoTransaction(trezorTx, psbt);
       return signedPsbt;
@@ -360,7 +373,8 @@ export class SyscoinTransactions implements ISyscoinTransactions {
     try {
       // Ensure RBF is enabled by default if not explicitly set
       const finalTxOptions = { rbf: true, ...txOptions };
-      const { main } = this.getSigner();
+      // Use read-only signer since we're just estimating fees and creating unsigned PSBT
+      const { main } = this.getReadOnlySigner();
       // Step 1: Determine fee rate
       let actualFeeRate;
       if (feeRate !== undefined) {
@@ -433,7 +447,8 @@ export class SyscoinTransactions implements ISyscoinTransactions {
 
   private sendSignedTransaction = async (psbt): Promise<ITxid> => {
     try {
-      const { main } = this.getSigner();
+      // Use read-only signer since we're just broadcasting an already-signed transaction
+      const { main } = this.getReadOnlySigner();
       // Send the transaction
       const result = await main.send(psbt);
 
