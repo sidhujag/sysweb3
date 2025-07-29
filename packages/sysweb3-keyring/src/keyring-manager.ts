@@ -166,7 +166,7 @@ export class KeyringManager implements IKeyringManager {
     // sessionMnemonic is initialized as null - created on unlock
     this.initialTrezorAccountState = initialActiveTrezorAccountState;
     this.initialLedgerAccountState = initialActiveLedgerAccountState;
-    this.trezorSigner = new TrezorKeyring(this.getSigner);
+    this.trezorSigner = new TrezorKeyring();
     this.ledgerSigner = new LedgerKeyring();
 
     // this.syscoinTransaction = SyscoinTransactions();

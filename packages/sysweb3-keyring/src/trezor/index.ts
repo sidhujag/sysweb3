@@ -17,7 +17,6 @@ import {
   HardwareWalletManager,
   HardwareWalletType,
 } from '../hardware-wallet-manager';
-import { SyscoinHDSigner } from '../signers';
 import {
   getAccountDerivationPath,
   getAddressDerivationPath,
@@ -57,24 +56,14 @@ export class TrezorKeyring {
   public chainCode: Buffer;
   public paths: Record<string, number> = {};
   public model?: string;
-  private getSigner: () => {
-    hd: SyscoinHDSigner;
-    main: any;
-  };
   private hardwareWalletManager: HardwareWalletManager;
   private initialized = false;
 
-  constructor(
-    getSyscoinSigner: () => {
-      hd: SyscoinHDSigner;
-      main: any;
-    }
-  ) {
+  constructor() {
     this.publicKey = Buffer.from('', 'hex');
     this.chainCode = Buffer.from('', 'hex');
     this.hdPath = '';
     this.paths = {};
-    this.getSigner = getSyscoinSigner;
     this.hardwareWalletManager = new HardwareWalletManager();
 
     // Set up event listeners
