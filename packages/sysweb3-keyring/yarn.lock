@@ -938,9 +938,9 @@
     "@noble/hashes" "1.8.0"
 
 "@noble/curves@^1.0.0", "@noble/curves@^1.7.0", "@noble/curves@~1.9.0":
-  version "1.9.4"
-  resolved "https://registry.yarnpkg.com/@noble/curves/-/curves-1.9.4.tgz#a748c6837ee7854a558cc3b951aedd87a5e7d6a5"
-  integrity sha512-2bKONnuM53lINoDrSmK8qP8W271ms7pygDhZt4SiLOoLwBtoHqeCFi6RG42V8zd3mLHuJFhU/Bmaqo4nX0/kBw==
+  version "1.9.5"
+  resolved "https://registry.yarnpkg.com/@noble/curves/-/curves-1.9.5.tgz#d3e15de15ff1a37e4bf629170ada84395e4cf6b5"
+  integrity sha512-IHiC8xU74NLKg7gNmwMbUVtqqZy9OWKphTAChESCgsXI5NTK6n3ewOFXrj4Dxal/Ml8D3msbPIHfpHLwv50Q2w==
   dependencies:
     "@noble/hashes" "1.8.0"
 
