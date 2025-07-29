@@ -65,7 +65,7 @@ export const validateChainId = (
     hexChainId,
   };
 };
-//TODO: add returns types for getEthChainId
+
 const getEthChainId = async (
   url: string,
   isInCooldown: boolean

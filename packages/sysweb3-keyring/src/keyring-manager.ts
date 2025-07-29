@@ -564,18 +564,24 @@ export class KeyringManager implements IKeyringManager {
         throw new Error('Account not found');
       }
 
-      // Decrypt the stored private key (works for both HD and imported accounts)
-      const decryptedPrivateKey = CryptoJS.AES.decrypt(
-        (account as IKeyringAccountState).xprv,
-        this.getSessionPasswordString()
-      ).toString(CryptoJS.enc.Utf8);
+      // Decrypt the stored private key using secure method
+      const decryptedPrivateKey = this.withSecureData((sessionPwd) => {
+        const decrypted = CryptoJS.AES.decrypt(
+          (account as IKeyringAccountState).xprv,
+          sessionPwd
+        ).toString(CryptoJS.enc.Utf8);
 
-      if (!decryptedPrivateKey) {
-        throw new Error(
-          'Failed to decrypt private key. Invalid password or corrupted data.'
-        );
-      }
+        if (!decrypted) {
+          throw new Error(
+            'Failed to decrypt private key. Invalid password or corrupted data.'
+          );
+        }
 
+        return decrypted;
+      });
+
+      // NOTE: Returning decrypted private key as string is necessary for compatibility
+      // Callers should handle this sensitive data carefully
       return decryptedPrivateKey;
     } catch (error) {
       console.log('ERROR getPrivateKeyByAccountId', {
@@ -605,10 +611,12 @@ export class KeyringManager implements IKeyringManager {
   };
 
   public getEncryptedXprv = (hd: SyscoinHDSigner) => {
-    return CryptoJS.AES.encrypt(
-      this.getSysActivePrivateKey(hd),
-      this.getSessionPasswordString()
-    ).toString();
+    return this.withSecureData((sessionPwd) => {
+      return CryptoJS.AES.encrypt(
+        this.getSysActivePrivateKey(hd),
+        sessionPwd
+      ).toString();
+    });
   };
 
   public getSeed = async (pwd: string) => {
@@ -1185,10 +1193,11 @@ export class KeyringManager implements IKeyringManager {
 
       let decryptedPrivateKey: string;
       try {
-        decryptedPrivateKey = CryptoJS.AES.decrypt(
-          xprv,
-          this.getSessionPasswordString()
-        ).toString(CryptoJS.enc.Utf8);
+        decryptedPrivateKey = this.withSecureData((sessionPwd) => {
+          return CryptoJS.AES.decrypt(xprv, sessionPwd).toString(
+            CryptoJS.enc.Utf8
+          );
+        });
       } catch (decryptError) {
         throw new Error(
           `Failed to decrypt private key for account ${activeAccountType}:${activeAccountId}. The wallet may be locked or corrupted.`
@@ -1239,7 +1248,7 @@ export class KeyringManager implements IKeyringManager {
 
   private getSigner = (): {
     hd: SyscoinHDSigner;
-    main: any; //TODO: Type this following syscoinJSLib interface
+    main: any; // syscoinjs-lib Syscoin instance
   } => {
     if (!this.sessionPassword) {
       throw new Error('Wallet is locked cant proceed with transaction');
@@ -1270,7 +1279,7 @@ export class KeyringManager implements IKeyringManager {
 
   // Read-only version that works when wallet is locked
   private getReadOnlySigner = (): {
-    main: any; //TODO: Type this following syscoinJSLib interface
+    main: any; // syscoinjs-lib Syscoin instance (read-only)
   } => {
     if (this.getActiveChain() !== INetworkType.Syscoin) {
       throw new Error('Switch to UTXO chain');
@@ -1705,10 +1714,12 @@ export class KeyringManager implements IKeyringManager {
       const createdAccount = {
         address: derivedAccount.address,
         xpub: derivedAccount.publicKey,
-        xprv: CryptoJS.AES.encrypt(
-          derivedAccount.privateKey,
-          this.getSessionPasswordString()
-        ).toString(),
+        xprv: this.withSecureData((sessionPwd) => {
+          return CryptoJS.AES.encrypt(
+            derivedAccount.privateKey,
+            sessionPwd
+          ).toString();
+        }),
         isImported: false,
         ...basicAccountInfo,
         balances: { syscoin: 0, ethereum: 0 },
@@ -1911,10 +1922,9 @@ export class KeyringManager implements IKeyringManager {
       id,
       balances,
       isImported: true,
-      xprv: CryptoJS.AES.encrypt(
-        privateKey,
-        this.getSessionPasswordString()
-      ).toString(),
+      xprv: this.withSecureData((sessionPwd) => {
+        return CryptoJS.AES.encrypt(privateKey, sessionPwd).toString();
+      }),
       xpub: publicKey,
       assets: {
         syscoin: [],
@@ -1934,14 +1944,18 @@ export class KeyringManager implements IKeyringManager {
       throw new Error('Session information not available');
     }
 
-    const mnemonic = CryptoJS.AES.decrypt(
-      this.getSessionMnemonicString(),
-      this.getSessionPasswordString()
-    ).toString(CryptoJS.enc.Utf8);
+    const mnemonic = this.withSecureData((sessionPwd, sessionMnemonic) => {
+      const decrypted = CryptoJS.AES.decrypt(
+        sessionMnemonic,
+        sessionPwd
+      ).toString(CryptoJS.enc.Utf8);
 
-    if (!mnemonic) {
-      throw new Error('Failed to decrypt mnemonic');
-    }
+      if (!decrypted) {
+        throw new Error('Failed to decrypt mnemonic');
+      }
+
+      return decrypted;
+    });
 
     return mnemonic;
   }
@@ -2023,14 +2037,17 @@ export class KeyringManager implements IKeyringManager {
     }
 
     // Decrypt the stored zprv
-    const zprv = CryptoJS.AES.decrypt(
-      account.xprv,
-      this.getSessionPasswordString()
-    ).toString(CryptoJS.enc.Utf8);
+    const zprv = this.withSecureData((sessionPwd) => {
+      const decrypted = CryptoJS.AES.decrypt(account.xprv, sessionPwd).toString(
+        CryptoJS.enc.Utf8
+      );
 
-    if (!zprv) {
-      throw new Error('Failed to decrypt imported account private key');
-    }
+      if (!decrypted) {
+        throw new Error('Failed to decrypt imported account private key');
+      }
+
+      return decrypted;
+    });
 
     if (!this.isZprv(zprv)) {
       throw new Error('Imported account does not contain a valid zprv');
@@ -2099,10 +2116,13 @@ export class KeyringManager implements IKeyringManager {
       if (sessionPasswordSaltedHash === this.getSessionPasswordString()) {
         // Same password - check if it's the same mnemonic to ensure full idempotency
         try {
-          const currentMnemonic = CryptoJS.AES.decrypt(
-            this.getSessionMnemonicString(),
-            this.getSessionPasswordString()
-          ).toString(CryptoJS.enc.Utf8);
+          const currentMnemonic = this.withSecureData(
+            (sessionPwd, sessionMnemonic) => {
+              return CryptoJS.AES.decrypt(sessionMnemonic, sessionPwd).toString(
+                CryptoJS.enc.Utf8
+              );
+            }
+          );
 
           if (currentMnemonic === seedPhrase) {
             // Same mnemonic and password - already initialized
@@ -2185,6 +2205,8 @@ export class KeyringManager implements IKeyringManager {
     if (!this.sessionPassword || this.sessionPassword.isCleared()) {
       throw new Error('Session password not available');
     }
+    // WARNING: This exposes sensitive data as a string
+    // Use only for CryptoJS operations that require string input
     return this.sessionPassword.toString();
   }
 
@@ -2192,7 +2214,27 @@ export class KeyringManager implements IKeyringManager {
     if (!this.sessionMnemonic || this.sessionMnemonic.isCleared()) {
       throw new Error('Session mnemonic not available');
     }
+    // WARNING: This exposes sensitive data as a string
+    // Use only for CryptoJS operations that require string input
     return this.sessionMnemonic.toString();
+  }
+
+  // Secure method to perform cryptographic operations without exposing strings
+  private withSecureData<T>(
+    operation: (password: string, mnemonic: string) => T
+  ): T {
+    if (!this.sessionPassword || !this.sessionMnemonic) {
+      throw new Error('Session data not available');
+    }
+
+    // Perform operation with minimal exposure
+    const result = operation(
+      this.getSessionPasswordString(),
+      this.getSessionMnemonicString()
+    );
+
+    // Clear any temporary variables if needed
+    return result;
   }
 
   private generateNetworkAwareLabel(

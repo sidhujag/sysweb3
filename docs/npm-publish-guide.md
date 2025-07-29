@@ -18,6 +18,7 @@ node scripts/migrate-to-syscoin-npm.js
 ```
 
 This script will:
+
 - Update all package names from `syscoin/package-name` to `@sidhujag/package-name`
 - Update inter-package dependencies to use the new names
 - Update pali-wallet's package.json to reference the new names
@@ -32,6 +33,7 @@ yarn build:all
 ```
 
 This builds all packages in the correct order:
+
 1. sysweb3-core
 2. sysweb3-network
 3. sysweb3-utils
@@ -141,6 +143,7 @@ npm ERR! 403 Forbidden - You do not have permission to publish "@sidhujag/packag
 ```
 
 Make sure:
+
 1. You're logged in: `npm whoami`
 2. You have publish access to @syscoin org
 3. The package doesn't already exist with that exact version
@@ -203,7 +206,8 @@ yarn publish:all
 ```
 
 Your packages are now available at:
+
 - https://www.npmjs.com/package/@sidhujag/sysweb3-core
 - https://www.npmjs.com/package/@sidhujag/sysweb3-network
 - https://www.npmjs.com/package/@sidhujag/sysweb3-utils
-- https://www.npmjs.com/package/@sidhujag/sysweb3-keyring 
+- https://www.npmjs.com/package/@sidhujag/sysweb3-keyring
