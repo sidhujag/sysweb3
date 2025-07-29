@@ -557,7 +557,36 @@ export class TrezorKeyring {
       const output = psbt.txOutputs[i];
       const outputItem: any = {};
       const chunks = decompile(output.script);
-      outputItem.amount = output.value.toString();
+
+      // Debug logging to understand the output structure
+      console.log(`[Trezor] Processing output ${i}:`, {
+        value: output.value,
+        valueType: typeof output.value,
+        hasAddress: !!output.address,
+        address: output.address,
+        scriptLength: output.script?.length,
+      });
+
+      // Ensure value exists and convert properly
+      if (output.value === undefined || output.value === null) {
+        throw new Error(`Output ${i} has no value`);
+      }
+
+      // Handle different value types
+      let amountStr: string;
+      if (typeof output.value === 'bigint') {
+        amountStr = output.value.toString();
+      } else if (typeof output.value === 'number') {
+        amountStr = output.value.toString();
+      } else if (typeof output.value === 'string') {
+        amountStr = output.value;
+      } else {
+        throw new Error(
+          `Output ${i} has unexpected value type: ${typeof output.value}`
+        );
+      }
+
+      outputItem.amount = amountStr;
       if (chunks && chunks[0] === bitcoinops.OP_RETURN) {
         outputItem.script_type = 'PAYTOOPRETURN';
         // @ts-ignore
@@ -580,6 +609,24 @@ export class TrezorKeyring {
         }
         if (output.address) outputItem.address = output.address;
       }
+
+      // Validate that the output has required fields for Trezor
+      if (
+        outputItem.script_type === 'PAYTOADDRESS' ||
+        outputItem.script_type === 'PAYTOSCRIPTHASH' ||
+        outputItem.script_type === 'PAYTOWITNESS' ||
+        outputItem.script_type === 'PAYTOP2SHWITNESS'
+      ) {
+        if (!outputItem.address) {
+          console.error(
+            `[Trezor] Output ${i} missing address for script type ${outputItem.script_type}`
+          );
+          throw new Error(
+            `Output ${i} requires an address for script type ${outputItem.script_type}`
+          );
+        }
+      }
+
       trezortx.outputs.push(outputItem);
     }
     return trezortx;
