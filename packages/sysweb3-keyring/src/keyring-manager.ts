@@ -251,15 +251,23 @@ export class KeyringManager implements IKeyringManager {
       this.sessionMnemonic = null;
     }
 
+    // Clear transaction handlers that may hold HD signers
+    if (this.syscoinTransaction) {
+      // Replace with empty object to clear references
+      this.syscoinTransaction = {} as ISyscoinTransactions;
+    }
+    // NOTE: We intentionally don't clear ethereumTransaction here because
+    // polling needs the web3Provider even when the wallet is locked.
+
     // Clean up hardware wallet connections
     if (this.ledgerSigner) {
-      this.ledgerSigner.destroy().catch((error) => {
-        console.error('Error destroying Ledger connection:', error);
+      this.ledgerSigner.destroy().catch(() => {
+        // Silently handle cleanup errors to avoid exposing sensitive data
       });
     }
     if (this.trezorSigner) {
-      this.trezorSigner.destroy().catch((error) => {
-        console.error('Error destroying Trezor connection:', error);
+      this.trezorSigner.destroy().catch(() => {
+        // Silently handle cleanup errors to avoid exposing sensitive data
       });
     }
   };
@@ -584,9 +592,6 @@ export class KeyringManager implements IKeyringManager {
       // Callers should handle this sensitive data carefully
       return decryptedPrivateKey;
     } catch (error) {
-      console.log('ERROR getPrivateKeyByAccountId', {
-        error,
-      });
       this.validateAndHandleErrorByMessage(error.message);
       throw error;
     }
