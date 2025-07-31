@@ -191,20 +191,84 @@ export const fetchStandardNftContractData = async (
   contractAddress: Address,
   config: EthersFetcherConfigEthersLoaded
 ): Promise<NftMetadata> => {
-  const contract = new config.ethers.Contract(
-    contractAddress,
-    ABI1155,
-    config.provider
-  ) as NftContract;
+  // First try to determine the contract type
+  let contractType = 'UNKNOWN';
+  let contract: NftContract;
 
-  const [name, symbol] = await Promise.all([
-    contract.name(),
-    contract.symbol(),
-  ]);
+  try {
+    // Try ERC-721 first
+    const erc721Contract = new config.ethers.Contract(
+      contractAddress,
+      ABI721,
+      config.provider
+    ) as NftContract;
+
+    // Check if it supports ERC-721 interface
+    const isERC721 = await erc721Contract.supportsInterface('0x80ac58cd');
+    if (isERC721) {
+      contractType = 'ERC-721';
+      contract = erc721Contract;
+    } else {
+      // Try ERC-1155
+      const erc1155Contract = new config.ethers.Contract(
+        contractAddress,
+        ABI1155,
+        config.provider
+      ) as NftContract;
+
+      const isERC1155 = await erc1155Contract.supportsInterface('0xd9b67a26');
+      if (isERC1155) {
+        contractType = 'ERC-1155';
+        contract = erc1155Contract;
+      } else {
+        throw new Error('Contract does not support ERC-721 or ERC-1155');
+      }
+    }
+  } catch (error) {
+    // If supportsInterface fails, try to detect by calling methods
+    // This is a fallback for contracts that don't implement ERC-165
+    contract = new config.ethers.Contract(
+      contractAddress,
+      [...ABI721, ...ABI1155], // Combined ABI
+      config.provider
+    ) as NftContract;
+  }
+
+  // Try to get name and symbol
+  let name = '';
+  let symbol = '';
+
+  try {
+    // Try to get name
+    name = await contract.name();
+  } catch (error) {
+    // Name might not be implemented (optional in ERC-1155)
+    console.warn(
+      `NFT contract ${contractAddress} does not implement name()`,
+      error
+    );
+  }
+
+  try {
+    // Try to get symbol
+    symbol = await contract.symbol();
+  } catch (error) {
+    // Symbol might not be implemented (optional in ERC-1155)
+    console.warn(
+      `NFT contract ${contractAddress} does not implement symbol()`,
+      error
+    );
+  }
+
+  // If neither name nor symbol is available, use a default
+  if (!name && !symbol) {
+    symbol = 'NFT';
+    name = `${contractType} Collection`;
+  }
 
   return {
-    name,
-    symbol: cleanTokenSymbol(symbol),
+    name: name || symbol || `${contractType} Collection`,
+    symbol: cleanTokenSymbol(symbol || 'NFT'),
   };
 };
 
@@ -427,8 +491,29 @@ export const getNftStandardMetadata = async (
 
     return await fetchStandardNftContractData(contractAddress, loaded);
   } catch (error) {
+    // Check if it's a network error
+    if (error?.code === 'CALL_EXCEPTION' || error?.code === 'NETWORK_ERROR') {
+      throw new Error(
+        `Network error: Verify you are on the correct network for NFT contract ${contractAddress}. ${
+          error?.message || error
+        }`
+      );
+    }
+
+    // Check if it's a contract not found error
+    if (
+      error?.message?.includes('Contract does not support ERC-721 or ERC-1155')
+    ) {
+      throw new Error(
+        `Invalid NFT contract: ${contractAddress} does not appear to be an ERC-721 or ERC-1155 contract`
+      );
+    }
+
+    // Generic error
     throw new Error(
-      `Verify current network. Set the same network of NFT token contract. ${error}`
+      `Failed to fetch NFT metadata for ${contractAddress}: ${
+        error?.message || error
+      }`
     );
   }
 };
