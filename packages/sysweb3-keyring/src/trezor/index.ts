@@ -379,7 +379,6 @@ export class TrezorKeyring {
    */
 
   public async signUtxoTransaction(utxoTransaction: any, psbt: any) {
-    console.log("[Trezor] Signing UTXO transaction:", utxoTransaction)
     return this.executeWithRetry(async () => {
       const { payload, success } = await TrezorConnect.signTransaction(
         utxoTransaction
@@ -387,158 +386,32 @@ export class TrezorKeyring {
 
       if (success) {
         const tx = Transaction.fromHex(payload.serializedTx);
-        console.log("[Trezor] Transaction signed successfully by Trezor");
-        
-        // Trezor returns a complete, signed transaction
-        // Use the witness data to create proper partial signatures and let PSBT finalize itself
         for (const i of this.range(psbt.data.inputs.length)) {
           if (tx.ins[i].witness == null) {
             throw new Error(
               'Please move your funds to a Segwit address: https://wiki.trezor.io/Account'
             );
           }
-          
-          const witness = tx.ins[i].witness;
-          console.log(`[Trezor] Input ${i} witness:`, witness.map(w => w.toString('hex')));
-          
-          // Extract signature and pubkey from witness (standard P2WPKH format)
-          if (witness.length !== 2) {
-            throw new Error(`Expected 2 witness items for P2WPKH, got ${witness.length}`);
-          }
-          
-          const signature = witness[0];
-          const pubkey = witness[1];
-          
-          // Validate signature and pubkey
-          if (!signature || signature.length === 0) {
-            throw new Error(`Invalid signature for input ${i}`);
-          }
-          if (!pubkey || pubkey.length === 0) {
-            throw new Error(`Invalid pubkey for input ${i}`);
-          }
-          
-          console.log(`[Trezor] Input ${i} - Signature: ${signature.toString('hex')}`);
-          console.log(`[Trezor] Input ${i} - Pubkey: ${pubkey.toString('hex')}`);
-          
-          // Update PSBT with partial signature - let bitcoinjs-lib handle finalization
           const partialSig = [
             {
-              pubkey: pubkey,
-              signature: signature,
+              pubkey: tx.ins[i].witness[1],
+              signature: tx.ins[i].witness[0],
             },
           ];
-          
           psbt.updateInput(i, { partialSig });
-          console.log(`[Trezor] Input ${i} updated with partial signature`);
         }
-        
-        // Now try to finalize the PSBT using bitcoinjs-lib's built-in methods
         try {
-          console.log("[Trezor] Attempting to finalize PSBT...");
-          
-          // Try to validate signatures first
-          try {
-            const allValid = psbt.validateSignaturesOfAllInputs();
-            console.log("[Trezor] All signatures valid:", allValid);
-            
-            if (allValid) {
-              psbt.finalizeAllInputs();
-              console.log("[Trezor] PSBT finalized successfully with validateSignaturesOfAllInputs");
-            } else {
-              console.warn("[Trezor] Signature validation failed, trying manual finalization");
-              throw new Error("Signature validation failed");
-            }
-          } catch (validationError) {
-            console.warn("[Trezor] Signature validation failed:", validationError.message);
-            console.log("[Trezor] Attempting manual finalization per input...");
-            
-            // Manual finalization: directly use the witness data from Trezor's signed transaction
-            for (let i = 0; i < psbt.data.inputs.length; i++) {
-              const witness = tx.ins[i].witness;
-              
-              // Create witness script using the proper Bitcoin witness format
-              // For P2WPKH: [signature, pubkey]
-              const witnessScript = this.createWitnessScript(witness);
-              
-              psbt.updateInput(i, {
-                finalScriptWitness: witnessScript
-              });
-              
-              console.log(`[Trezor] Input ${i} finalized manually with witness script`);
-            }
+          if (psbt.validateSignaturesOfAllInputs()) {
+            psbt.finalizeAllInputs();
           }
-        } catch (finalizeError) {
-          console.error("[Trezor] Standard finalization failed:", finalizeError.message);
-          throw new Error(`PSBT finalization failed: ${finalizeError.message}`);
-        }
-        
-        // Verify the PSBT has final scripts and can extract transaction
-        try {
-          for (let i = 0; i < psbt.data.inputs.length; i++) {
-            const input = psbt.data.inputs[i];
-            if (!input.finalScriptWitness && !input.finalScriptSig) {
-              throw new Error(`Input ${i} is missing final script witness/sig after finalization`);
-            }
-          }
-          
-          // Test extraction to ensure the PSBT is properly finalized
-          const extractedTx = psbt.extractTransaction();
-          console.log("[Trezor] PSBT extraction test successful, transaction ID:", extractedTx.getId());
-          
         } catch (err) {
-          console.error("[Trezor] PSBT validation error:", err);
-          throw new Error(`PSBT validation failed: ${err.message}`);
+          console.log(err);
         }
-        
-        console.log("[Trezor] PSBT successfully prepared for extraction");
         return psbt;
       } else {
         throw new Error('Trezor sign failed: ' + payload.error);
       }
     }, 'signUtxoTransaction');
-  }
-
-  /**
-   * Create witness script from witness stack for PSBT finalScriptWitness
-   */
-  private createWitnessScript(witness: Buffer[]): Buffer {
-    if (!witness || witness.length === 0) {
-      throw new Error('Empty witness stack');
-    }
-    
-    // Bitcoin witness script format for PSBT finalScriptWitness
-    // This is the serialized witness stack format used in Bitcoin
-    const buffers: Buffer[] = [];
-    
-    // Compact size integer for number of witness items
-    buffers.push(Buffer.from([witness.length]));
-    
-    // For each witness item: [length][data]
-    for (const item of witness) {
-      if (item.length === 0) {
-        // Empty item (should not happen for P2WPKH but handle gracefully)
-        buffers.push(Buffer.from([0x00]));
-      } else if (item.length <= 75) {
-        // Standard push: length followed by data
-        buffers.push(Buffer.from([item.length]));
-        buffers.push(item);
-      } else if (item.length <= 255) {
-        // OP_PUSHDATA1: 0x4c + 1 byte length + data
-        buffers.push(Buffer.from([0x4c, item.length]));
-        buffers.push(item);
-      } else if (item.length <= 65535) {
-        // OP_PUSHDATA2: 0x4d + 2 byte length (little endian) + data
-        const lengthBytes = Buffer.allocUnsafe(2);
-        lengthBytes.writeUInt16LE(item.length, 0);
-        buffers.push(Buffer.from([0x4d]));
-        buffers.push(lengthBytes);
-        buffers.push(item);
-      } else {
-        throw new Error(`Witness item too large: ${item.length} bytes`);
-      }
-    }
-    
-    return Buffer.concat(buffers);
   }
 
   private setHdPath(coin: string, accountIndex: number, slip44: number) {
@@ -718,7 +591,6 @@ export class TrezorKeyring {
         outputItem.script_type = 'PAYTOOPRETURN';
         // @ts-ignore
         outputItem.op_return_data = chunks[1].toString('hex');
-        outputItem.amount = "0"; // it must be 0 following the trezor docs https://connect.trezor.io/9/methods/bitcoin/signTransaction/
       } else {
         if (output && this.isBech32(output.address)) {
           if (
