@@ -33,7 +33,7 @@ export async function retryWithBackoff<T>(
     if (isRetryableError && retryCount < MAX_RETRIES) {
       const delay = INITIAL_RETRY_DELAY * Math.pow(2, retryCount);
       console.log(
-        `[retryWithBackoff] Blockbook API rate limited, retrying after ${delay}ms... (attempt ${
+        `[retryWithBackoff] API rate limited, retrying after ${delay}ms... (attempt ${
           retryCount + 1
         }/${MAX_RETRIES})`
       );

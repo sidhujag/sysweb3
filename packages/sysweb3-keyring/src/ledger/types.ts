@@ -1,4 +1,4 @@
-import { Version } from 'eth-sig-util';
+import { SignTypedDataVersion } from '@metamask/eth-sig-util';
 
 export interface IUTXOMethods {
   getUtxoAddress: ({
@@ -69,6 +69,6 @@ export interface IEvmMethods {
   }: {
     accountIndex: number;
     data: any;
-    version: Version;
+    version: SignTypedDataVersion;
   }) => Promise<string>;
 }

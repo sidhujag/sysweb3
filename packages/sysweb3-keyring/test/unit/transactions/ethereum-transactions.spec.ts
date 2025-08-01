@@ -1,5 +1,5 @@
+import { encrypt, SignTypedDataVersion } from '@metamask/eth-sig-util';
 import { INetworkType } from '@sidhujag/sysweb3-network';
-import { encrypt } from 'eth-sig-util';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
@@ -192,7 +192,7 @@ describe('Ethereum Transactions', () => {
       const signature = await keyringManager.ethereumTransaction.signTypedData(
         keyringManager.getActiveAccount().activeAccount.address,
         typedDataV1,
-        'V1'
+        SignTypedDataVersion.V1
       );
 
       expect(signature).toBeDefined();
@@ -203,7 +203,7 @@ describe('Ethereum Transactions', () => {
       const signature = await keyringManager.ethereumTransaction.signTypedData(
         keyringManager.getActiveAccount().activeAccount.address,
         typedDataV3V4,
-        'V3'
+        SignTypedDataVersion.V3
       );
 
       expect(signature).toBeDefined();
@@ -214,7 +214,7 @@ describe('Ethereum Transactions', () => {
       const signature = await keyringManager.ethereumTransaction.signTypedData(
         keyringManager.getActiveAccount().activeAccount.address,
         typedDataV3V4,
-        'V4'
+        SignTypedDataVersion.V4
       );
 
       expect(signature).toBeDefined();
@@ -227,7 +227,7 @@ describe('Ethereum Transactions', () => {
       const recovered = keyringManager.ethereumTransaction.verifyTypedSignature(
         typedDataV1,
         signature,
-        'V1'
+        SignTypedDataVersion.V1
       );
 
       expect(recovered.toLowerCase()).toBe(
@@ -254,11 +254,11 @@ describe('Ethereum Transactions', () => {
       expect(encryptionPublicKey).toBeDefined();
 
       // Use eth-sig-util to encrypt the message
-      const encryptedData = encrypt(
-        encryptionPublicKey,
-        { data: originalMessage },
-        'x25519-xsalsa20-poly1305'
-      );
+      const encryptedData = encrypt({
+        publicKey: encryptionPublicKey,
+        data: originalMessage,
+        version: 'x25519-xsalsa20-poly1305',
+      });
 
       // Convert encrypted data to the hex format that decryptMessage expects
       const encryptedHex = Buffer.from(JSON.stringify(encryptedData)).toString(

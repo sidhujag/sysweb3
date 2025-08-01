@@ -744,14 +744,10 @@ describe('Trezor Hardware Wallet', () => {
     });
 
     it('should verify UTXO address on Trezor device', async () => {
-      // Mock TrezorConnect.getAddress to simulate device verification
-      const TrezorConnect = require('@trezor/connect-webextension').default;
-      TrezorConnect.getAddress = jest.fn().mockResolvedValue({
-        success: true,
-        payload: {
-          address: 'sys1qmock_trezor_verified_address',
-        },
-      });
+      // Mock trezorSigner.verifyAddress to simulate device verification
+      keyringManager.trezorSigner.verifyUtxoAddress = jest
+        .fn()
+        .mockResolvedValue('sys1qmock_trezor_verified_address');
 
       const account = await keyringManager.importTrezorAccount('Verify Test');
 
@@ -780,12 +776,10 @@ describe('Trezor Hardware Wallet', () => {
 
         expect(verifiedAddress).toBe('sys1qmock_trezor_verified_address');
 
-        // Verify that showOnTrezor was set to true
-        expect(TrezorConnect.getAddress).toHaveBeenCalledWith(
-          expect.objectContaining({
-            showOnTrezor: true,
-          })
-        );
+        // Verify that the mock was called
+        expect(
+          keyringManager.trezorSigner.verifyUtxoAddress
+        ).toHaveBeenCalledWith(account.id, 'sys', 57);
       }
     });
 

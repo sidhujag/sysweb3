@@ -306,6 +306,11 @@ jest.mock('syscoinjs-lib', () => {
         psbt: 'mocked_spt_psbt',
         fee: 0.0001,
       }),
+      send: jest.fn().mockResolvedValue({
+        extractTransaction: jest.fn().mockReturnValue({
+          getId: jest.fn().mockReturnValue('mock_transaction_id'),
+        }),
+      }),
     })),
   };
 });

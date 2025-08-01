@@ -1,4 +1,10 @@
 /* eslint-disable camelcase */
+import {
+  TypedDataUtils,
+  TypedMessage,
+  SignTypedDataVersion,
+  TypedDataV1,
+} from '@metamask/eth-sig-util';
 import TrezorConnect, {
   AccountInfo,
   DEVICE_EVENT,
@@ -10,7 +16,6 @@ import { address } from '@trezor/utxo-lib';
 import bitcoinops from 'bitcoin-ops';
 import { Transaction, payments, script } from 'bitcoinjs-lib';
 import { Buffer } from 'buffer';
-import { TypedDataUtils, TypedMessage, Version } from 'eth-sig-util';
 import { stripHexPrefix } from 'ethereumjs-util';
 
 import {
@@ -800,21 +805,15 @@ export class TrezorKeyring {
 
   private _transformTypedData = <T extends MessageTypes>(
     data: TypedMessage<T>,
-    metamask_v4_compat: boolean
+    version: SignTypedDataVersion
   ) => {
-    if (!metamask_v4_compat) {
-      throw new Error(
-        'Trezor: Only version 4 of typed data signing is supported'
-      );
-    }
-
     const { types, primaryType, domain, message } = this._sanitizeData(data);
 
     const domainSeparatorHash = TypedDataUtils.hashStruct(
       'EIP712Domain',
       this._sanitizeData(domain),
       types,
-      true
+      version as SignTypedDataVersion.V3 | SignTypedDataVersion.V4
     ).toString('hex');
 
     let messageHash: string | null = null;
@@ -824,7 +823,7 @@ export class TrezorKeyring {
         primaryType as string,
         this._sanitizeData(message),
         types,
-        true
+        version as SignTypedDataVersion.V3 | SignTypedDataVersion.V4
       ).toString('hex');
     }
 
@@ -845,9 +844,9 @@ export class TrezorKeyring {
     index,
   }: {
     address: string;
-    data: any;
+    data: TypedMessage<any> | TypedDataV1;
     index: number;
-    version: Version;
+    version: SignTypedDataVersion;
   }) {
     return this.executeWithRetry(async () => {
       // Wait between popups
@@ -856,7 +855,17 @@ export class TrezorKeyring {
       this.setHdPath('eth', index, 60);
       // Use dynamic path generation for ETH (EVM) - typed data is only used for EVM
 
-      const dataWithHashes = this._transformTypedData(data, version === 'V4');
+      // V1 typed data is not supported by hardware wallets
+      if (version === SignTypedDataVersion.V1) {
+        throw new Error(
+          'Trezor: V1 typed data signing is not supported. Please use V3 or V4.'
+        );
+      }
+
+      const dataWithHashes = this._transformTypedData(
+        data as TypedMessage<any>,
+        version
+      );
 
       // set default values for signTypedData
       // Trezor is stricter than @metamask/eth-sig-util in what it accepts
@@ -884,7 +893,7 @@ export class TrezorKeyring {
           domain,
           primaryType: primaryType as any,
         },
-        metamask_v4_compat: true,
+        metamask_v4_compat: version === SignTypedDataVersion.V4,
         // Trezor 1 only supports blindly signing hashes
         domain_separator_hash,
         message_hash: message_hash ? message_hash : '',

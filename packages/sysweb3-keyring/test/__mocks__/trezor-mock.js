@@ -1,7 +1,8 @@
 // Mock for TrezorConnect
+// Define a complete mock to prevent "main.send is not a function" errors
 const TrezorConnect = {
-  manifest: () => {},
-  init: () => Promise.resolve({ success: true }),
+  manifest: jest.fn(),
+  init: jest.fn(() => Promise.resolve({ success: true })),
   getDeviceId: () =>
     Promise.resolve({ success: true, payload: { deviceId: 'mock-device-id' } }),
   getPublicKey: () =>
@@ -18,10 +19,26 @@ const TrezorConnect = {
       success: true,
       payload: { address: '0x1234567890123456789012345678901234567890' },
     }),
+  getAddress: () =>
+    Promise.resolve({
+      success: true,
+      payload: { 
+        address: 'sys1qmock_trezor_verified_address',
+        path: "m/44'/57'/0'/0/0"
+      },
+    }),
   signTransaction: () =>
     Promise.resolve({
       success: true,
       payload: { signedTransaction: '0xsigned' },
+    }),
+  ethereumSignTypedData: () =>
+    Promise.resolve({
+      success: true,
+      payload: { 
+        signature: '0xmocked_typed_data_signature',
+        address: '0x1234567890123456789012345678901234567890'
+      },
     }),
   getAccountInfo: () =>
     Promise.resolve({
@@ -39,9 +56,10 @@ const TrezorConnect = {
         },
       },
     }),
-  on: () => {},
-  off: () => {},
-  removeAllListeners: () => {},
+  on: jest.fn(),
+  off: jest.fn(),
+  removeAllListeners: jest.fn(),
+  dispose: jest.fn(() => Promise.resolve()),
   DEVICE_EVENT: 'DEVICE_EVENT',
   DEVICE: {
     CONNECT: 'device-connect',

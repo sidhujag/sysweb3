@@ -1,4 +1,16 @@
 import { TransactionResponse } from '@ethersproject/abstract-provider';
+import {
+  concatSig,
+  decrypt,
+  signTypedData as signTypedDataUtil,
+  TypedMessage,
+  SignTypedDataVersion,
+  TypedDataV1,
+  getEncryptionPublicKey,
+  recoverPersonalSignature,
+  recoverTypedSignature,
+  EthEncryptedData,
+} from '@metamask/eth-sig-util';
 import { INetwork, INetworkType } from '@sidhujag/sysweb3-network';
 import {
   createContractUsingAbi,
@@ -7,19 +19,6 @@ import {
   getErc55Abi,
 } from '@sidhujag/sysweb3-utils';
 import { EthereumTransactionEIP1559 } from '@trezor/connect-web';
-import {
-  concatSig,
-  decrypt,
-  SignedMsgParams,
-  signTypedMessage,
-  TypedMessage,
-  Version,
-  TypedData,
-  getEncryptionPublicKey,
-  recoverPersonalSignature,
-  recoverTypedMessage,
-  EthEncryptedData,
-} from 'eth-sig-util';
 import {
   ecsign,
   toBuffer,
@@ -150,8 +149,8 @@ export class EthereumTransactions implements IEthereumTransactions {
 
   signTypedData = async (
     addr: string,
-    typedData: TypedData | TypedMessage<any>,
-    version: Version
+    typedData: TypedDataV1 | TypedMessage<any>,
+    version: SignTypedDataVersion
   ) => {
     const { address, decryptedPrivateKey } = this.getDecryptedPrivateKey();
     const { activeAccountType, accounts, activeAccountId } = this.getState();
@@ -164,14 +163,18 @@ export class EthereumTransactions implements IEthereumTransactions {
       };
     }
 
-    const signTypedData = () => {
+    const signTypedDataLocal = () => {
       if (addr.toLowerCase() !== address.toLowerCase())
         throw {
           message: 'Decrypting for wrong address, change activeAccount maybe',
         };
 
       const privKey = Buffer.from(stripHexPrefix(decryptedPrivateKey), 'hex');
-      return signTypedMessage(privKey, { data: typedData }, version);
+      return signTypedDataUtil({
+        privateKey: privKey,
+        data: typedData as any,
+        version,
+      });
     };
 
     const signTypedDataWithLedger = async () => {
@@ -205,21 +208,17 @@ export class EthereumTransactions implements IEthereumTransactions {
       case KeyringAccountType.Ledger:
         return await signTypedDataWithLedger();
       default:
-        return signTypedData();
+        return signTypedDataLocal();
     }
   };
 
   verifyTypedSignature = (
-    data: TypedData | TypedMessage<any>,
+    data: TypedDataV1 | TypedMessage<any>,
     signature: string,
-    version: Version
+    version: SignTypedDataVersion
   ) => {
     try {
-      const msgParams: SignedMsgParams<TypedData | TypedMessage<any>> = {
-        data,
-        sig: signature,
-      };
-      return recoverTypedMessage(msgParams, version);
+      return recoverTypedSignature({ data: data as any, signature, version });
     } catch (error) {
       throw error;
     }
@@ -439,11 +438,11 @@ export class EthereumTransactions implements IEthereumTransactions {
 
   verifyPersonalMessage = (message: string, sign: string) => {
     try {
-      const msgParams: SignedMsgParams<string> = {
+      const msgParams = {
         data: message,
-        sig: sign,
+        signature: sign,
       };
-      return recoverPersonalSignature(msgParams);
+      return recoverPersonalSignature(msgParams as any);
     } catch (error) {
       throw error;
     }
@@ -477,7 +476,10 @@ export class EthereumTransactions implements IEthereumTransactions {
     try {
       const buff = Buffer.from(encryptedData, 'hex');
       const cleanData: EthEncryptedData = JSON.parse(buff.toString('utf8'));
-      const sig = decrypt(cleanData, stripHexPrefix(decryptedPrivateKey));
+      const sig = decrypt({
+        encryptedData: cleanData,
+        privateKey: stripHexPrefix(decryptedPrivateKey),
+      });
       return sig;
     } catch (error) {
       throw error;

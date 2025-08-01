@@ -11,7 +11,12 @@ import {
 import { fromBase58 } from '@trezor/utxo-lib/lib/bip32';
 import { IEvmMethods, IUTXOMethods, MessageTypes } from './types';
 import LedgerEthClient, { ledgerService } from '@ledgerhq/hw-app-eth';
-import { TypedDataUtils, TypedMessage, Version } from 'eth-sig-util';
+import {
+  TypedDataUtils,
+  TypedMessage,
+  SignTypedDataVersion,
+  TypedDataV1,
+} from '@metamask/eth-sig-util';
 import {
   getAccountDerivationPath,
   getAddressDerivationPath,
@@ -237,21 +242,15 @@ export class LedgerKeyring {
 
   private transformTypedData = <T extends MessageTypes>(
     data: TypedMessage<T>,
-    metamaskV4Compat: boolean
+    version: SignTypedDataVersion
   ) => {
-    if (!metamaskV4Compat) {
-      throw new Error(
-        'Ledger: Only version 4 of typed data signing is supported'
-      );
-    }
-
     const { types, primaryType, domain, message } = this.sanitizeData(data);
 
     const domainSeparatorHash = TypedDataUtils.hashStruct(
       'EIP712Domain',
       this.sanitizeData(domain),
       types,
-      true
+      version as SignTypedDataVersion.V3 | SignTypedDataVersion.V4
     ).toString('hex');
 
     let messageHash: string | null = null;
@@ -261,7 +260,7 @@ export class LedgerKeyring {
         primaryType as string,
         this.sanitizeData(message),
         types,
-        true
+        version as SignTypedDataVersion.V3 | SignTypedDataVersion.V4
       ).toString('hex');
     }
 
@@ -292,12 +291,23 @@ export class LedgerKeyring {
     accountIndex,
   }: {
     accountIndex: number;
-    data: any;
-    version: Version;
+    data: TypedMessage<any> | TypedDataV1;
+    version: SignTypedDataVersion;
   }) => {
     return this.executeWithRetry(async () => {
       this.setHdPath('eth', accountIndex, 60);
-      const dataWithHashes = this.transformTypedData(data, version === 'V4');
+
+      // V1 typed data is not supported by hardware wallets
+      if (version === SignTypedDataVersion.V1) {
+        throw new Error(
+          'Ledger: V1 typed data signing is not supported. Please use V3 or V4.'
+        );
+      }
+
+      const dataWithHashes = this.transformTypedData(
+        data as TypedMessage<any>,
+        version
+      );
 
       const { domain_separator_hash, message_hash } = dataWithHashes;
 

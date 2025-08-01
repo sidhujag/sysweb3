@@ -1,7 +1,11 @@
 import { TransactionResponse } from '@ethersproject/abstract-provider';
+import {
+  TypedDataV1,
+  TypedMessage,
+  SignTypedDataVersion,
+} from '@metamask/eth-sig-util';
 import { INetwork, INetworkType } from '@sidhujag/sysweb3-network';
 import { ITxid } from '@sidhujag/sysweb3-utils';
-import { TypedData, TypedMessage } from 'eth-sig-util';
 import { ethers, BigNumber, BigNumberish } from 'ethers';
 import { CustomJsonRpcProvider, CustomL2JsonRpcProvider } from 'providers';
 
@@ -41,7 +45,7 @@ export type SimpleTransactionRequest = {
   value?: ethers.BigNumberish;
 };
 
-export declare type Version = 'V1' | 'V2' | 'V3' | 'V4';
+// Version type is now replaced by SignTypedDataVersion from @metamask/eth-sig-util
 
 export interface IEthereumTransactions {
   cancelSentTransaction: (
@@ -68,8 +72,8 @@ export interface IEthereumTransactions {
   getRecommendedNonce: (address: string) => Promise<number>;
   signTypedData: (
     addr: string,
-    typedData: TypedData | TypedMessage<any>,
-    version: Version
+    typedData: TypedDataV1 | TypedMessage<any>,
+    version: SignTypedDataVersion
   ) => Promise<string>;
   sendTransaction: (data: ISendTransaction) => Promise<TransactionResponse>;
   importAccount: (mnemonicOrPrivKey: string) => ethers.Wallet;
@@ -115,9 +119,9 @@ export interface IEthereumTransactions {
 
   signPersonalMessage: (params: string[]) => Promise<string>;
   verifyTypedSignature: (
-    data: TypedData | TypedMessage<any>,
+    data: TypedDataV1 | TypedMessage<any>,
     signature: string,
-    version: Version
+    version: SignTypedDataVersion
   ) => string;
   setWeb3Provider: (network: INetwork) => void;
   getRecommendedGasPrice: (formatted?: boolean) => Promise<

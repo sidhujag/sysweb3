@@ -1,6 +1,6 @@
 {
   "name": "@sidhujag/sysweb3-keyring",
-  "version": "1.0.509",
+  "version": "1.0.510",
   "description": "Keyring Manager for UTXO and Web3 Wallets",
   "main": "cjs/index.js",
   "types": "types/index.d.ts",
@@ -49,7 +49,7 @@
     "crypto-js": "^4.1.1",
     "dotenv": "^16.4.5",
     "eth-json-rpc-filters": "^4.2.2",
-    "eth-sig-util": "^3.0.1",
+    "@metamask/eth-sig-util": "^8.2.0",
     "ethereumjs-util": "^7.1.5",
     "ethers": "^5.7.2",
     "ledger-bitcoin": "^0.2.3",
