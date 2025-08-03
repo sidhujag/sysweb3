@@ -89,9 +89,9 @@ describe('Import Validation - Integration Tests', () => {
           expect(validation.isValid).toBe(false);
           expect(validation.message).toContain('not compatible');
 
-          // The importAccount method throws a different but valid error when the key is rejected
+          // The importAccount method should throw the network mismatch error
           await expect(keyringManager.importAccount(vprv)).rejects.toThrow(
-            'Invalid private key format'
+            /not compatible|Network mismatch/
           );
         }
       });
@@ -207,6 +207,20 @@ describe('Import Validation - Integration Tests', () => {
           keyringManager.importAccount(corruptedZprv)
         ).rejects.toThrow();
       });
+
+      it('should reject EVM private keys on UTXO network', async () => {
+        const evmPrivateKeys = [
+          '0x4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318',
+          '4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318', // without 0x prefix
+          '0x1234567890123456789012345678901234567890123456789012345678901234',
+        ];
+
+        for (const evmKey of evmPrivateKeys) {
+          await expect(keyringManager.importAccount(evmKey)).rejects.toThrow(
+            'Cannot import EVM private key on UTXO network. Please switch to an EVM network first.'
+          );
+        }
+      });
     });
   });
 
@@ -298,7 +312,9 @@ describe('Import Validation - Integration Tests', () => {
       ];
 
       for (const zprv of zprvKeys) {
-        await expect(keyringManager.importAccount(zprv)).rejects.toThrow();
+        await expect(keyringManager.importAccount(zprv)).rejects.toThrow(
+          'Cannot import UTXO private key on EVM network. Please switch to a UTXO network (Bitcoin/Syscoin) first.'
+        );
       }
     });
   });

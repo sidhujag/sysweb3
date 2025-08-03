@@ -1,6 +1,6 @@
 {
   "name": "@sidhujag/sysweb3-keyring",
-  "version": "1.0.512",
+  "version": "1.0.513",
   "description": "Keyring Manager for UTXO and Web3 Wallets",
   "main": "cjs/index.js",
   "types": "types/index.d.ts",

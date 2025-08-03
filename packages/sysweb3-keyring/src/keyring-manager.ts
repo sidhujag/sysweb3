@@ -1816,7 +1816,17 @@ export class KeyringManager implements IKeyringManager {
     const networkToUse = vault.activeNetwork;
     const zprvValidation = this.validateZprv(privKey, networkToUse);
 
+    // Check if we're on an EVM network (slip44 = 60) or UTXO network
+    const isEvmNetwork = networkToUse.slip44 === 60;
+    const isUtxoNetwork = !isEvmNetwork;
+
     if (zprvValidation.isValid) {
+      // This is a valid UTXO extended private key
+      if (isEvmNetwork) {
+        throw new Error(
+          'Cannot import UTXO private key on EVM network. Please switch to a UTXO network (Bitcoin/Syscoin) first.'
+        );
+      }
       const { node, network } = zprvValidation;
 
       if (!node || !network) {
@@ -1870,7 +1880,46 @@ export class KeyringManager implements IKeyringManager {
         throw new Error(zprvValidation.message);
       }
 
+      // Check if it looks like an extended key that failed validation
+      const knownExtendedKeyPrefixes = [
+        'xprv',
+        'xpub',
+        'yprv',
+        'ypub',
+        'zprv',
+        'zpub',
+        'tprv',
+        'tpub',
+        'uprv',
+        'upub',
+        'vprv',
+        'vpub',
+      ];
+      const prefix = privKey.substring(0, 4);
+      const looksLikeExtendedKey = knownExtendedKeyPrefixes.includes(prefix);
+
+      if (looksLikeExtendedKey) {
+        // This looks like a UTXO extended key, but it failed validation
+        // Don't try to import it as an EVM key
+        if (isEvmNetwork) {
+          throw new Error(
+            'Cannot import UTXO private key on EVM network. Please switch to a UTXO network (Bitcoin/Syscoin) first.'
+          );
+        }
+        // For UTXO networks, throw the original validation error
+        throw new Error(
+          zprvValidation.message || 'Invalid extended private key'
+        );
+      }
+
       // If it's not an extended key, treat it as an Ethereum private key
+      // But first check if we're on an EVM network
+      if (isUtxoNetwork) {
+        throw new Error(
+          'Cannot import EVM private key on UTXO network. Please switch to an EVM network first.'
+        );
+      }
+
       const hexPrivateKey =
         privKey.slice(0, 2) === '0x' ? privKey : `0x${privKey}`;
 
