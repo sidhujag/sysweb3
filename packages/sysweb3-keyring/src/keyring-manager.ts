@@ -1,4 +1,7 @@
 import ecc from '@bitcoinerlab/secp256k1';
+import { isHexString } from '@ethersproject/bytes';
+import { HDNode } from '@ethersproject/hdnode';
+import { Wallet } from '@ethersproject/wallet';
 import * as sysweb3 from '@sidhujag/sysweb3-core';
 import {
   INetwork,
@@ -12,7 +15,6 @@ import * as bjs from 'bitcoinjs-lib';
 import bs58check from 'bs58check';
 import crypto from 'crypto';
 import CryptoJS from 'crypto-js';
-import { ethers } from 'ethers';
 import mapValues from 'lodash/mapValues';
 import omit from 'lodash/omit';
 import * as syscoinjs from 'syscoinjs-lib';
@@ -786,8 +788,8 @@ export class KeyringManager implements IKeyringManager {
 
   public importWeb3Account = (mnemonicOrPrivKey: string) => {
     // Check if it's a hex string (Ethereum private key)
-    if (ethers.utils.isHexString(mnemonicOrPrivKey)) {
-      return new ethers.Wallet(mnemonicOrPrivKey);
+    if (isHexString(mnemonicOrPrivKey)) {
+      return new Wallet(mnemonicOrPrivKey);
     }
 
     // Check if it's a zprv/tprv (Syscoin private key)
@@ -799,7 +801,7 @@ export class KeyringManager implements IKeyringManager {
     }
 
     // Otherwise, assume it's a mnemonic
-    const account = ethers.Wallet.fromMnemonic(mnemonicOrPrivKey);
+    const account = Wallet.fromMnemonic(mnemonicOrPrivKey);
 
     return account;
   };
@@ -907,8 +909,7 @@ export class KeyringManager implements IKeyringManager {
 
   public getNetwork = () => this.getVault().activeNetwork;
 
-  public createEthAccount = (privateKey: string) =>
-    new ethers.Wallet(privateKey);
+  public createEthAccount = (privateKey: string) => new Wallet(privateKey);
 
   // Helper to get current account data from backend
   private fetchCurrentAccountData = async (
@@ -1219,7 +1220,7 @@ export class KeyringManager implements IKeyringManager {
       // This helps catch account switching race conditions early
       if (this.getActiveChain() === INetworkType.Ethereum) {
         try {
-          const derivedWallet = new ethers.Wallet(decryptedPrivateKey);
+          const derivedWallet = new Wallet(decryptedPrivateKey);
           if (derivedWallet.address.toLowerCase() !== address.toLowerCase()) {
             throw new Error(
               `Address mismatch for account ${activeAccountType}:${activeAccountId}. Expected ${address} but derived ${derivedWallet.address}. Account switching may be in progress.`
@@ -1710,7 +1711,7 @@ export class KeyringManager implements IKeyringManager {
     try {
       // For account creation, derive from mnemonic (since account doesn't exist yet)
       const mnemonic = this.getDecryptedMnemonic();
-      const hdNode = ethers.utils.HDNode.fromMnemonic(mnemonic);
+      const hdNode = HDNode.fromMnemonic(mnemonic);
       const derivationPath = getAddressDerivationPath('eth', 60, 0, false, id);
       const derivedAccount = hdNode.derivePath(derivationPath);
 

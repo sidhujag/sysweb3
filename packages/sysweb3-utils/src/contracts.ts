@@ -1,4 +1,4 @@
-import { ethers, Contract, ContractInterface } from 'ethers';
+import { Contract, ContractInterface } from '@ethersproject/contracts';
 
 import abi55 from './abi/erc1155.json';
 import abi20 from './abi/erc20.json';
@@ -9,7 +9,7 @@ export const createContractUsingAbi = (
   AbiContract: ContractInterface,
   address: string,
   web3Provider: any
-): Contract => new ethers.Contract(String(address), AbiContract, web3Provider);
+): Contract => new Contract(String(address), AbiContract, web3Provider);
 
 export const isContractAddress = async (address: string, web3Provider: any) => {
   if (!address) return false;

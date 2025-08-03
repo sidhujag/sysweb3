@@ -1,5 +1,5 @@
+import { Wallet } from '@ethersproject/wallet';
 import { INetworkType } from '@sidhujag/sysweb3-network';
-import { ethers } from 'ethers';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
@@ -100,7 +100,7 @@ describe('KeyringManager - Key Derivation', () => {
       );
 
       // Verify it derives the correct address
-      const wallet = new ethers.Wallet(privateKey0);
+      const wallet = new Wallet(privateKey0);
       const account = keyringManager.getActiveAccount().activeAccount;
       expect(wallet.address.toLowerCase()).toBe(account.address.toLowerCase());
     });
@@ -438,7 +438,7 @@ describe('KeyringManager - Key Derivation', () => {
       expect(retrievedKey).toBe(privateKey);
 
       // Verify address matches the private key
-      const wallet = new ethers.Wallet(privateKey);
+      const wallet = new Wallet(privateKey);
       expect(imported.address.toLowerCase()).toBe(wallet.address.toLowerCase());
     });
 

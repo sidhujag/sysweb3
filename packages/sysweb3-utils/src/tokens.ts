@@ -1,6 +1,10 @@
+import {
+  Contract,
+  type ContractFunction,
+  type Event,
+} from '@ethersproject/contracts';
 import { retryableFetch } from '@sidhujag/sysweb3-network';
 import camelcaseKeys from 'camelcase-keys';
-import { ethers as ethersModule } from 'ethers';
 import * as sys from 'syscoinjs-lib';
 
 import { createContractUsingAbi } from '.';
@@ -8,12 +12,7 @@ import ABI1155 from './abi/erc1155.json';
 import abi20 from './abi/erc20.json';
 import ABI721 from './abi/erc721.json';
 
-import type {
-  Contract,
-  ContractFunction,
-  Event,
-} from '@ethersproject/contracts';
-import type { BaseProvider, JsonRpcProvider } from '@ethersproject/providers';
+import type { JsonRpcProvider } from '@ethersproject/providers';
 
 const COINGECKO_API = 'https://api.coingecko.com/api/v3';
 
@@ -117,12 +116,12 @@ export const url = async (
 export const fetchBalanceOfERC721Contract = async (
   contractAddress: string,
   address: string,
-  config: EthersFetcherConfigEthersLoaded
+  provider: JsonRpcProvider
 ): Promise<number | undefined> => {
-  const contract = new config.ethers.Contract(
+  const contract = new Contract(
     contractAddress,
     ABI721,
-    config.provider
+    provider
   ) as NftContract;
 
   const fetchBalanceOfValue = await contract.balanceOf(address);
@@ -133,13 +132,13 @@ export const fetchBalanceOfERC721Contract = async (
 export const fetchBalanceOfERC1155Contract = async (
   contractAddress: string,
   address: string,
-  config: EthersFetcherConfigEthersLoaded,
+  provider: JsonRpcProvider,
   tokenId: number
 ): Promise<number | undefined> => {
-  const contract = new config.ethers.Contract(
+  const contract = new Contract(
     contractAddress,
     ABI1155,
-    config.provider
+    provider
   ) as NftContract;
 
   const fetchBalanceOfValue = await contract.balanceOf(address, tokenId);
@@ -154,13 +153,10 @@ export const getERC1155StandardBalance = async (
   tokenId: number
 ) => {
   try {
-    const config = { provider, ethers: ethersModule };
-    const loaded = await loadEthers(config);
-
     return await fetchBalanceOfERC1155Contract(
       contractAddress,
       address,
-      loaded,
+      provider,
       tokenId
     );
   } catch (error) {
@@ -176,10 +172,11 @@ export const getERC721StandardBalance = async (
   provider: JsonRpcProvider
 ) => {
   try {
-    const config = { provider, ethers: ethersModule };
-    const loaded = await loadEthers(config);
-
-    return await fetchBalanceOfERC721Contract(contractAddress, address, loaded);
+    return await fetchBalanceOfERC721Contract(
+      contractAddress,
+      address,
+      provider
+    );
   } catch (error) {
     throw new Error(
       `Verify current network or the contract address. Set the same network of token contract. ${error}`
@@ -189,7 +186,7 @@ export const getERC721StandardBalance = async (
 
 export const fetchStandardNftContractData = async (
   contractAddress: Address,
-  config: EthersFetcherConfigEthersLoaded
+  provider: JsonRpcProvider
 ): Promise<NftMetadata> => {
   // First try to determine the contract type
   let contractType = 'UNKNOWN';
@@ -197,10 +194,10 @@ export const fetchStandardNftContractData = async (
 
   try {
     // Try ERC-721 first
-    const erc721Contract = new config.ethers.Contract(
+    const erc721Contract = new Contract(
       contractAddress,
       ABI721,
-      config.provider
+      provider
     ) as NftContract;
 
     // Check if it supports ERC-721 interface
@@ -210,10 +207,10 @@ export const fetchStandardNftContractData = async (
       contract = erc721Contract;
     } else {
       // Try ERC-1155
-      const erc1155Contract = new config.ethers.Contract(
+      const erc1155Contract = new Contract(
         contractAddress,
         ABI1155,
-        config.provider
+        provider
       ) as NftContract;
 
       const isERC1155 = await erc1155Contract.supportsInterface('0xd9b67a26');
@@ -227,10 +224,10 @@ export const fetchStandardNftContractData = async (
   } catch (error) {
     // If supportsInterface fails, try to detect by calling methods
     // This is a fallback for contracts that don't implement ERC-165
-    contract = new config.ethers.Contract(
+    contract = new Contract(
       contractAddress,
       [...ABI721, ...ABI1155], // Combined ABI
-      config.provider
+      provider
     ) as NftContract;
   }
 
@@ -294,12 +291,12 @@ export const cleanTokenSymbol = (symbol: string): string => {
 export const fetchStandardTokenContractData = async (
   contractAddress: Address,
   address: Address,
-  config: EthersFetcherConfigEthersLoaded
+  provider: JsonRpcProvider
 ): Promise<{ balance: number; decimals: number; tokenSymbol: string }> => {
-  const contract = new config.ethers.Contract(
+  const contract = new Contract(
     contractAddress,
     ERC20ABI,
-    config.provider
+    provider
   ) as TokenContract;
 
   const [balance, decimals, symbol] = await Promise.all([
@@ -313,30 +310,6 @@ export const fetchStandardTokenContractData = async (
     decimals,
     tokenSymbol: cleanTokenSymbol(symbol),
   };
-};
-
-const ETHERS_NOT_FOUND = `Ethers couldn't be imported. Please add the ethers module to your project dependencies, or inject it in the Ethers fetcher options.`;
-
-export const loadEthers = async (
-  config: EthersFetcherConfig
-): Promise<EthersFetcherConfigEthersLoaded> => {
-  if (config.ethers.Contract) {
-    return config as EthersFetcherConfigEthersLoaded;
-  }
-
-  try {
-    const ethers = await Promise.resolve()
-      .then(() => import('@ethersproject/contracts'))
-      .then((m) => (m.default ? m.default : m));
-
-    if (!ethers.Contract) {
-      throw new Error();
-    }
-
-    return { ...config, ethers };
-  } catch (error) {
-    throw new Error(ETHERS_NOT_FOUND);
-  }
 };
 
 export const fixIncorrectImageField = (
@@ -466,13 +439,10 @@ export const getTokenStandardMetadata = async (
   provider: JsonRpcProvider
 ) => {
   try {
-    const config = { provider, ethers: ethersModule };
-    const loaded = await loadEthers(config);
-
     return await fetchStandardTokenContractData(
       contractAddress,
       address,
-      loaded
+      provider
     );
   } catch (error) {
     throw new Error(
@@ -486,10 +456,7 @@ export const getNftStandardMetadata = async (
   provider: JsonRpcProvider
 ) => {
   try {
-    const config = { provider, ethers: ethersModule };
-    const loaded = await loadEthers(config);
-
-    return await fetchStandardNftContractData(contractAddress, loaded);
+    return await fetchStandardNftContractData(contractAddress, provider);
   } catch (error) {
     // Check if it's a network error
     if (error?.code === 'CALL_EXCEPTION' || error?.code === 'NETWORK_ERROR') {
@@ -932,24 +899,6 @@ export type IAddressMap = {
       value: number;
     }
   ];
-};
-
-export type EthersContract = typeof Contract;
-
-export type EthersFetcherConfig = {
-  ethers: { Contract: EthersContract };
-  provider: BaseProvider | JsonRpcProvider;
-};
-
-export type EthersFetcherConfigEthersLoaded = EthersFetcherConfig & {
-  ethers: { Contract: EthersContract };
-};
-
-export type EthereumProviderEip1193 = {
-  request: (args: {
-    method: string;
-    params?: unknown[] | Record<string, unknown>;
-  }) => Promise<unknown>;
 };
 
 export type Address = string;

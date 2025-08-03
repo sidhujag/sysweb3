@@ -1,5 +1,5 @@
+import { hexlify } from '@ethersproject/bytes';
 import { Chain, chains } from 'eth-chains';
-import { hexlify } from 'ethers/lib/utils';
 
 import { findCoin } from './coin-utils';
 // import fetch from "node-fetch";

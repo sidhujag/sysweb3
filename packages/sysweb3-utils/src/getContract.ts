@@ -1,4 +1,4 @@
-import * as ethers from 'ethers';
+import { Contract } from '@ethersproject/contracts';
 
 import erc1155Abi from './abi/erc1155.json';
 import erc20Abi from './abi/erc20.json';
@@ -9,7 +9,7 @@ export const getContractType = async (
   web3Provider: any
 ): Promise<ISupportsInterfaceProps | undefined> => {
   try {
-    const contractERC721 = new ethers.Contract(
+    const contractERC721 = new Contract(
       contractAddress,
       erc721Abi,
       web3Provider
@@ -25,7 +25,7 @@ export const getContractType = async (
     throw new Error('ERC-721');
   } catch (e) {
     try {
-      const contractERC1155 = new ethers.Contract(
+      const contractERC1155 = new Contract(
         contractAddress,
         erc1155Abi,
         web3Provider
@@ -39,7 +39,7 @@ export const getContractType = async (
       throw new Error('ERC-1155');
     } catch (e) {
       try {
-        const contractERC20 = new ethers.Contract(
+        const contractERC20 = new Contract(
           contractAddress,
           erc20Abi,
           web3Provider

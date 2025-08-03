@@ -1,5 +1,7 @@
-import { logger } from 'ethers';
-import { Logger, isHexString } from 'ethers/lib/utils';
+import { isHexString } from '@ethersproject/bytes';
+import { Logger } from '@ethersproject/logger';
+
+const logger = new Logger('utils');
 
 const errorGas = ['call', 'estimateGas'];
 

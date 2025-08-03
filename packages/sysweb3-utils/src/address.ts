@@ -1,11 +1,10 @@
+import { isAddress } from '@ethersproject/address';
 import { findCoin } from '@sidhujag/sysweb3-network';
 import { bech32 } from 'bech32';
-import { ethers } from 'ethers';
 
 import { isContractAddress } from '.';
 
-export const isValidEthereumAddress = (address: string) =>
-  ethers.utils.isAddress(address);
+export const isValidEthereumAddress = (address: string) => isAddress(address);
 
 //TODO: this function needs to be refactorated to validate with descriptors in mind
 export const isValidSYSAddress = (

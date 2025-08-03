@@ -1,4 +1,8 @@
 import { TransactionResponse } from '@ethersproject/abstract-provider';
+import { BigNumber, BigNumberish } from '@ethersproject/bignumber';
+import { BytesLike } from '@ethersproject/bytes';
+import { AccessListish } from '@ethersproject/transactions';
+import { Wallet } from '@ethersproject/wallet';
 import {
   TypedDataV1,
   TypedMessage,
@@ -6,7 +10,6 @@ import {
 } from '@metamask/eth-sig-util';
 import { INetwork, INetworkType } from '@sidhujag/sysweb3-network';
 import { ITxid } from '@sidhujag/sysweb3-utils';
-import { ethers, BigNumber, BigNumberish } from 'ethers';
 import { CustomJsonRpcProvider, CustomL2JsonRpcProvider } from 'providers';
 
 import { LedgerKeyring } from './ledger';
@@ -22,27 +25,27 @@ export interface ISendTransaction {
   token?: any;
 }
 export type SimpleTransactionRequest = {
-  accessList?: ethers.utils.AccessListish;
+  accessList?: AccessListish;
   ccipReadEnabled?: boolean;
   chainId: number;
   customData?: Record<string, any>;
-  data?: ethers.BytesLike;
+  data?: BytesLike;
 
   from: string;
-  gasLimit?: ethers.BigNumberish;
-  gasPrice?: ethers.BigNumberish;
+  gasLimit?: BigNumberish;
+  gasPrice?: BigNumberish;
 
-  maxFeePerGas: ethers.BigNumberish;
-  maxPriorityFeePerGas: ethers.BigNumberish;
+  maxFeePerGas: BigNumberish;
+  maxPriorityFeePerGas: BigNumberish;
 
-  nonce?: ethers.BigNumberish;
+  nonce?: BigNumberish;
   r?: string;
 
   s?: string;
   to: string;
   type?: number;
   v?: string;
-  value?: ethers.BigNumberish;
+  value?: BigNumberish;
 };
 
 // Version type is now replaced by SignTypedDataVersion from @metamask/eth-sig-util
@@ -76,7 +79,7 @@ export interface IEthereumTransactions {
     version: SignTypedDataVersion
   ) => Promise<string>;
   sendTransaction: (data: ISendTransaction) => Promise<TransactionResponse>;
-  importAccount: (mnemonicOrPrivKey: string) => ethers.Wallet;
+  importAccount: (mnemonicOrPrivKey: string) => Wallet;
   parsePersonalMessage: (hexMsg: string) => string;
   sendFormattedTransaction: (
     params: SimpleTransactionRequest,
@@ -93,7 +96,7 @@ export interface IEthereumTransactions {
     maxPriorityFeePerGas,
   }: ISendSignedErcTransactionProps) => Promise<IResponseFromSendErcSignedTransaction>;
   verifyPersonalMessage: (msg: string, sign: string) => string;
-  toBigNumber: (aBigNumberish: string | number) => ethers.BigNumber;
+  toBigNumber: (aBigNumberish: string | number) => BigNumber;
   sendSignedErc20Transaction: ({
     networkUrl,
     receiver,
@@ -132,7 +135,7 @@ export interface IEthereumTransactions {
       }
   >;
   web3Provider: CustomJsonRpcProvider | CustomL2JsonRpcProvider;
-  getTxGasLimit: (tx: SimpleTransactionRequest) => Promise<ethers.BigNumber>;
+  getTxGasLimit: (tx: SimpleTransactionRequest) => Promise<BigNumber>;
 }
 
 export interface ISyscoinTransactions {

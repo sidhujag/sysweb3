@@ -79,7 +79,7 @@ process.env.SEED_SWALLOW_HEALTH =
 // Mock the providers module
 jest.mock('../../src/providers', () => ({
   CustomJsonRpcProvider: jest.fn().mockImplementation((_signal, _url) => {
-    const { ethers } = jest.requireActual('ethers');
+    const { BigNumber } = jest.requireActual('@ethersproject/bignumber');
 
     // Determine chainId based on URL
     let chainId = 57; // Default Syscoin mainnet
@@ -122,12 +122,10 @@ jest.mock('../../src/providers', () => ({
       getNetwork: jest.fn().mockResolvedValue({ chainId, name }),
       getBalance: jest
         .fn()
-        .mockResolvedValue(ethers.BigNumber.from('1000000000000000000')),
+        .mockResolvedValue(BigNumber.from('1000000000000000000')),
       getCode: jest.fn().mockResolvedValue('0x'),
-      estimateGas: jest.fn().mockResolvedValue(ethers.BigNumber.from('21000')),
-      getGasPrice: jest
-        .fn()
-        .mockResolvedValue(ethers.BigNumber.from('20000000000')),
+      estimateGas: jest.fn().mockResolvedValue(BigNumber.from('21000')),
+      getGasPrice: jest.fn().mockResolvedValue(BigNumber.from('20000000000')),
       getTransactionCount: jest.fn().mockResolvedValue(0),
       sendTransaction: jest.fn().mockResolvedValue({
         hash: '0x1234567890123456789012345678901234567890123456789012345678901234',
@@ -141,9 +139,9 @@ jest.mock('../../src/providers', () => ({
       getBlock: jest.fn().mockResolvedValue({
         number: 12345,
         timestamp: Math.floor(Date.now() / 1000),
-        baseFeePerGas: ethers.BigNumber.from('20000000000'),
-        gasLimit: ethers.BigNumber.from('30000000'),
-        gasUsed: ethers.BigNumber.from('21000'),
+        baseFeePerGas: BigNumber.from('20000000000'),
+        gasLimit: BigNumber.from('30000000'),
+        gasUsed: BigNumber.from('21000'),
         transactions: [],
         hash: '0x1234567890123456789012345678901234567890123456789012345678901234',
       }),
@@ -158,11 +156,11 @@ jest.mock('../../src/providers', () => ({
         from: '0x1234567890123456789012345678901234567890',
         to: '0x0987654321098765432109876543210987654321',
         nonce: 0,
-        gasLimit: ethers.BigNumber.from('21000'),
-        gasPrice: ethers.BigNumber.from('20000000000'),
-        maxFeePerGas: ethers.BigNumber.from('40000000000'),
-        maxPriorityFeePerGas: ethers.BigNumber.from('2000000000'),
-        value: ethers.BigNumber.from('0'),
+        gasLimit: BigNumber.from('21000'),
+        gasPrice: BigNumber.from('20000000000'),
+        maxFeePerGas: BigNumber.from('40000000000'),
+        maxPriorityFeePerGas: BigNumber.from('2000000000'),
+        value: BigNumber.from('0'),
         chainId: 1,
         wait: jest.fn().mockResolvedValue({ status: 1 }),
       }),
@@ -188,7 +186,7 @@ jest.mock('../../src/providers', () => ({
           blockNumber: 12345,
           blockHash:
             '0x1234567890123456789012345678901234567890123456789012345678901234',
-          gasUsed: ethers.BigNumber.from('21000'),
+          gasUsed: BigNumber.from('21000'),
         });
       }),
       getResolver: jest.fn().mockResolvedValue(null),
@@ -440,12 +438,12 @@ global.createMockVaultState = (options = {}) => {
   let address, xpub, xprv;
   if (networkType === INetworkType.Ethereum) {
     // Derive real EVM address from test seed
-    const { ethers } = jest.requireActual('ethers');
+    const { HDNode } = jest.requireActual('@ethersproject/hdnode');
     const { getAddressDerivationPath } = jest.requireActual(
       '../../src/utils/derivation-paths'
     );
 
-    const hdNode = ethers.utils.HDNode.fromMnemonic(testSeedPhrase);
+    const hdNode = HDNode.fromMnemonic(testSeedPhrase);
     const ethDerivationPath = getAddressDerivationPath(
       'eth',
       60,

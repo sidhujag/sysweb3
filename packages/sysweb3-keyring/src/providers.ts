@@ -1,12 +1,18 @@
+import { BigNumber } from '@ethersproject/bignumber';
+import { Logger } from '@ethersproject/logger';
 import { Networkish } from '@ethersproject/networks';
-import { BigNumber, ethers, logger } from 'ethers';
-import { ConnectionInfo, Logger, shallowCopy } from 'ethers/lib/utils';
-import { Provider } from 'zksync-ethers';
+import { shallowCopy } from '@ethersproject/properties';
+import { JsonRpcProvider } from '@ethersproject/providers';
 
 import { handleStatusCodeError } from './errorUtils';
 import { checkError } from './utils';
 
-class BaseProvider extends ethers.providers.JsonRpcProvider {
+const logger = new Logger('sysweb3-keyring/providers');
+
+// Type definition for zksync-ethers Provider to avoid direct import
+type ZkSyncProvider = any;
+
+class BaseProvider extends JsonRpcProvider {
   private isPossibleGetChainId = true;
   private cooldownTime = 120 * 1000;
   private rateLimit = 30;
@@ -27,7 +33,7 @@ class BaseProvider extends ethers.providers.JsonRpcProvider {
 
   constructor(
     signal: AbortSignal,
-    url?: ConnectionInfo | string,
+    url?: string | { url: string },
     network?: Networkish
   ) {
     super(url, network);
@@ -293,34 +299,47 @@ class BaseProvider extends ethers.providers.JsonRpcProvider {
 export class CustomJsonRpcProvider extends BaseProvider {
   constructor(
     signal: AbortSignal,
-    url?: ConnectionInfo | string,
+    url?: string | { url: string },
     network?: Networkish
   ) {
     super(signal, url, network);
   }
 }
 
-export class CustomL2JsonRpcProvider extends Provider {
-  private baseProvider: BaseProvider;
+// CustomL2JsonRpcProvider extends BaseProvider to provide all standard provider methods
+export class CustomL2JsonRpcProvider extends BaseProvider {
+  private zkSyncProvider: ZkSyncProvider | null = null;
 
   constructor(
     signal: AbortSignal,
-    url?: ConnectionInfo | string,
-    network?: ethers.providers.Networkish
+    url?: string | { url: string },
+    network?: Networkish
   ) {
-    super(url, network);
-    this.baseProvider = new BaseProvider(signal, url, network);
+    super(signal, url, network);
   }
 
-  perform(method: string, params: any) {
-    return this.baseProvider.perform(method, params);
+  // Lazy initialization of zkSync provider
+  private async initializeZkSyncProvider(): Promise<void> {
+    if (!this.zkSyncProvider) {
+      // Dynamic import creates a separate chunk for zksync-ethers
+      // webpack magic comment for chunk naming
+      const { Provider } = await import(
+        /* webpackChunkName: "zksync-provider" */ 'zksync-ethers'
+      );
+      this.zkSyncProvider = new Provider(this.connection.url, this.network);
+    }
   }
 
-  send(method: string, params: any[]) {
-    return this.baseProvider.send(method, params);
-  }
-
-  sendBatch(method: string, params: Array<any[]>): Promise<any[]> {
-    return this.baseProvider.sendBatch(method, params);
+  // Override perform to handle zkSync-specific methods
+  async perform(method: string, params: any): Promise<any> {
+    // For zkSync-specific methods, ensure zkSync provider is initialized
+    if (method.startsWith('zks_') || method === 'eth_estimateGas') {
+      await this.initializeZkSyncProvider();
+      if (this.zkSyncProvider && this.zkSyncProvider.perform) {
+        return this.zkSyncProvider.perform(method, params);
+      }
+    }
+    // For all other methods, use the base provider
+    return super.perform(method, params);
   }
 }

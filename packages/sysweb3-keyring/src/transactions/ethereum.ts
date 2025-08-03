@@ -1,4 +1,21 @@
 import { TransactionResponse } from '@ethersproject/abstract-provider';
+import { BigNumber } from '@ethersproject/bignumber';
+import { isHexString } from '@ethersproject/bytes';
+import { Zero } from '@ethersproject/constants';
+import { Contract } from '@ethersproject/contracts';
+import { Deferrable } from '@ethersproject/properties';
+import {
+  TransactionRequest,
+  TransactionResponse as EthersTransactionResponse,
+} from '@ethersproject/providers';
+import { serialize as serializeTransaction } from '@ethersproject/transactions';
+import {
+  parseEther,
+  parseUnits,
+  formatEther,
+  formatUnits,
+} from '@ethersproject/units';
+import { Wallet } from '@ethersproject/wallet';
 import {
   concatSig,
   decrypt,
@@ -26,8 +43,6 @@ import {
   hashPersonalMessage,
   toAscii,
 } from 'ethereumjs-util';
-import { BigNumber, ethers } from 'ethers';
-import { Deferrable } from 'ethers/lib/utils';
 import omit from 'lodash/omit';
 
 import { LedgerKeyring } from '../ledger';
@@ -487,7 +502,7 @@ export class EthereumTransactions implements IEthereumTransactions {
   };
 
   toBigNumber = (aBigNumberish: string | number) =>
-    ethers.BigNumber.from(String(aBigNumberish));
+    BigNumber.from(String(aBigNumberish));
 
   getData = ({
     contractAddress,
@@ -527,10 +542,10 @@ export class EthereumTransactions implements IEthereumTransactions {
             'eth_maxPriorityFeePerGas',
             []
           );
-          maxPriorityFeePerGas = ethers.BigNumber.from(ethMaxPriorityFee);
+          maxPriorityFeePerGas = BigNumber.from(ethMaxPriorityFee);
           maxFeePerGas = block.baseFeePerGas.mul(2).add(maxPriorityFeePerGas);
         } catch (e) {
-          maxPriorityFeePerGas = ethers.BigNumber.from('1500000000');
+          maxPriorityFeePerGas = BigNumber.from('1500000000');
           maxFeePerGas = block.baseFeePerGas.mul(2).add(maxPriorityFeePerGas);
         }
         return { maxFeePerGas, maxPriorityFeePerGas };
@@ -566,7 +581,7 @@ export class EthereumTransactions implements IEthereumTransactions {
       const convertValueToHex =
         '0x' + parseInt(calculateValue, 10).toString(16);
 
-      return ethers.BigNumber.from(convertValueToHex);
+      return BigNumber.from(convertValueToHex);
     };
 
     const maxFeePerGasToNumber = maxFeePerGas?.toNumber();
@@ -597,7 +612,7 @@ export class EthereumTransactions implements IEthereumTransactions {
       const convertToHex =
         '0x' + parseInt(DEFAULT_GAS_LIMIT_VALUE, 10).toString(16);
 
-      newGasValues.gasLimit = ethers.BigNumber.from(convertToHex);
+      newGasValues.gasLimit = BigNumber.from(convertToHex);
     }
 
     if (!isForCancel) {
@@ -618,7 +633,7 @@ export class EthereumTransactions implements IEthereumTransactions {
   }> => {
     const tx = (await this.web3Provider.getTransaction(
       txHash
-    )) as Deferrable<ethers.providers.TransactionResponse>;
+    )) as Deferrable<EthersTransactionResponse>;
 
     if (!tx) {
       //If we don't find the TX or is already confirmed we send as error true to show this message
@@ -630,9 +645,9 @@ export class EthereumTransactions implements IEthereumTransactions {
     }
 
     const { decryptedPrivateKey } = this.getDecryptedPrivateKey();
-    const wallet = new ethers.Wallet(decryptedPrivateKey, this.web3Provider);
+    const wallet = new Wallet(decryptedPrivateKey, this.web3Provider);
 
-    let changedTxToCancel: Deferrable<ethers.providers.TransactionRequest>;
+    let changedTxToCancel: Deferrable<TransactionRequest>;
 
     const oldTxsGasValues: IGasParams = {
       maxFeePerGas: tx.maxFeePerGas as BigNumber,
@@ -654,7 +669,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         nonce: tx.nonce,
         from: wallet.address,
         to: wallet.address,
-        value: ethers.constants.Zero,
+        value: Zero,
         maxFeePerGas: newGasValues.maxFeePerGas,
         maxPriorityFeePerGas: newGasValues.maxPriorityFeePerGas,
         gasLimit: newGasValues.gasLimit,
@@ -671,7 +686,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         nonce: tx.nonce,
         from: wallet.address,
         to: wallet.address,
-        value: ethers.constants.Zero,
+        value: Zero,
         gasLimit: newGasValues.gasLimit,
         gasPrice: newGasValues.gasPrice,
       };
@@ -731,7 +746,7 @@ export class EthereumTransactions implements IEthereumTransactions {
             chainId: activeNetwork.chainId,
             type: 2,
           };
-      const rawTx = ethers.utils.serializeTransaction(txFormattedForEthers);
+      const rawTx = serializeTransaction(txFormattedForEthers);
 
       const signature = await this.ledgerSigner.evm.signEVMTransaction({
         rawTx: rawTx.replace('0x', ''),
@@ -746,7 +761,7 @@ export class EthereumTransactions implements IEthereumTransactions {
 
       if (signature) {
         try {
-          const signedTx = ethers.utils.serializeTransaction(
+          const signedTx = serializeTransaction(
             txFormattedForEthers,
             formattedSignature
           );
@@ -865,7 +880,7 @@ export class EthereumTransactions implements IEthereumTransactions {
                 type: 2,
               };
           signature.payload.v = parseInt(signature.payload.v, 16); //v parameter must be a number by ethers standards
-          const signedTx = ethers.utils.serializeTransaction(
+          const signedTx = serializeTransaction(
             txFormattedForEthers,
             signature.payload
           );
@@ -891,8 +906,8 @@ export class EthereumTransactions implements IEthereumTransactions {
         );
       }
 
-      const tx: Deferrable<ethers.providers.TransactionRequest> = params;
-      const wallet = new ethers.Wallet(decryptedPrivateKey, this.web3Provider);
+      const tx: Deferrable<TransactionRequest> = params;
+      const wallet = new Wallet(decryptedPrivateKey, this.web3Provider);
       try {
         const transaction = await wallet.sendTransaction(tx);
         const response = await this.web3Provider.getTransaction(
@@ -927,7 +942,7 @@ export class EthereumTransactions implements IEthereumTransactions {
   }> => {
     const tx = (await this.web3Provider.getTransaction(
       txHash
-    )) as Deferrable<ethers.providers.TransactionResponse>;
+    )) as Deferrable<EthersTransactionResponse>;
 
     if (!tx) {
       return {
@@ -937,7 +952,7 @@ export class EthereumTransactions implements IEthereumTransactions {
     }
 
     const { decryptedPrivateKey, address } = this.getDecryptedPrivateKey();
-    const wallet = new ethers.Wallet(decryptedPrivateKey, this.web3Provider);
+    const wallet = new Wallet(decryptedPrivateKey, this.web3Provider);
 
     // Check if this might be a max send transaction by comparing total cost to balance
     const currentBalance = await this.web3Provider.getBalance(address);
@@ -964,7 +979,7 @@ export class EthereumTransactions implements IEthereumTransactions {
     const balanceThreshold = currentBalance.mul(95).div(100);
     const isLikelyMaxSend = originalTotalCost.gt(balanceThreshold);
 
-    let txWithEditedFee: Deferrable<ethers.providers.TransactionRequest>;
+    let txWithEditedFee: Deferrable<TransactionRequest>;
 
     const oldTxsGasValues: IGasParams = {
       maxFeePerGas: maxFeePerGas as BigNumber,
@@ -1007,7 +1022,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           adjustedValue = currentBalance.sub(newGasCost);
 
           // Ensure we don't go below a minimum threshold (0.0001 ETH)
-          const minValue = ethers.utils.parseEther('0.0001');
+          const minValue = parseEther('0.0001');
           if (adjustedValue.lt(minValue)) {
             console.warn('[SpeedUp] Adjusted value too low, keeping original');
             adjustedValue = txValue;
@@ -1055,7 +1070,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           adjustedValue = currentBalance.sub(newGasCost);
 
           // Ensure we don't go below a minimum threshold (0.0001 ETH)
-          const minValue = ethers.utils.parseEther('0.0001');
+          const minValue = parseEther('0.0001');
           if (adjustedValue.lt(minValue)) {
             console.warn('[SpeedUp] Adjusted value too low, keeping original');
             adjustedValue = txValue;
@@ -1117,11 +1132,11 @@ export class EthereumTransactions implements IEthereumTransactions {
     const tokenDecimals = token && token.decimals ? token.decimals : 18;
     const decimals = this.toBigNumber(tokenDecimals);
 
-    const parsedAmount = ethers.utils.parseEther(String(amount));
+    const parsedAmount = parseEther(String(amount));
 
     const { decryptedPrivateKey } = this.getDecryptedPrivateKey();
 
-    const wallet = new ethers.Wallet(decryptedPrivateKey, this.web3Provider);
+    const wallet = new Wallet(decryptedPrivateKey, this.web3Provider);
 
     const value =
       token && token.contract_address
@@ -1141,7 +1156,7 @@ export class EthereumTransactions implements IEthereumTransactions {
     const { maxFeePerGas, maxPriorityFeePerGas } =
       await this.getFeeDataWithDynamicMaxPriorityFeePerGas();
 
-    const tx: Deferrable<ethers.providers.TransactionRequest> = {
+    const tx: Deferrable<TransactionRequest> = {
       to: receivingAddress,
       value,
       maxPriorityFeePerGas,
@@ -1187,23 +1202,23 @@ export class EthereumTransactions implements IEthereumTransactions {
       accounts[activeAccountType][activeAccountId];
 
     const sendERC20Token = async () => {
-      const currentWallet = new ethers.Wallet(decryptedPrivateKey);
+      const currentWallet = new Wallet(decryptedPrivateKey);
 
       const walletSigned = currentWallet.connect(this.web3Provider);
 
       try {
-        const _contract = new ethers.Contract(
+        const _contract = new Contract(
           tokenAddress,
           getErc20Abi(),
           walletSigned
         );
-        const calculatedTokenAmount = ethers.BigNumber.from(
+        const calculatedTokenAmount = BigNumber.from(
           decimals
-            ? ethers.utils.parseUnits(
+            ? parseUnits(
                 tokenAmount as string,
                 this.toBigNumber(decimals as number)
               )
-            : ethers.utils.parseEther(tokenAmount as string)
+            : parseEther(tokenAmount as string)
         );
         let transferMethod;
         if (isLegacy) {
@@ -1250,14 +1265,10 @@ export class EthereumTransactions implements IEthereumTransactions {
         activeAccountAddress
       );
       try {
-        const _contract = new ethers.Contract(
-          tokenAddress,
-          getErc20Abi(),
-          signer
-        );
+        const _contract = new Contract(tokenAddress, getErc20Abi(), signer);
 
-        const calculatedTokenAmount = ethers.BigNumber.from(
-          ethers.utils.parseEther(tokenAmount as string)
+        const calculatedTokenAmount = BigNumber.from(
+          parseEther(tokenAmount as string)
         );
 
         const txData = _contract.interface.encodeFunctionData('transfer', [
@@ -1294,7 +1305,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           };
         }
 
-        const rawTx = ethers.utils.serializeTransaction(txFormattedForEthers);
+        const rawTx = serializeTransaction(txFormattedForEthers);
 
         const signature = await this.ledgerSigner.evm.signEVMTransaction({
           rawTx: rawTx.replace('0x', ''),
@@ -1308,7 +1319,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         };
         if (signature) {
           try {
-            const signedTx = ethers.utils.serializeTransaction(
+            const signedTx = serializeTransaction(
               txFormattedForEthers,
               formattedSignature
             );
@@ -1334,14 +1345,10 @@ export class EthereumTransactions implements IEthereumTransactions {
         activeAccountAddress
       );
       try {
-        const _contract = new ethers.Contract(
-          tokenAddress,
-          getErc20Abi(),
-          signer
-        );
+        const _contract = new Contract(tokenAddress, getErc20Abi(), signer);
 
-        const calculatedTokenAmount = ethers.BigNumber.from(
-          ethers.utils.parseEther(tokenAmount as string)
+        const calculatedTokenAmount = BigNumber.from(
+          parseEther(tokenAmount as string)
         );
 
         const txData = _contract.interface.encodeFunctionData('transfer', [
@@ -1416,7 +1423,7 @@ export class EthereumTransactions implements IEthereumTransactions {
               };
             }
             signature.payload.v = parseInt(signature.payload.v, 16); //v parameter must be a number by ethers standards
-            const signedTx = ethers.utils.serializeTransaction(
+            const signedTx = serializeTransaction(
               txFormattedForEthers,
               signature.payload
             );
@@ -1463,11 +1470,11 @@ export class EthereumTransactions implements IEthereumTransactions {
       accounts[activeAccountType][activeAccountId];
 
     const sendERC721Token = async () => {
-      const currentWallet = new ethers.Wallet(decryptedPrivateKey);
+      const currentWallet = new Wallet(decryptedPrivateKey);
       const walletSigned = currentWallet.connect(this.web3Provider);
       let transferMethod;
       try {
-        const _contract = new ethers.Contract(
+        const _contract = new Contract(
           tokenAddress,
           getErc21Abi(),
           walletSigned
@@ -1515,11 +1522,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         activeAccountAddress
       );
       try {
-        const _contract = new ethers.Contract(
-          tokenAddress,
-          getErc21Abi(),
-          signer
-        );
+        const _contract = new Contract(tokenAddress, getErc21Abi(), signer);
         const txData = _contract.interface.encodeFunctionData('transferFrom', [
           activeAccountAddress,
           receiver,
@@ -1555,7 +1558,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           };
         }
 
-        const rawTx = ethers.utils.serializeTransaction(txFormattedForEthers);
+        const rawTx = serializeTransaction(txFormattedForEthers);
 
         const signature = await this.ledgerSigner.evm.signEVMTransaction({
           rawTx: rawTx.replace('0x', ''),
@@ -1570,7 +1573,7 @@ export class EthereumTransactions implements IEthereumTransactions {
 
         if (signature) {
           try {
-            const signedTx = ethers.utils.serializeTransaction(
+            const signedTx = serializeTransaction(
               txFormattedForEthers,
               formattedSignature
             );
@@ -1594,11 +1597,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         activeAccountAddress
       );
       try {
-        const _contract = new ethers.Contract(
-          tokenAddress,
-          getErc21Abi(),
-          signer
-        );
+        const _contract = new Contract(tokenAddress, getErc21Abi(), signer);
         const txData = _contract.interface.encodeFunctionData('transferFrom', [
           activeAccountAddress,
           receiver,
@@ -1676,7 +1675,7 @@ export class EthereumTransactions implements IEthereumTransactions {
               };
             }
             signature.payload.v = parseInt(signature.payload.v, 16); //v parameter must be a number by ethers standards
-            const signedTx = ethers.utils.serializeTransaction(
+            const signedTx = serializeTransaction(
               txFormattedForEthers,
               signature.payload
             );
@@ -1724,11 +1723,11 @@ export class EthereumTransactions implements IEthereumTransactions {
       accounts[activeAccountType][activeAccountId];
 
     const sendERC1155Token = async () => {
-      const currentWallet = new ethers.Wallet(decryptedPrivateKey);
+      const currentWallet = new Wallet(decryptedPrivateKey);
       const walletSigned = currentWallet.connect(this.web3Provider);
       let transferMethod;
       try {
-        const _contract = new ethers.Contract(
+        const _contract = new Contract(
           tokenAddress,
           getErc55Abi(),
           walletSigned
@@ -1758,11 +1757,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         activeAccountAddress
       );
       try {
-        const _contract = new ethers.Contract(
-          tokenAddress,
-          getErc55Abi(),
-          signer
-        );
+        const _contract = new Contract(tokenAddress, getErc55Abi(), signer);
 
         const amount = tokenAmount ? parseInt(tokenAmount) : 1;
 
@@ -1800,7 +1795,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           };
         }
 
-        const rawTx = ethers.utils.serializeTransaction(txFormattedForEthers);
+        const rawTx = serializeTransaction(txFormattedForEthers);
 
         const signature = await this.ledgerSigner.evm.signEVMTransaction({
           rawTx: rawTx.replace('0x', ''),
@@ -1815,7 +1810,7 @@ export class EthereumTransactions implements IEthereumTransactions {
 
         if (signature) {
           try {
-            const signedTx = ethers.utils.serializeTransaction(
+            const signedTx = serializeTransaction(
               txFormattedForEthers,
               formattedSignature
             );
@@ -1839,11 +1834,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         activeAccountAddress
       );
       try {
-        const _contract = new ethers.Contract(
-          tokenAddress,
-          getErc55Abi(),
-          signer
-        );
+        const _contract = new Contract(tokenAddress, getErc55Abi(), signer);
 
         const amount = tokenAmount ? parseInt(tokenAmount) : 1;
 
@@ -1919,7 +1910,7 @@ export class EthereumTransactions implements IEthereumTransactions {
               };
             }
             signature.payload.v = parseInt(signature.payload.v, 16); //v parameter must be a number by ethers standards
-            const signedTx = ethers.utils.serializeTransaction(
+            const signedTx = serializeTransaction(
               txFormattedForEthers,
               signature.payload
             );
@@ -1961,13 +1952,13 @@ export class EthereumTransactions implements IEthereumTransactions {
     const gasPrice = (await this.getRecommendedGasPrice(false)) as string;
 
     const low = this.toBigNumber(gasPrice)
-      .mul(ethers.BigNumber.from('8'))
-      .div(ethers.BigNumber.from('10'))
+      .mul(BigNumber.from('8'))
+      .div(BigNumber.from('10'))
       .toString();
 
     const high = this.toBigNumber(gasPrice)
-      .mul(ethers.BigNumber.from('11'))
-      .div(ethers.BigNumber.from('10'))
+      .mul(BigNumber.from('11'))
+      .div(BigNumber.from('10'))
       .toString();
 
     if (type === 'low') return low;
@@ -1982,7 +1973,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         to: toAddress,
       });
 
-      return Number(ethers.utils.formatUnits(estimated, 'gwei'));
+      return Number(formatUnits(estimated, 'gwei'));
     } catch (error) {
       throw error;
     }
@@ -2002,8 +1993,8 @@ export class EthereumTransactions implements IEthereumTransactions {
 
       if (formatted) {
         return {
-          gwei: Number(ethers.utils.formatUnits(gasPriceBN, 'gwei')).toFixed(2),
-          ethers: ethers.utils.formatEther(gasPriceBN),
+          gwei: Number(formatUnits(gasPriceBN, 'gwei')).toFixed(2),
+          ethers: formatEther(gasPriceBN),
         };
       }
 
@@ -2016,7 +2007,7 @@ export class EthereumTransactions implements IEthereumTransactions {
   getBalance = async (address: string) => {
     try {
       const balance = await this.web3Provider.getBalance(address);
-      const formattedBalance = ethers.utils.formatEther(balance);
+      const formattedBalance = formatEther(balance);
 
       return parseFloat(formattedBalance); // Return full precision
     } catch (error) {
@@ -2068,13 +2059,13 @@ export class EthereumTransactions implements IEthereumTransactions {
   }
 
   public importAccount = (mnemonicOrPrivKey: string) => {
-    if (ethers.utils.isHexString(mnemonicOrPrivKey)) {
-      return new ethers.Wallet(mnemonicOrPrivKey);
+    if (isHexString(mnemonicOrPrivKey)) {
+      return new Wallet(mnemonicOrPrivKey);
     }
 
-    const { privateKey } = ethers.Wallet.fromMnemonic(mnemonicOrPrivKey);
+    const { privateKey } = Wallet.fromMnemonic(mnemonicOrPrivKey);
 
-    const account = new ethers.Wallet(privateKey);
+    const account = new Wallet(privateKey);
 
     return account;
   };
