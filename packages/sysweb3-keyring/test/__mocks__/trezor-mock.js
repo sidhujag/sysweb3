@@ -22,9 +22,9 @@ const TrezorConnect = {
   getAddress: () =>
     Promise.resolve({
       success: true,
-      payload: { 
+      payload: {
         address: 'sys1qmock_trezor_verified_address',
-        path: "m/44'/57'/0'/0/0"
+        path: "m/44'/57'/0'/0/0",
       },
     }),
   signTransaction: () =>
@@ -35,9 +35,9 @@ const TrezorConnect = {
   ethereumSignTypedData: () =>
     Promise.resolve({
       success: true,
-      payload: { 
+      payload: {
         signature: '0xmocked_typed_data_signature',
-        address: '0x1234567890123456789012345678901234567890'
+        address: '0x1234567890123456789012345678901234567890',
       },
     }),
   getAccountInfo: () =>
