@@ -644,8 +644,7 @@ export class EthereumTransactions implements IEthereumTransactions {
       };
     }
 
-    const { decryptedPrivateKey } = this.getDecryptedPrivateKey();
-    const wallet = new Wallet(decryptedPrivateKey, this.web3Provider);
+    const { address, decryptedPrivateKey } = this.getDecryptedPrivateKey();
 
     let changedTxToCancel: Deferrable<TransactionRequest>;
 
@@ -667,8 +666,8 @@ export class EthereumTransactions implements IEthereumTransactions {
       //the value as 0
       changedTxToCancel = {
         nonce: tx.nonce,
-        from: wallet.address,
-        to: wallet.address,
+        from: address,
+        to: address,
         value: Zero,
         maxFeePerGas: newGasValues.maxFeePerGas,
         maxPriorityFeePerGas: newGasValues.maxPriorityFeePerGas,
@@ -684,8 +683,8 @@ export class EthereumTransactions implements IEthereumTransactions {
       //the value as 0
       changedTxToCancel = {
         nonce: tx.nonce,
-        from: wallet.address,
-        to: wallet.address,
+        from: address,
+        to: address,
         value: Zero,
         gasLimit: newGasValues.gasLimit,
         gasPrice: newGasValues.gasPrice,
@@ -694,6 +693,24 @@ export class EthereumTransactions implements IEthereumTransactions {
 
     const cancelTransaction = async () => {
       try {
+        const { activeAccountType } = this.getState();
+        const isTrezor = activeAccountType === KeyringAccountType.Trezor;
+        const isLedger = activeAccountType === KeyringAccountType.Ledger;
+
+        const isHardwareWallet = isLedger || isTrezor;
+
+        if (isHardwareWallet) {
+          const response = await this.sendFormattedTransaction(changedTxToCancel as SimpleTransactionRequest);
+          if (response) {
+            return {
+              isCanceled: true,
+              transaction: response,
+            };
+          }
+        }
+
+        const wallet = new Wallet(decryptedPrivateKey, this.web3Provider);
+
         const transactionResponse = await wallet.sendTransaction(
           changedTxToCancel
         );
@@ -790,13 +807,13 @@ export class EthereumTransactions implements IEthereumTransactions {
               typeof formatParams.gasLimit === 'string'
                 ? formatParams.gasLimit
                 : // @ts-ignore
-                  `${params.gasLimit.hex}`,
+                  `${params.gasLimit.hex || params.gasLimit?._hex}`,
             value:
               typeof formatParams.value === 'string' ||
               typeof formatParams.value === 'number'
                 ? `${formatParams.value}`
                 : // @ts-ignore
-                  `${params.value.hex}`,
+                  `${params.value.hex || params.value?._hex}`,
             nonce: this.toBigNumber(transactionNonce)._hex,
             chainId: activeNetwork.chainId,
           };
@@ -808,23 +825,23 @@ export class EthereumTransactions implements IEthereumTransactions {
               typeof formatParams.gasLimit === 'string'
                 ? formatParams.gasLimit
                 : // @ts-ignore
-                  `${params.gasLimit.hex}`,
+                  `${params.gasLimit.hex || params.gasLimit?._hex}`,
             maxFeePerGas:
               typeof formatParams.maxFeePerGas === 'string'
                 ? formatParams.maxFeePerGas
                 : // @ts-ignore
-                  `${params.maxFeePerGas.hex}`,
+                  `${params.maxFeePerGas.hex || params.maxFeePerGas?._hex}`,
             maxPriorityFeePerGas:
               typeof formatParams.maxPriorityFeePerGas === 'string'
                 ? formatParams.maxPriorityFeePerGas
                 : // @ts-ignore
-                  `${params.maxPriorityFeePerGas.hex}`,
+                  `${params.maxPriorityFeePerGas.hex || params.maxPriorityFeePerGas._hex}`,
             value:
               typeof formatParams.value === 'string' ||
               typeof formatParams.value === 'number'
                 ? `${formatParams.value}`
                 : // @ts-ignore
-                  `${params.value.hex}`,
+                  `${params.value.hex || params?.value?._hex}`,
             nonce: this.toBigNumber(transactionNonce)._hex,
             chainId: activeNetwork.chainId,
           };
@@ -836,28 +853,30 @@ export class EthereumTransactions implements IEthereumTransactions {
               typeof formatParams.gasLimit === 'string'
                 ? formatParams.gasLimit
                 : // @ts-ignore
-                  `${params.gasLimit.hex}`,
+                  `${params.gasLimit.hex || params.gasLimit?._hex}`,
             maxFeePerGas:
               typeof formatParams.maxFeePerGas === 'string'
                 ? formatParams.maxFeePerGas
                 : // @ts-ignore
-                  `${params.maxFeePerGas.hex}`,
+                  `${params.maxFeePerGas.hex || params?.maxFeePerGas?._hex}`,
             maxPriorityFeePerGas:
               typeof formatParams.maxPriorityFeePerGas === 'string'
                 ? formatParams.maxPriorityFeePerGas
                 : // @ts-ignore
-                  `${params.maxPriorityFeePerGas.hex}`,
+                  `${params.maxPriorityFeePerGas.hex || params.maxPriorityFeePerGas?._hex}`,
             value:
               typeof formatParams.value === 'string' ||
               typeof formatParams.value === 'number'
                 ? `${formatParams.value}`
                 : // @ts-ignore
-                  `${params.value.hex}`,
+                  `${params.value.hex || params.value?._hex}`,
             nonce: this.toBigNumber(transactionNonce)._hex,
             chainId: activeNetwork.chainId,
           };
           break;
       }
+
+      console.log({txFormattedForTrezor, params})
 
       const signature = await this.trezorSigner.signEthTransaction({
         index: `${activeAccountId}`,
@@ -952,7 +971,6 @@ export class EthereumTransactions implements IEthereumTransactions {
     }
 
     const { decryptedPrivateKey, address } = this.getDecryptedPrivateKey();
-    const wallet = new Wallet(decryptedPrivateKey, this.web3Provider);
 
     // Check if this might be a max send transaction by comparing total cost to balance
     const currentBalance = await this.web3Provider.getBalance(address);
@@ -1091,8 +1109,26 @@ export class EthereumTransactions implements IEthereumTransactions {
 
     const sendEditedTransaction = async () => {
       try {
+        const { activeAccountType } = this.getState();
+        const isTrezor = activeAccountType === KeyringAccountType.Trezor;
+        const isLedger = activeAccountType === KeyringAccountType.Ledger;
+
+        const isHardwareWallet = isLedger || isTrezor;
+
+        if (isHardwareWallet) {
+          const response = await this.sendFormattedTransaction(txWithEditedFee as SimpleTransactionRequest);
+          if (response) {
+            return {
+              isSpeedUp: true,
+              transaction: response,
+            };
+          }
+        }
+
+        const wallet = new Wallet(decryptedPrivateKey, this.web3Provider);
+
         const transactionResponse = await wallet.sendTransaction(
-          txWithEditedFee
+          txWithEditedFee,
         );
 
         if (transactionResponse) {
