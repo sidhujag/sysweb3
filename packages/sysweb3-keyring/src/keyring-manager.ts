@@ -1180,6 +1180,11 @@ export class KeyringManager implements IKeyringManager {
       const { accounts, activeAccount } = vault;
       const activeAccountId = activeAccount.id;
       const activeAccountType = activeAccount.type;
+      const isLedger = activeAccountType === KeyringAccountType.Ledger;
+      const isTrezor = activeAccountType === KeyringAccountType.Trezor;
+
+      const isHardwareWallet = isTrezor || isLedger;
+
       if (!this.sessionPassword)
         throw new Error('Wallet is locked cant proceed with transaction');
 
@@ -1191,6 +1196,14 @@ export class KeyringManager implements IKeyringManager {
       }
 
       const { xprv, address } = activeAccountData;
+
+      if (isHardwareWallet) {
+        return {
+          address,
+          decryptedPrivateKey: ""
+        }
+      }
+
       if (!xprv) {
         throw new Error(
           `Private key not found for account ${activeAccountType}:${activeAccountId}. Account may not be fully initialized.`
