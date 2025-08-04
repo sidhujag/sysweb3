@@ -51,7 +51,6 @@ import { TrezorKeyring } from '../trezor';
 import {
   IResponseFromSendErcSignedTransaction,
   ISendSignedErcTransactionProps,
-  ISendTransaction,
   IEthereumTransactions,
   SimpleTransactionRequest,
   KeyringAccountType,
@@ -464,6 +463,18 @@ export class EthereumTransactions implements IEthereumTransactions {
   };
 
   getEncryptedPubKey = () => {
+    const { activeAccountType } = this.getState();
+
+    // Hardware wallets don't support encryption public key generation
+    if (
+      activeAccountType === KeyringAccountType.Trezor ||
+      activeAccountType === KeyringAccountType.Ledger
+    ) {
+      throw new Error(
+        'Hardware wallets do not support eth_getEncryptionPublicKey'
+      );
+    }
+
     const { decryptedPrivateKey } = this.getDecryptedPrivateKey();
 
     try {
@@ -475,6 +486,16 @@ export class EthereumTransactions implements IEthereumTransactions {
 
   // eth_decryptMessage
   decryptMessage = (msgParams: string[]) => {
+    const { activeAccountType } = this.getState();
+
+    // Hardware wallets don't support message decryption
+    if (
+      activeAccountType === KeyringAccountType.Trezor ||
+      activeAccountType === KeyringAccountType.Ledger
+    ) {
+      throw new Error('Hardware wallets do not support eth_decrypt');
+    }
+
     const { address, decryptedPrivateKey } = this.getDecryptedPrivateKey();
 
     let encryptedData = '';
@@ -644,10 +665,9 @@ export class EthereumTransactions implements IEthereumTransactions {
       };
     }
 
-    const { decryptedPrivateKey } = this.getDecryptedPrivateKey();
-    const wallet = new Wallet(decryptedPrivateKey, this.web3Provider);
-
-    let changedTxToCancel: Deferrable<TransactionRequest>;
+    const { activeAccountType, activeAccountId, accounts, activeNetwork } =
+      this.getState();
+    const activeAccount = accounts[activeAccountType][activeAccountId];
 
     const oldTxsGasValues: IGasParams = {
       maxFeePerGas: tx.maxFeePerGas as BigNumber,
@@ -656,44 +676,166 @@ export class EthereumTransactions implements IEthereumTransactions {
       gasLimit: tx.gasLimit as BigNumber,
     };
 
-    if (!isLegacy) {
-      const newGasValues = this.calculateNewGasValues(
-        oldTxsGasValues,
-        true,
-        false
-      );
+    const newGasValues = this.calculateNewGasValues(
+      oldTxsGasValues,
+      true,
+      isLegacy || false
+    );
 
-      //We have to send another TX using the same nonce but we can use the From and To for the same address and also
-      //the value as 0
-      changedTxToCancel = {
-        nonce: tx.nonce,
-        from: wallet.address,
-        to: wallet.address,
-        value: Zero,
-        maxFeePerGas: newGasValues.maxFeePerGas,
-        maxPriorityFeePerGas: newGasValues.maxPriorityFeePerGas,
-        gasLimit: newGasValues.gasLimit,
-      };
-    } else {
-      const newGasValues = this.calculateNewGasValues(
-        oldTxsGasValues,
-        true,
-        true
-      );
-      //We have to send another TX using the same nonce but we can use the From and To for the same address and also
-      //the value as 0
-      changedTxToCancel = {
-        nonce: tx.nonce,
-        from: wallet.address,
-        to: wallet.address,
-        value: Zero,
-        gasLimit: newGasValues.gasLimit,
-        gasPrice: newGasValues.gasPrice,
-      };
-    }
+    // Base cancel transaction parameters (same for all wallet types)
+    const baseCancelTx = {
+      nonce: tx.nonce,
+      from: activeAccount.address,
+      to: activeAccount.address,
+      value: Zero,
+      gasLimit: newGasValues.gasLimit,
+    };
 
-    const cancelTransaction = async () => {
+    const changedTxToCancel: Deferrable<TransactionRequest> = isLegacy
+      ? {
+          ...baseCancelTx,
+          gasPrice: newGasValues.gasPrice,
+        }
+      : {
+          ...baseCancelTx,
+          maxFeePerGas: newGasValues.maxFeePerGas,
+          maxPriorityFeePerGas: newGasValues.maxPriorityFeePerGas,
+        };
+
+    // Ledger cancel handler
+    const cancelWithLedger = async () => {
       try {
+        const formatParams = omit(changedTxToCancel, 'from');
+        const txFormattedForEthers = isLegacy
+          ? {
+              ...formatParams,
+              chainId: activeNetwork.chainId,
+            }
+          : {
+              ...formatParams,
+              chainId: activeNetwork.chainId,
+              type: 2,
+            };
+
+        const rawTx = serializeTransaction(txFormattedForEthers);
+        const signature = await this.ledgerSigner.evm.signEVMTransaction({
+          rawTx: rawTx.replace('0x', ''),
+          accountIndex: activeAccountId,
+        });
+
+        const formattedSignature = {
+          r: `0x${signature.r}`,
+          s: `0x${signature.s}`,
+          v: parseInt(signature.v, 16),
+        };
+
+        if (signature) {
+          const signedTx = serializeTransaction(
+            txFormattedForEthers,
+            formattedSignature
+          );
+          const transactionResponse = await this.web3Provider.sendTransaction(
+            signedTx
+          );
+
+          return {
+            isCanceled: true,
+            transaction: transactionResponse,
+          };
+        } else {
+          return {
+            isCanceled: false,
+            error: true,
+          };
+        }
+      } catch (error) {
+        return {
+          isCanceled: false,
+          error: true,
+        };
+      }
+    };
+
+    // Trezor cancel handler
+    const cancelWithTrezor = async () => {
+      try {
+        const trezorCoin =
+          activeNetwork.slip44 === 60 ? 'eth' : activeNetwork.currency;
+        const formattedTx = omit(changedTxToCancel, 'from');
+
+        const txFormattedForTrezor: any = {
+          ...formattedTx,
+          gasLimit:
+            typeof formattedTx.gasLimit === 'string'
+              ? formattedTx.gasLimit
+              : `${formattedTx.gasLimit?._hex || formattedTx.gasLimit}`,
+          value: '0x0',
+          nonce: this.toBigNumber(formattedTx.nonce)._hex,
+          chainId: activeNetwork.chainId,
+        };
+
+        if (isLegacy) {
+          txFormattedForTrezor.gasPrice =
+            typeof formattedTx.gasPrice === 'string'
+              ? formattedTx.gasPrice
+              : `${formattedTx.gasPrice?._hex || formattedTx.gasPrice}`;
+        } else {
+          txFormattedForTrezor.maxFeePerGas =
+            typeof (formattedTx as any).maxFeePerGas === 'string'
+              ? (formattedTx as any).maxFeePerGas
+              : `${
+                  (formattedTx as any).maxFeePerGas?._hex ||
+                  (formattedTx as any).maxFeePerGas
+                }`;
+          txFormattedForTrezor.maxPriorityFeePerGas =
+            typeof (formattedTx as any).maxPriorityFeePerGas === 'string'
+              ? (formattedTx as any).maxPriorityFeePerGas
+              : `${
+                  (formattedTx as any).maxPriorityFeePerGas?._hex ||
+                  (formattedTx as any).maxPriorityFeePerGas
+                }`;
+        }
+
+        const signature = await this.trezorSigner.signEthTransaction({
+          coin: trezorCoin,
+          tx: txFormattedForTrezor,
+          index: activeAccountId.toString(),
+          slip44: activeNetwork.slip44,
+        });
+
+        if (signature.success) {
+          const signedTx = serializeTransaction(
+            txFormattedForTrezor,
+            signature.payload
+          );
+          const transactionResponse = await this.web3Provider.sendTransaction(
+            signedTx
+          );
+
+          return {
+            isCanceled: true,
+            transaction: transactionResponse,
+          };
+        } else {
+          return {
+            isCanceled: false,
+            error: true,
+          };
+        }
+      } catch (error) {
+        return {
+          isCanceled: false,
+          error: true,
+        };
+      }
+    };
+
+    // Regular wallet cancel handler
+    const cancelWithPrivateKey = async () => {
+      try {
+        const { decryptedPrivateKey } = this.getDecryptedPrivateKey();
+        const wallet = new Wallet(decryptedPrivateKey, this.web3Provider);
+
         const transactionResponse = await wallet.sendTransaction(
           changedTxToCancel
         );
@@ -709,8 +851,6 @@ export class EthereumTransactions implements IEthereumTransactions {
           };
         }
       } catch (error) {
-        //If we don't find the TX or is already confirmed we send as error true to show this message
-        //in the alert at Pali
         return {
           isCanceled: false,
           error: true,
@@ -718,7 +858,15 @@ export class EthereumTransactions implements IEthereumTransactions {
       }
     };
 
-    return await cancelTransaction();
+    // Route based on account type
+    switch (activeAccountType) {
+      case KeyringAccountType.Trezor:
+        return await cancelWithTrezor();
+      case KeyringAccountType.Ledger:
+        return await cancelWithLedger();
+      default:
+        return await cancelWithPrivateKey();
+    }
   };
   //TODO: This function needs to be refactored
   sendFormattedTransaction = async (
@@ -951,11 +1099,14 @@ export class EthereumTransactions implements IEthereumTransactions {
       };
     }
 
-    const { decryptedPrivateKey, address } = this.getDecryptedPrivateKey();
-    const wallet = new Wallet(decryptedPrivateKey, this.web3Provider);
+    const { activeAccountType, activeAccountId, accounts, activeNetwork } =
+      this.getState();
+    const activeAccount = accounts[activeAccountType][activeAccountId];
 
     // Check if this might be a max send transaction by comparing total cost to balance
-    const currentBalance = await this.web3Provider.getBalance(address);
+    const currentBalance = await this.web3Provider.getBalance(
+      activeAccount.address
+    );
 
     // Ensure all transaction values are resolved from promises
     const gasLimit = await Promise.resolve(tx.gasLimit);
@@ -1089,8 +1240,155 @@ export class EthereumTransactions implements IEthereumTransactions {
       };
     }
 
-    const sendEditedTransaction = async () => {
+    // Ledger speedup handler
+    const speedUpWithLedger = async () => {
       try {
+        const formatParams = omit(txWithEditedFee, 'from');
+        const txFormattedForEthers = isLegacy
+          ? {
+              ...formatParams,
+              chainId: activeNetwork.chainId,
+            }
+          : {
+              ...formatParams,
+              chainId: activeNetwork.chainId,
+              type: 2,
+            };
+
+        const rawTx = serializeTransaction(txFormattedForEthers);
+        const signature = await this.ledgerSigner.evm.signEVMTransaction({
+          rawTx: rawTx.replace('0x', ''),
+          accountIndex: activeAccountId,
+        });
+
+        const formattedSignature = {
+          r: `0x${signature.r}`,
+          s: `0x${signature.s}`,
+          v: parseInt(signature.v, 16),
+        };
+
+        if (signature) {
+          const signedTx = serializeTransaction(
+            txFormattedForEthers,
+            formattedSignature
+          );
+          const transactionResponse = await this.web3Provider.sendTransaction(
+            signedTx
+          );
+
+          return {
+            isSpeedUp: true,
+            transaction: transactionResponse,
+          };
+        } else {
+          return {
+            isSpeedUp: false,
+            error: true,
+          };
+        }
+      } catch (error) {
+        console.error(
+          '[SpeedUp] Failed to send replacement transaction with Ledger:',
+          error
+        );
+        return {
+          isSpeedUp: false,
+          error: true,
+        };
+      }
+    };
+
+    // Trezor speedup handler
+    const speedUpWithTrezor = async () => {
+      try {
+        const trezorCoin =
+          activeNetwork.slip44 === 60 ? 'eth' : activeNetwork.currency;
+        const formattedTx = omit(txWithEditedFee, 'from');
+
+        const txFormattedForTrezor: any = {
+          ...formattedTx,
+          gasLimit:
+            typeof formattedTx.gasLimit === 'string'
+              ? formattedTx.gasLimit
+              : `${formattedTx.gasLimit?._hex || formattedTx.gasLimit}`,
+          value:
+            typeof formattedTx.value === 'string'
+              ? formattedTx.value
+              : `${formattedTx.value?._hex || formattedTx.value}`,
+          nonce: this.toBigNumber(formattedTx.nonce)._hex,
+          chainId: activeNetwork.chainId,
+        };
+
+        if (formattedTx.data && formattedTx.data !== '0x') {
+          txFormattedForTrezor.data = formattedTx.data;
+        }
+
+        if (isLegacy) {
+          txFormattedForTrezor.gasPrice =
+            typeof formattedTx.gasPrice === 'string'
+              ? formattedTx.gasPrice
+              : `${formattedTx.gasPrice?._hex || formattedTx.gasPrice}`;
+        } else {
+          txFormattedForTrezor.maxFeePerGas =
+            typeof (formattedTx as any).maxFeePerGas === 'string'
+              ? (formattedTx as any).maxFeePerGas
+              : `${
+                  (formattedTx as any).maxFeePerGas?._hex ||
+                  (formattedTx as any).maxFeePerGas
+                }`;
+          txFormattedForTrezor.maxPriorityFeePerGas =
+            typeof (formattedTx as any).maxPriorityFeePerGas === 'string'
+              ? (formattedTx as any).maxPriorityFeePerGas
+              : `${
+                  (formattedTx as any).maxPriorityFeePerGas?._hex ||
+                  (formattedTx as any).maxPriorityFeePerGas
+                }`;
+        }
+
+        const signature = await this.trezorSigner.signEthTransaction({
+          coin: trezorCoin,
+          tx: txFormattedForTrezor,
+          index: activeAccountId.toString(),
+          slip44: activeNetwork.slip44,
+        });
+
+        if (signature.success) {
+          const signedTx = serializeTransaction(
+            txFormattedForTrezor,
+            signature.payload
+          );
+          const transactionResponse = await this.web3Provider.sendTransaction(
+            signedTx
+          );
+
+          return {
+            isSpeedUp: true,
+            transaction: transactionResponse,
+          };
+        } else {
+          return {
+            isSpeedUp: false,
+            error: true,
+          };
+        }
+      } catch (error) {
+        console.error(
+          '[SpeedUp] Failed to send replacement transaction with Trezor:',
+          error
+        );
+        return {
+          isSpeedUp: false,
+          error: true,
+        };
+      }
+    };
+
+    // Regular wallet speedup handler
+    const speedUpWithPrivateKey = async () => {
+      try {
+        const { decryptedPrivateKey } = this.getDecryptedPrivateKey();
+        const wallet = new Wallet(decryptedPrivateKey, this.web3Provider);
+
         const transactionResponse = await wallet.sendTransaction(
           txWithEditedFee
         );
@@ -1110,8 +1408,6 @@ export class EthereumTransactions implements IEthereumTransactions {
           '[SpeedUp] Failed to send replacement transaction:',
           error
         );
-        //If we don't find the TX or is already confirmed we send as error true to show this message
-        //in the alert at Pali
         return {
           isSpeedUp: false,
           error: true,
@@ -1119,70 +1415,16 @@ export class EthereumTransactions implements IEthereumTransactions {
       }
     };
 
-    return await sendEditedTransaction();
-  };
-  // TODO: refactor this function
-  sendTransaction = async ({
-    sender,
-    receivingAddress,
-    amount,
-    gasLimit,
-    token,
-  }: ISendTransaction): Promise<TransactionResponse> => {
-    const tokenDecimals = token && token.decimals ? token.decimals : 18;
-    const decimals = this.toBigNumber(tokenDecimals);
-
-    const parsedAmount = parseEther(String(amount));
-
-    const { decryptedPrivateKey } = this.getDecryptedPrivateKey();
-
-    const wallet = new Wallet(decryptedPrivateKey, this.web3Provider);
-
-    const value =
-      token && token.contract_address
-        ? parsedAmount.mul(this.toBigNumber('10').pow(decimals))
-        : parsedAmount;
-
-    const data =
-      token && token.contract_address
-        ? this.getData({
-            contractAddress: token.contract_address,
-            receivingAddress,
-            value,
-          })
-        : null;
-
-    // gas price, gas limit e maxPriorityFeePerGas (tip)
-    const { maxFeePerGas, maxPriorityFeePerGas } =
-      await this.getFeeDataWithDynamicMaxPriorityFeePerGas();
-
-    const tx: Deferrable<TransactionRequest> = {
-      to: receivingAddress,
-      value,
-      maxPriorityFeePerGas,
-      maxFeePerGas,
-      nonce: await this.web3Provider.getTransactionCount(sender, 'latest'),
-      type: 2,
-      chainId: this.web3Provider.network.chainId,
-      gasLimit: this.toBigNumber(0) || gasLimit,
-      data,
-    };
-
-    tx.gasLimit = await this.web3Provider.estimateGas(tx);
-
-    try {
-      const transaction = await wallet.sendTransaction(tx);
-      const response = await this.web3Provider.getTransaction(transaction.hash);
-      if (!response) {
-        return await this.getTransactionTimestamp(transaction);
-      } else {
-        return await this.getTransactionTimestamp(response);
-      }
-    } catch (error) {
-      throw error;
+    // Route based on account type
+    switch (activeAccountType) {
+      case KeyringAccountType.Trezor:
+        return await speedUpWithTrezor();
+      case KeyringAccountType.Ledger:
+        return await speedUpWithLedger();
+      default:
+        return await speedUpWithPrivateKey();
     }
   };
-
   sendSignedErc20Transaction = async ({
     receiver,
     tokenAddress,
