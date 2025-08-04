@@ -16,14 +16,6 @@ import { LedgerKeyring } from './ledger';
 import { SyscoinHDSigner } from './signers';
 import { TrezorKeyring } from './trezor';
 
-export interface ISendTransaction {
-  amount: number;
-  gasLimit?: number;
-  gasPrice?: number;
-  receivingAddress: string;
-  sender: string;
-  token?: any;
-}
 export type SimpleTransactionRequest = {
   accessList?: AccessListish;
   ccipReadEnabled?: boolean;
@@ -78,7 +70,7 @@ export interface IEthereumTransactions {
     typedData: TypedDataV1 | TypedMessage<any>,
     version: SignTypedDataVersion
   ) => Promise<string>;
-  sendTransaction: (data: ISendTransaction) => Promise<TransactionResponse>;
+
   importAccount: (mnemonicOrPrivKey: string) => Wallet;
   parsePersonalMessage: (hexMsg: string) => string;
   sendFormattedTransaction: (

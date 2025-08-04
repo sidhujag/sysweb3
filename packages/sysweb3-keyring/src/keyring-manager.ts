@@ -1200,8 +1200,8 @@ export class KeyringManager implements IKeyringManager {
       if (isHardwareWallet) {
         return {
           address,
-          decryptedPrivateKey: ""
-        }
+          decryptedPrivateKey: '',
+        };
       }
 
       if (!xprv) {
