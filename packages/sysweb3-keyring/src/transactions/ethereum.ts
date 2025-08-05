@@ -650,28 +650,58 @@ export class EthereumTransactions implements IEthereumTransactions {
   };
   cancelSentTransaction = async (
     txHash: string,
-    isLegacy?: boolean
+    isLegacy?: boolean,
+    fallbackNonce?: number
   ): Promise<{
     error?: boolean;
     isCanceled: boolean;
     transaction?: TransactionResponse;
   }> => {
-    const tx = (await this.web3Provider.getTransaction(
+    const { activeAccountType, activeAccountId, accounts, activeNetwork } =
+      this.getState();
+    const activeAccount = accounts[activeAccountType][activeAccountId];
+
+    let tx = (await this.web3Provider.getTransaction(
       txHash
     )) as Deferrable<EthersTransactionResponse>;
 
-    if (!tx) {
-      //If we don't find the TX or is already confirmed we send as error true to show this message
-      //in the alert at Pali
+    // If transaction not found, create a minimal tx object with current gas prices
+    // This handles cases where tx with 0 gas never made it to the mempool
+    if (!tx && fallbackNonce !== undefined) {
+      // Fetch current network gas prices for the cancellation
+      if (isLegacy) {
+        const currentGasPrice = await this.web3Provider.getGasPrice();
+        tx = {
+          from: activeAccount.address,
+          to: activeAccount.address,
+          value: Zero,
+          nonce: fallbackNonce,
+          gasPrice: currentGasPrice,
+          gasLimit: BigNumber.from(42000),
+          data: '0x',
+        } as any;
+      } else {
+        const feeData = await this.getFeeDataWithDynamicMaxPriorityFeePerGas();
+        tx = {
+          from: activeAccount.address,
+          to: activeAccount.address,
+          value: Zero,
+          nonce: fallbackNonce,
+          maxFeePerGas: BigNumber.from(feeData.maxFeePerGas || 0),
+          maxPriorityFeePerGas: BigNumber.from(
+            feeData.maxPriorityFeePerGas || 0
+          ),
+          gasLimit: BigNumber.from(42000),
+          data: '0x',
+        } as any;
+      }
+    } else if (!tx) {
+      // No fallback nonce provided and tx not found
       return {
         isCanceled: false,
         error: true,
       };
     }
-
-    const { activeAccountType, activeAccountId, accounts, activeNetwork } =
-      this.getState();
-    const activeAccount = accounts[activeAccountType][activeAccountId];
 
     // If the original tx has 0 or very low gas price, fetch current network gas prices
     const oldTxsGasValues: IGasParams = {
