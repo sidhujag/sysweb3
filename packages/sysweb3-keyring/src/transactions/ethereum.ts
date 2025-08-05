@@ -695,11 +695,13 @@ export class EthereumTransactions implements IEthereumTransactions {
       ? {
           ...baseCancelTx,
           gasPrice: newGasValues.gasPrice,
+          type: 0, // Force Type 0 for legacy cancel
         }
       : {
           ...baseCancelTx,
           maxFeePerGas: newGasValues.maxFeePerGas,
           maxPriorityFeePerGas: newGasValues.maxPriorityFeePerGas,
+          // Don't set type - let ethers auto-detect
         };
 
     // Ledger cancel handler
@@ -710,11 +712,12 @@ export class EthereumTransactions implements IEthereumTransactions {
           ? {
               ...formatParams,
               chainId: activeNetwork.chainId,
+              type: 0, // Need explicit type for hardware wallet serialization
             }
           : {
               ...formatParams,
               chainId: activeNetwork.chainId,
-              type: 2,
+              type: 2, // Need explicit type for hardware wallet serialization
             };
 
         const rawTx = serializeTransaction(txFormattedForEthers);
@@ -772,6 +775,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           value: '0x0',
           nonce: this.toBigNumber(formattedTx.nonce)._hex,
           chainId: activeNetwork.chainId,
+          type: isLegacy ? 0 : 2, // Need explicit type for hardware wallet serialization
         };
 
         if (isLegacy) {
@@ -887,12 +891,13 @@ export class EthereumTransactions implements IEthereumTransactions {
             ...formatParams,
             nonce: transactionNonce,
             chainId: activeNetwork.chainId,
+            type: 0, // Force Type 0 for legacy
           }
         : {
             ...formatParams,
             nonce: transactionNonce,
             chainId: activeNetwork.chainId,
-            type: 2,
+            type: 2, // Need explicit type for hardware wallet serialization
           };
       const rawTx = serializeTransaction(txFormattedForEthers);
 
@@ -1020,12 +1025,13 @@ export class EthereumTransactions implements IEthereumTransactions {
                 ...formatParams,
                 nonce: transactionNonce,
                 chainId: activeNetwork.chainId,
+                type: 0, // Force Type 0 for legacy
               }
             : {
                 ...formatParams,
                 nonce: transactionNonce,
                 chainId: activeNetwork.chainId,
-                type: 2,
+                type: 2, // Need explicit type for hardware wallet serialization
               };
           signature.payload.v = parseInt(signature.payload.v, 16); //v parameter must be a number by ethers standards
           const signedTx = serializeTransaction(
@@ -1054,7 +1060,11 @@ export class EthereumTransactions implements IEthereumTransactions {
         );
       }
 
-      const tx: Deferrable<TransactionRequest> = params;
+      // Explicitly set transaction type based on isLegacy flag
+      const tx: Deferrable<TransactionRequest> = isLegacy
+        ? { ...params, type: 0 } // Force Type 0 for legacy transactions
+        : params; // Let ethers auto-detect for EIP-1559
+
       const wallet = new Wallet(decryptedPrivateKey, this.web3Provider);
       try {
         const transaction = await wallet.sendTransaction(tx);
@@ -1190,6 +1200,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         maxFeePerGas: newGasValues.maxFeePerGas,
         maxPriorityFeePerGas: newGasValues.maxPriorityFeePerGas,
         gasLimit: newGasValues.gasLimit,
+        // Don't set type - let ethers auto-detect for EIP-1559
       };
     } else {
       const newGasValues = this.calculateNewGasValues(
@@ -1237,6 +1248,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         data: txData,
         gasLimit: newGasValues.gasLimit,
         gasPrice: newGasValues.gasPrice,
+        type: 0, // Force Type 0 for legacy speedup
       };
     }
 
@@ -1248,11 +1260,12 @@ export class EthereumTransactions implements IEthereumTransactions {
           ? {
               ...formatParams,
               chainId: activeNetwork.chainId,
+              type: 0, // Need explicit type for hardware wallet serialization
             }
           : {
               ...formatParams,
               chainId: activeNetwork.chainId,
-              type: 2,
+              type: 2, // Need explicit type for hardware wallet serialization
             };
 
         const rawTx = serializeTransaction(txFormattedForEthers);
@@ -1317,6 +1330,7 @@ export class EthereumTransactions implements IEthereumTransactions {
               : `${formattedTx.value?._hex || formattedTx.value}`,
           nonce: this.toBigNumber(formattedTx.nonce)._hex,
           chainId: activeNetwork.chainId,
+          type: isLegacy ? 0 : 2, // Need explicit type for hardware wallet serialization
         };
 
         if (formattedTx.data && formattedTx.data !== '0x') {
@@ -1389,6 +1403,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         const { decryptedPrivateKey } = this.getDecryptedPrivateKey();
         const wallet = new Wallet(decryptedPrivateKey, this.web3Provider);
 
+        // Type already set in txWithEditedFee
         const transactionResponse = await wallet.sendTransaction(
           txWithEditedFee
         );
@@ -1471,6 +1486,7 @@ export class EthereumTransactions implements IEthereumTransactions {
             ),
             gasPrice,
             ...(gasLimit && { gasLimit }),
+            type: 0, // Explicitly set Type 0 for legacy token transfers
           };
           transferMethod = await _contract.transfer(
             receiver,
@@ -1543,7 +1559,7 @@ export class EthereumTransactions implements IEthereumTransactions {
             data: txData,
             nonce: transactionNonce,
             chainId: activeNetwork.chainId,
-            type: 2,
+            type: 2, // Need explicit type for hardware wallet serialization
           };
         }
 
@@ -1661,7 +1677,7 @@ export class EthereumTransactions implements IEthereumTransactions {
                 data: txData,
                 nonce: transactionNonce,
                 chainId: activeNetwork.chainId,
-                type: 2,
+                type: 2, // Need explicit type for hardware wallet serialization
               };
             }
             signature.payload.v = parseInt(signature.payload.v, 16); //v parameter must be a number by ethers standards
@@ -1730,6 +1746,7 @@ export class EthereumTransactions implements IEthereumTransactions {
             ),
             gasPrice,
             ...(gasLimit && { gasLimit }),
+            type: 0, // Explicitly set Type 0 for legacy NFT transfers
           };
           transferMethod = await _contract.transferFrom(
             walletSigned.address,
@@ -1743,6 +1760,9 @@ export class EthereumTransactions implements IEthereumTransactions {
               walletSigned.address,
               'pending'
             ),
+            maxPriorityFeePerGas,
+            maxFeePerGas,
+            ...(gasLimit && { gasLimit }),
           };
           transferMethod = await _contract.transferFrom(
             walletSigned.address,
@@ -1796,7 +1816,7 @@ export class EthereumTransactions implements IEthereumTransactions {
             data: txData,
             nonce: transactionNonce,
             chainId: activeNetwork.chainId,
-            type: 2,
+            type: 2, // Need explicit type for hardware wallet serialization
           };
         }
 
@@ -1913,7 +1933,7 @@ export class EthereumTransactions implements IEthereumTransactions {
                 data: txData,
                 nonce: transactionNonce,
                 chainId: activeNetwork.chainId,
-                type: 2,
+                type: 2, // Need explicit type for hardware wallet serialization
               };
             }
             signature.payload.v = parseInt(signature.payload.v, 16); //v parameter must be a number by ethers standards
@@ -1977,7 +1997,28 @@ export class EthereumTransactions implements IEthereumTransactions {
 
         const amount = tokenAmount ? parseInt(tokenAmount) : 1;
 
-        const overrides = {};
+        let overrides;
+        if (isLegacy) {
+          overrides = {
+            nonce: await this.web3Provider.getTransactionCount(
+              walletSigned.address,
+              'pending'
+            ),
+            gasPrice,
+            ...(gasLimit && { gasLimit }),
+            type: 0, // Explicitly set Type 0 for legacy ERC1155 transfers
+          };
+        } else {
+          overrides = {
+            nonce: await this.web3Provider.getTransactionCount(
+              walletSigned.address,
+              'pending'
+            ),
+            maxPriorityFeePerGas,
+            maxFeePerGas,
+            ...(gasLimit && { gasLimit }),
+          };
+        }
 
         transferMethod = await _contract.safeTransferFrom(
           walletSigned.address,
@@ -2033,7 +2074,7 @@ export class EthereumTransactions implements IEthereumTransactions {
             data: txData,
             nonce: transactionNonce,
             chainId: activeNetwork.chainId,
-            type: 2,
+            type: 2, // Need explicit type for hardware wallet serialization
           };
         }
 
@@ -2148,7 +2189,7 @@ export class EthereumTransactions implements IEthereumTransactions {
                 data: txData,
                 nonce: transactionNonce,
                 chainId: activeNetwork.chainId,
-                type: 2,
+                type: 2, // Need explicit type for hardware wallet serialization
               };
             }
             signature.payload.v = parseInt(signature.payload.v, 16); //v parameter must be a number by ethers standards
