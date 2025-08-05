@@ -597,7 +597,10 @@ export class EthereumTransactions implements IEthereumTransactions {
       oldTxsParams;
 
     const calculateAndConvertNewValue = (feeValue: number) => {
-      const calculateValue = String(feeValue * multiplierToUse);
+      // Apply multiplier for replacement transaction (cancel or speedup)
+      const newValue = feeValue * multiplierToUse;
+
+      const calculateValue = String(newValue);
 
       const convertValueToHex =
         '0x' + parseInt(calculateValue, 10).toString(16);
@@ -613,6 +616,7 @@ export class EthereumTransactions implements IEthereumTransactions {
     const multiplierToUse = 1.2; //The same calculation we used in the edit fee modal, always using the 0.2 multiplier
 
     if (!isLegacy) {
+      // For EIP-1559 transactions
       newGasValues.maxFeePerGas = calculateAndConvertNewValue(
         maxFeePerGasToNumber as number
       );
@@ -628,7 +632,7 @@ export class EthereumTransactions implements IEthereumTransactions {
     }
 
     if (isForCancel) {
-      const DEFAULT_GAS_LIMIT_VALUE = '21000';
+      const DEFAULT_GAS_LIMIT_VALUE = '42000';
 
       const convertToHex =
         '0x' + parseInt(DEFAULT_GAS_LIMIT_VALUE, 10).toString(16);
@@ -669,12 +673,38 @@ export class EthereumTransactions implements IEthereumTransactions {
       this.getState();
     const activeAccount = accounts[activeAccountType][activeAccountId];
 
+    // If the original tx has 0 or very low gas price, fetch current network gas prices
     const oldTxsGasValues: IGasParams = {
       maxFeePerGas: tx.maxFeePerGas as BigNumber,
       maxPriorityFeePerGas: tx.maxPriorityFeePerGas as BigNumber,
       gasPrice: tx.gasPrice as BigNumber,
       gasLimit: tx.gasLimit as BigNumber,
     };
+
+    // Only fetch current gas prices if the original tx has exactly 0 or undefined gas
+    // This avoids unnecessary backend calls for legitimate low-gas networks (L2s, testnets)
+    if (isLegacy) {
+      if (!oldTxsGasValues.gasPrice || oldTxsGasValues.gasPrice.isZero()) {
+        // Fetch current network gas price for replacement
+        const currentGasPrice = await this.web3Provider.getGasPrice();
+        oldTxsGasValues.gasPrice = currentGasPrice;
+      }
+    } else {
+      // For EIP-1559 transactions
+      if (
+        !oldTxsGasValues.maxFeePerGas ||
+        oldTxsGasValues.maxFeePerGas.isZero()
+      ) {
+        // Fetch current network fee data for replacement
+        const feeData = await this.getFeeDataWithDynamicMaxPriorityFeePerGas();
+        oldTxsGasValues.maxFeePerGas = BigNumber.from(
+          feeData.maxFeePerGas || 0
+        );
+        oldTxsGasValues.maxPriorityFeePerGas = BigNumber.from(
+          feeData.maxPriorityFeePerGas || 0
+        );
+      }
+    }
 
     const newGasValues = this.calculateNewGasValues(
       oldTxsGasValues,
@@ -1142,12 +1172,38 @@ export class EthereumTransactions implements IEthereumTransactions {
 
     let txWithEditedFee: Deferrable<TransactionRequest>;
 
+    // If the original tx has 0 or very low gas price, fetch current network gas prices
     const oldTxsGasValues: IGasParams = {
       maxFeePerGas: maxFeePerGas as BigNumber,
       maxPriorityFeePerGas: maxPriorityFeePerGas as BigNumber,
       gasPrice: gasPrice as BigNumber,
       gasLimit: gasLimit as BigNumber,
     };
+
+    // Only fetch current gas prices if the original tx has exactly 0 or undefined gas
+    // This avoids unnecessary backend calls for legitimate low-gas networks (L2s, testnets)
+    if (isLegacy) {
+      if (!oldTxsGasValues.gasPrice || oldTxsGasValues.gasPrice.isZero()) {
+        // Fetch current network gas price for replacement
+        const currentGasPrice = await this.web3Provider.getGasPrice();
+        oldTxsGasValues.gasPrice = currentGasPrice;
+      }
+    } else {
+      // For EIP-1559 transactions
+      if (
+        !oldTxsGasValues.maxFeePerGas ||
+        oldTxsGasValues.maxFeePerGas.isZero()
+      ) {
+        // Fetch current network fee data for replacement
+        const feeData = await this.getFeeDataWithDynamicMaxPriorityFeePerGas();
+        oldTxsGasValues.maxFeePerGas = BigNumber.from(
+          feeData.maxFeePerGas || 0
+        );
+        oldTxsGasValues.maxPriorityFeePerGas = BigNumber.from(
+          feeData.maxPriorityFeePerGas || 0
+        );
+      }
+    }
 
     if (!isLegacy) {
       const newGasValues = this.calculateNewGasValues(
