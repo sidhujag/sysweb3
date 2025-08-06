@@ -1459,10 +1459,28 @@ export class KeyringManager implements IKeyringManager {
     // Use getNextAccountId to properly handle placeholder accounts
     const id = this.getNextAccountId(accounts[KeyringAccountType.Trezor]);
 
+    // Convert balance from satoshis to SYS safely
+    // Using string manipulation to avoid precision loss
+    let syscoinBalance = 0;
+    if (!isEVM && balance) {
+      const balanceStr = balance.toString();
+      // Handle conversion without division to preserve precision
+      if (balanceStr.length > 8) {
+        // Has whole SYS part
+        const wholePart = balanceStr.slice(0, -8);
+        const decimalPart = balanceStr.slice(-8);
+        syscoinBalance = parseFloat(`${wholePart}.${decimalPart}`);
+      } else {
+        // Less than 1 SYS
+        const paddedBalance = balanceStr.padStart(8, '0');
+        syscoinBalance = parseFloat(`0.${paddedBalance}`);
+      }
+    }
+
     const trezorAccount = {
       ...this.initialTrezorAccountState,
       balances: {
-        syscoin: isEVM ? 0 : +balance / 1e8,
+        syscoin: isEVM ? 0 : syscoinBalance,
         ethereum: 0,
       },
       address,

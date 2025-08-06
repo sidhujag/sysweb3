@@ -1,8 +1,5 @@
-import { hexlify } from '@ethersproject/bytes';
-
 import { findCoin } from './coin-utils';
 
-export const toHexFromNumber = (decimal: number) => hexlify(decimal);
 export const toDecimalFromHex = (hexString: string) => parseInt(hexString, 16);
 
 export const getPubType = (

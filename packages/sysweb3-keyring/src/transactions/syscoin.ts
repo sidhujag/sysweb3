@@ -174,7 +174,7 @@ export class SyscoinTransactions implements ISyscoinTransactions {
     feeRateBN,
     token = null,
   }: {
-    amount: number;
+    amount: number | string; // Accept both for safer precision handling
     feeRateBN: any; // BigNumber in satoshis/byte
     receivingAddress: string;
     token?: { guid: string; symbol?: string } | null;
@@ -191,7 +191,26 @@ export class SyscoinTransactions implements ISyscoinTransactions {
       throw new Error('Active account not found');
     }
     const xpub = account.xpub;
-    const value = new syscoinjs.utils.BN(amount * 1e8);
+    // Convert amount to satoshis (1 SYS = 1e8 satoshis)
+    // Using BigNumber to prevent precision loss
+    const amountStr = amount.toString();
+
+    // Safe conversion without parseFloat to avoid precision loss
+    // Split the string to handle decimal values properly
+    const parts = amountStr.split('.');
+    const integerPart = parts[0] || '0';
+    const decimalPart = parts[1] || '';
+
+    // Pad or truncate decimal part to 8 places (satoshi precision)
+    const paddedDecimal = decimalPart.padEnd(8, '0').substring(0, 8);
+
+    // Combine to get satoshis (integer + decimal as one number)
+    const satoshiStr = integerPart + paddedDecimal;
+
+    // Remove leading zeros but keep at least one digit
+    const trimmedSatoshis = satoshiStr.replace(/^0+/, '') || '0';
+
+    const value = new syscoinjs.utils.BN(trimmedSatoshis);
     const changeAddress = await this.getAddress(xpub, true);
 
     try {
@@ -362,7 +381,7 @@ export class SyscoinTransactions implements ISyscoinTransactions {
     feeRate,
     token = null,
   }: {
-    amount: number;
+    amount: number | string; // Accept both for safer precision handling
     feeRate?: number;
     receivingAddress: string;
     // Optional fee rate in SYS/byte
