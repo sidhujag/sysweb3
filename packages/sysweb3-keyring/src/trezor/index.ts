@@ -527,15 +527,25 @@ export class TrezorKeyring {
       if (input.sequence) inputItem.sequence = input.sequence;
       const dataInput = psbt.data.inputs[i];
       let path = '';
+
+      // Find path from unknownKeyVals by searching for the key, not using hardcoded index
+      let pathFromInput: string | null = null;
+      if (dataInput.unknownKeyVals && dataInput.unknownKeyVals.length > 0) {
+        for (const kv of dataInput.unknownKeyVals) {
+          if (kv.key.equals(Buffer.from('path'))) {
+            pathFromInput = kv.value.toString();
+            break;
+          }
+        }
+      }
+
       if (
         pathIn ||
-        (dataInput.unknownKeyVals &&
-          dataInput.unknownKeyVals.length > 1 &&
-          dataInput.unknownKeyVals[1].key.equals(Buffer.from('path')) &&
+        (pathFromInput &&
           (!dataInput.bip32Derivation ||
             dataInput.bip32Derivation.length === 0))
       ) {
-        path = pathIn || dataInput.unknownKeyVals[1].value.toString();
+        path = pathIn || pathFromInput;
         inputItem.address_n = this.convertToAddressNFormat(path);
       }
       switch (scriptTypes) {
