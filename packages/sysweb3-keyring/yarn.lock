@@ -1133,10 +1133,10 @@
     "@ethersproject/bytes" "^5.8.0"
     eth-chains "^1.0.0"
 
-"@sidhujag/sysweb3-utils@^1.1.253":
-  version "1.1.253"
-  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-utils/-/sysweb3-utils-1.1.253.tgz#57c8c56e323e985fdb63405f07ad097ab229d8e1"
-  integrity sha512-LcFOoSMqRGYbzWRJEcW+3t6EzM5/pj+cWkclk0RqyIlR2og9ngoDB2XbMgJbvIRnfLKblL/HevRVFMrh+Mey7A==
+"@sidhujag/sysweb3-utils@^1.1.254":
+  version "1.1.254"
+  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-utils/-/sysweb3-utils-1.1.254.tgz#9212ec6590e3e68247527aaec3a2b7ca52370a98"
+  integrity sha512-0yAz1mMHe9QDPfxKrP42SJsdSN59VXl7DDI5DlMuQL/azlPDAcTVnlaxjxakZGPHAoqUsTGMwGPGsKICEFw25w==
   dependencies:
     "@ethersproject/address" "^5.8.0"
     "@ethersproject/contracts" "^5.8.0"
@@ -2724,14 +2724,7 @@ eth-json-rpc-middleware@^6.0.0:
     pify "^3.0.0"
     safe-event-emitter "^1.0.1"
 
-eth-object@^1.0.3:
-  version "1.0.3"
-  resolved "https://registry.yarnpkg.com/eth-object/-/eth-object-1.0.3.tgz#5e7a58615793e570c6b1c009eb282876b4d059b6"
-  integrity sha512-VOWso/tO0Pz66wNlzUveYN0FgaqHQGVr+n60GL6QWQSUW3kwTyyaMxrHNnaDCeq/61YvMUxygGr9FJsnmWKqEg==
-  dependencies:
-    eth-util-lite "^1.0.1"
-
-"eth-object@git+https://github.com/syscoin/eth-object.git":
+eth-object@^1.0.3, "eth-object@git+https://github.com/syscoin/eth-object.git":
   version "1.0.3"
   resolved "git+https://github.com/syscoin/eth-object.git#b5ff300f57c136138b31d6e570c816a147e0f1c9"
   dependencies:
@@ -3979,10 +3972,10 @@ strip-hex-prefix@1.0.0:
   dependencies:
     is-hex-prefixed "1.0.0"
 
-syscoinjs-lib@^1.0.252:
-  version "1.0.252"
-  resolved "https://registry.yarnpkg.com/syscoinjs-lib/-/syscoinjs-lib-1.0.252.tgz#c08e9f1006b414ed8d25c47b305c44bbc099e990"
-  integrity sha512-9KvyAeqAbHLq3Sab59hf74zPHfPevLdaSlP7IvIHp+El0cml0+0d8NYETeilTOdG7126dHXByexRvTeB99baOA==
+syscoinjs-lib@^1.0.253:
+  version "1.0.253"
+  resolved "https://registry.yarnpkg.com/syscoinjs-lib/-/syscoinjs-lib-1.0.253.tgz#8e358211695d4469623fdbe3a83d8e6f8dc8f91a"
+  integrity sha512-cTZL/sAr6PjMjvkdNXx/edYhaLln4YBd9df3AmeZcj0zOD1dn9BvvVg4QwHtHMcC2n6WE7EKxXdpnKMsxHu4vA==
   dependencies:
     "@ethersproject/abi" "^5.8.0"
     "@ethersproject/keccak256" "^5.8.0"

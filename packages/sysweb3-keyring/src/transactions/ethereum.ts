@@ -1555,13 +1555,12 @@ export class EthereumTransactions implements IEthereumTransactions {
           getErc20Abi(),
           walletSigned
         );
-        const calculatedTokenAmount = BigNumber.from(
-          decimals
-            ? parseUnits(
-                tokenAmount as string,
-                this.toBigNumber(decimals as number)
-              )
-            : parseEther(tokenAmount as string)
+        // Preserve zero-decimal tokens: use provided decimals when defined (including 0).
+        const resolvedDecimals =
+          decimals === undefined || decimals === null ? 18 : Number(decimals);
+        const calculatedTokenAmount = parseUnits(
+          tokenAmount as string,
+          resolvedDecimals
         );
         let transferMethod;
         if (isLegacy) {
@@ -1611,8 +1610,11 @@ export class EthereumTransactions implements IEthereumTransactions {
       try {
         const _contract = new Contract(tokenAddress, getErc20Abi(), signer);
 
-        const calculatedTokenAmount = BigNumber.from(
-          parseEther(tokenAmount as string)
+        const resolvedDecimals =
+          decimals === undefined || decimals === null ? 18 : Number(decimals);
+        const calculatedTokenAmount = parseUnits(
+          tokenAmount as string,
+          resolvedDecimals
         );
 
         const txData = _contract.interface.encodeFunctionData('transfer', [
@@ -1691,8 +1693,11 @@ export class EthereumTransactions implements IEthereumTransactions {
       try {
         const _contract = new Contract(tokenAddress, getErc20Abi(), signer);
 
-        const calculatedTokenAmount = BigNumber.from(
-          parseEther(tokenAmount as string)
+        const resolvedDecimals =
+          decimals === undefined || decimals === null ? 18 : Number(decimals);
+        const calculatedTokenAmount = parseUnits(
+          tokenAmount as string,
+          resolvedDecimals
         );
 
         const txData = _contract.interface.encodeFunctionData('transfer', [
@@ -2081,7 +2086,8 @@ export class EthereumTransactions implements IEthereumTransactions {
           walletSigned
         );
 
-        const amount = tokenAmount ? parseInt(tokenAmount) : 1;
+        // Use BigNumber to avoid JS number overflow/precision loss
+        const amount = BigNumber.from(tokenAmount ?? '1');
 
         let overrides;
         if (isLegacy) {
@@ -2128,7 +2134,7 @@ export class EthereumTransactions implements IEthereumTransactions {
       try {
         const _contract = new Contract(tokenAddress, getErc55Abi(), signer);
 
-        const amount = tokenAmount ? parseInt(tokenAmount) : 1;
+        const amount = BigNumber.from(tokenAmount ?? '1');
 
         const txData = _contract.interface.encodeFunctionData(
           'safeTransferFrom',
@@ -2205,7 +2211,7 @@ export class EthereumTransactions implements IEthereumTransactions {
       try {
         const _contract = new Contract(tokenAddress, getErc55Abi(), signer);
 
-        const amount = tokenAmount ? parseInt(tokenAmount) : 1;
+        const amount = BigNumber.from(tokenAmount ?? '1');
 
         const txData = _contract.interface.encodeFunctionData(
           'safeTransferFrom',
