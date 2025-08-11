@@ -9,12 +9,7 @@ import {
   TransactionResponse as EthersTransactionResponse,
 } from '@ethersproject/providers';
 import { serialize as serializeTransaction } from '@ethersproject/transactions';
-import {
-  parseEther,
-  parseUnits,
-  formatEther,
-  formatUnits,
-} from '@ethersproject/units';
+import { parseUnits, formatEther, formatUnits } from '@ethersproject/units';
 import { Wallet } from '@ethersproject/wallet';
 import {
   concatSig,
@@ -1158,15 +1153,28 @@ export class EthereumTransactions implements IEthereumTransactions {
     isSpeedUp: boolean;
     transaction?: TransactionResponse;
   }> => {
-    const tx = (await this.web3Provider.getTransaction(
+    let tx = (await this.web3Provider.getTransaction(
       txHash
     )) as Deferrable<EthersTransactionResponse>;
 
     if (!tx) {
-      return {
-        isSpeedUp: false,
-        error: true,
-      };
+      // Retry a couple of times in case the node hasn't indexed the pending tx yet
+      for (let attempt = 0; attempt < 2 && !tx; attempt++) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, 500 * (attempt + 1))
+        );
+        tx = (await this.web3Provider.getTransaction(
+          txHash
+        )) as Deferrable<EthersTransactionResponse>;
+      }
+      if (!tx) {
+        return {
+          isSpeedUp: false,
+          error: true,
+          code: 'TX_NOT_FOUND',
+          message: 'Original transaction not yet available from RPC provider',
+        } as any;
+      }
     }
 
     const { activeAccountType, activeAccountId, accounts, activeNetwork } =
@@ -1262,18 +1270,16 @@ export class EthereumTransactions implements IEthereumTransactions {
             return {
               isSpeedUp: false,
               error: true,
-            };
+              code: 'CONTRACT_CALL_MAX_SEND',
+              message:
+                'Cannot speed up a likely max-send contract call; value cannot be adjusted to fit new gas',
+            } as any;
           }
 
-          // For non-contract calls, reduce value to fit within balance
-          adjustedValue = currentBalance.sub(newGasCost);
-
-          // Ensure we don't go below a minimum threshold (0.0001 ETH)
-          const minValue = parseEther('0.0001');
-          if (adjustedValue.lt(minValue)) {
-            console.warn('[SpeedUp] Adjusted value too low, keeping original');
-            adjustedValue = txValue;
-          }
+          // For non-contract calls, reduce value to fit within balance (clamp at zero)
+          adjustedValue = currentBalance.gt(newGasCost)
+            ? currentBalance.sub(newGasCost)
+            : Zero;
         }
       }
 
@@ -1311,18 +1317,16 @@ export class EthereumTransactions implements IEthereumTransactions {
             return {
               isSpeedUp: false,
               error: true,
-            };
+              code: 'CONTRACT_CALL_MAX_SEND',
+              message:
+                'Cannot speed up a likely max-send contract call; value cannot be adjusted to fit new gas',
+            } as any;
           }
 
-          // For non-contract calls, reduce value to fit within balance
-          adjustedValue = currentBalance.sub(newGasCost);
-
-          // Ensure we don't go below a minimum threshold (0.0001 ETH)
-          const minValue = parseEther('0.0001');
-          if (adjustedValue.lt(minValue)) {
-            console.warn('[SpeedUp] Adjusted value too low, keeping original');
-            adjustedValue = txValue;
-          }
+          // For non-contract calls, reduce value to fit within balance (clamp at zero)
+          adjustedValue = currentBalance.gt(newGasCost)
+            ? currentBalance.sub(newGasCost)
+            : Zero;
         }
       }
 
@@ -1390,10 +1394,20 @@ export class EthereumTransactions implements IEthereumTransactions {
           '[SpeedUp] Failed to send replacement transaction with Ledger:',
           error
         );
+        const message = (error as any)?.message || String(error);
+        const lower = message.toLowerCase();
+        const code = lower.includes('underpriced')
+          ? 'REPLACEMENT_UNDERPRICED'
+          : lower.includes('known transaction') ||
+            lower.includes('already known')
+          ? 'REPLACEMENT_ALREADY_KNOWN'
+          : 'REPLACEMENT_SEND_FAILED';
         return {
           isSpeedUp: false,
           error: true,
-        };
+          code,
+          message,
+        } as any;
       }
     };
 
@@ -1476,10 +1490,20 @@ export class EthereumTransactions implements IEthereumTransactions {
           '[SpeedUp] Failed to send replacement transaction with Trezor:',
           error
         );
+        const message = (error as any)?.message || String(error);
+        const lower = message.toLowerCase();
+        const code = lower.includes('underpriced')
+          ? 'REPLACEMENT_UNDERPRICED'
+          : lower.includes('known transaction') ||
+            lower.includes('already known')
+          ? 'REPLACEMENT_ALREADY_KNOWN'
+          : 'REPLACEMENT_SEND_FAILED';
         return {
           isSpeedUp: false,
           error: true,
-        };
+          code,
+          message,
+        } as any;
       }
     };
 
@@ -1509,10 +1533,22 @@ export class EthereumTransactions implements IEthereumTransactions {
           '[SpeedUp] Failed to send replacement transaction:',
           error
         );
+        const message = (error as any)?.message || String(error);
+        const lower = message.toLowerCase();
+        const code = lower.includes('underpriced')
+          ? 'REPLACEMENT_UNDERPRICED'
+          : lower.includes('known transaction') ||
+            lower.includes('already known')
+          ? 'REPLACEMENT_ALREADY_KNOWN'
+          : lower.includes('insufficient funds')
+          ? 'INSUFFICIENT_FUNDS_REPLACEMENT'
+          : 'REPLACEMENT_SEND_FAILED';
         return {
           isSpeedUp: false,
           error: true,
-        };
+          code,
+          message,
+        } as any;
       }
     };
 
