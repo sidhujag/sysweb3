@@ -248,10 +248,8 @@ export class AppClient {
     }
 
     const clientInterpreter = new ClientCommandInterpreter();
-    clientInterpreter.addKnownList(
-      walletPolicy.keys.map((k) => Buffer.from(k, 'ascii'))
-    );
-    clientInterpreter.addKnownPreimage(walletPolicy.serialize());
+    // Provide wallet policy artifacts to the interpreter
+    clientInterpreter.addKnownWalletPolicy(walletPolicy);
 
     const addressIndexBuffer = Buffer.alloc(4);
     addressIndexBuffer.writeUInt32BE(addressIndex, 0);
@@ -311,10 +309,7 @@ export class AppClient {
     const clientInterpreter = new ClientCommandInterpreter(progressCallback);
 
     // prepare ClientCommandInterpreter
-    clientInterpreter.addKnownList(
-      walletPolicy.keys.map((k) => Buffer.from(k, 'ascii'))
-    );
-    clientInterpreter.addKnownPreimage(walletPolicy.serialize());
+    clientInterpreter.addKnownWalletPolicy(walletPolicy);
 
     clientInterpreter.addKnownMapping(merkelizedPsbt.globalMerkleMap);
     for (const map of merkelizedPsbt.inputMerkleMaps) {

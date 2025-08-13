@@ -536,6 +536,68 @@ export class LedgerKeyring {
         }
       }
 
+      // Enhance each output with bip32Derivation when it's a change/output owned by the wallet
+      for (let i = 0; i < psbt.data.outputs.length; i++) {
+        const dataOutput = psbt.data.outputs[i];
+
+        // Skip if derivation already present
+        if (
+          dataOutput.bip32Derivation &&
+          dataOutput.bip32Derivation.length > 0
+        ) {
+          continue;
+        }
+
+        // Extract path from unknownKeyVals by searching for the key 'path'
+        let pathFromOutput: string | null = null;
+        if (dataOutput.unknownKeyVals && dataOutput.unknownKeyVals.length > 0) {
+          for (const kv of dataOutput.unknownKeyVals) {
+            if (kv.key.equals(Buffer.from('path'))) {
+              pathFromOutput = kv.value.toString();
+              break;
+            }
+          }
+        }
+
+        if (pathFromOutput) {
+          const fullPath = pathFromOutput;
+          const accountPath = getAccountDerivationPath(
+            currency,
+            slip44,
+            accountId
+          );
+          const relativePath = fullPath
+            .replace(accountPath, '')
+            .replace(/^\//, '');
+          const derivationTokens = relativePath.split('/').filter((t) => t);
+
+          const derivedAccount = derivationTokens.reduce(
+            (acc: any, token: string) => {
+              const index = parseInt(token);
+              if (isNaN(index)) {
+                return acc;
+              }
+              return acc.derive(index);
+            },
+            accountNode
+          );
+
+          const pubkey = derivedAccount.publicKey;
+
+          if (pubkey && Buffer.isBuffer(pubkey)) {
+            const bip32Derivation = {
+              masterFingerprint: Buffer.from(fingerprint, 'hex'),
+              path: fullPath,
+              pubkey: pubkey,
+            };
+
+            psbt.updateOutput(i, {
+              bip32Derivation: [bip32Derivation],
+            });
+          }
+        }
+      }
+
       return psbt;
     }, 'convertToLedgerFormat');
   }
