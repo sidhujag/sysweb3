@@ -580,6 +580,11 @@ export class HardwareWalletManager extends EventEmitter {
       } catch (error) {
         lastError = error as Error;
 
+        // Do not retry on explicit user cancellations (Ledger/Trezor)
+        if (this.isUserCancellationError(lastError)) {
+          throw lastError;
+        }
+
         if (attempt < config.maxRetries) {
           const delay = this.calculateBackoffDelay(attempt);
 
@@ -600,5 +605,51 @@ export class HardwareWalletManager extends EventEmitter {
         lastError?.message || 'Unknown error'
       }`
     );
+  }
+
+  /**
+   * Detects common user-cancellation errors to avoid pointless retries
+   */
+  private isUserCancellationError(err: Error): boolean {
+    const message = (err?.message || '').toLowerCase();
+    const name = (err as any)?.name || '';
+    const statusCode = (err as any)?.statusCode;
+
+    // Ledger: 0x6985 (Conditions of use not satisfied) on rejection
+    if (statusCode === 0x6985) return true;
+
+    // Message-based heuristics across vendors
+    if (
+      message.includes('0x6985') ||
+      (message.includes('condition') &&
+        message.includes('not') &&
+        message.includes('satisf')) ||
+      message.includes('not allowed') ||
+      message.includes('permission denied') ||
+      message.includes('user rejected') ||
+      message.includes('denied by the user') ||
+      message.includes('failure_actioncancelled') ||
+      message.includes('denied') ||
+      message.includes('rejected') ||
+      message.includes('refused') ||
+      message.includes('cancelled') ||
+      message.includes('canceled') ||
+      message.includes('popup closed')
+    ) {
+      return true;
+    }
+
+    // Name-based checks (align with frontend utilities)
+    if (
+      name === 'NotAllowedError' ||
+      name === 'AbortError' ||
+      name === 'UserCancel' ||
+      name === 'TransportError' ||
+      name === 'DOMException'
+    ) {
+      return true;
+    }
+
+    return false;
   }
 }

@@ -324,11 +324,20 @@ export class SyscoinTransactions implements ISyscoinTransactions {
         xpubWithDescriptor
       );
 
-      // Sign the enhanced PSBT with Ledger
+      // Register lazily and retrieve HMAC for silent operations thereafter
+      let hmac: Buffer | null = null;
+      if (typeof (this.ledger as any).getOrRegisterHmac === 'function') {
+        hmac = await (this.ledger as any).getOrRegisterHmac(
+          walletPolicy,
+          fingerprint
+        );
+      }
+
+      // Sign the enhanced PSBT with Ledger using the HMAC (silent after first approval)
       const signatureEntries = await this.ledger.ledgerUtxoClient.signPsbt(
         enhancedPsbt.toBase64(),
         walletPolicy,
-        null // No HMAC needed for standard policy
+        hmac
       );
 
       signatureEntries.forEach(([inputIndex, partialSig]) => {

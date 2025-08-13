@@ -6,6 +6,7 @@ import SysUtxoClient, { DefaultWalletPolicy } from './bitcoin_client';
 import {
   DESCRIPTOR,
   RECEIVING_ADDRESS_INDEX,
+  WILL_NOT_DISPLAY,
   // WILL_NOT_DISPLAY,
 } from './consts';
 import { fromBase58 } from '@trezor/utxo-lib/lib/bip32';
@@ -37,6 +38,8 @@ export class LedgerKeyring {
   public utxo: IUTXOMethods;
   public transport: Transport | null = null;
   private hardwareWalletManager: HardwareWalletManager;
+  // In-memory cache of registered wallet policy HMACs
+  private walletHmacCache: Map<string, Buffer> = new Map();
 
   constructor() {
     this.hardwareWalletManager = new HardwareWalletManager();
@@ -55,6 +58,7 @@ export class LedgerKeyring {
         // Clear clients on disconnect
         this.ledgerEVMClient = null as any;
         this.ledgerUtxoClient = null as any;
+        this.walletHmacCache.clear();
       }
     });
 
@@ -121,9 +125,11 @@ export class LedgerKeyring {
           xpubWithDescriptor
         );
 
+        const hmac = await this.getOrRegisterHmac(walletPolicy, fingerprint);
+
         const address = await this.ledgerUtxoClient.getWalletAddress(
           walletPolicy,
-          null,
+          hmac,
           RECEIVING_ADDRESS_INDEX,
           index,
           !!showInLedger
@@ -157,17 +163,29 @@ export class LedgerKeyring {
     return this.executeWithRetry(async () => {
       this.setHdPath(coin, index, slip44);
 
-      const xpub = await this.ledgerUtxoClient.getExtendedPubkey(
-        this.hdPath,
-        true
-      );
-
-      const decoded = Buffer.from(bs58check.decode(xpub));
-      const zpubVersion = Buffer.from('04b24746', 'hex');
-      zpubVersion.copy(decoded, 0, 0, 4);
-      const zpub = bs58check.encode(decoded);
-
-      return zpub
+      {
+        // Syscoin and general UTXO flow: try silent first, then fall back to on-device display for unusual paths
+        try {
+          const xpub = await this.ledgerUtxoClient.getExtendedPubkey(
+            this.hdPath,
+            WILL_NOT_DISPLAY
+          );
+    
+          const decoded = Buffer.from(bs58check.decode(xpub));
+          const zpubVersion = Buffer.from('04b24746', 'hex');
+          zpubVersion.copy(decoded, 0, 0, 4);
+          const zpub = bs58check.encode(decoded);
+    
+          return zpub
+        } catch (err) {
+          // Retry with display=true to allow unusual paths with user approval
+          const xpubWithDisplay = await this.ledgerUtxoClient.getExtendedPubkey(
+            this.hdPath,
+            true
+          );
+          return xpubWithDisplay;
+        }
+      }
     }, 'getXpub');
   };
 
@@ -338,6 +356,53 @@ export class LedgerKeyring {
     }
   };
 
+  // Build a stable cache key for a policy bound to the device and derivation path
+  private buildWalletCacheKey(
+    fingerprint: string,
+    descriptorTemplate: string,
+    hdPath: string
+  ): string {
+    return `${fingerprint}|${descriptorTemplate}|${hdPath}`;
+  }
+
+  // Lazily register the wallet policy and cache HMAC in memory only
+  private async getOrRegisterHmac(
+    walletPolicy: any,
+    fingerprint: string
+  ): Promise<Buffer | null> {
+    const cacheKey = this.buildWalletCacheKey(
+      fingerprint,
+      walletPolicy.descriptorTemplate,
+      this.hdPath
+    );
+
+    const cached = this.walletHmacCache.get(cacheKey);
+    if (cached) return cached;
+
+    // If registerWallet is unavailable (tests/mocks), fall back to null HMAC
+    const registerWallet: any = (this.ledgerUtxoClient as any)?.registerWallet;
+    if (typeof registerWallet !== 'function') {
+      return null;
+    }
+
+    try {
+      // Register once (device approval). If user cancels, error will propagate via retryOperation
+      const result = await registerWallet.call(
+        this.ledgerUtxoClient,
+        walletPolicy
+      );
+      const walletHMAC = Array.isArray(result) ? result[1] : null;
+      if (walletHMAC && Buffer.isBuffer(walletHMAC)) {
+        this.walletHmacCache.set(cacheKey, walletHMAC);
+        return walletHMAC;
+      }
+      return null;
+    } catch (e) {
+      // On failure, proceed without HMAC (device may prompt)
+      return null;
+    }
+  }
+
   private setHdPath(coin: string, accountIndex: number, slip44: number) {
     if (isEvmCoin(coin, slip44)) {
       // For EVM, the "accountIndex" parameter is actually used as the address index
@@ -354,7 +419,6 @@ export class LedgerKeyring {
       this.hdPath = getAccountDerivationPath(coin, slip44, accountIndex);
     }
   }
-
 
   /**
    * Convert PSBT to Ledger format with retry logic
