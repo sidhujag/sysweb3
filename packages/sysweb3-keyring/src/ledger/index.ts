@@ -3,11 +3,7 @@
 /* eslint-disable import/order */
 import Transport from '@ledgerhq/hw-transport';
 import SysUtxoClient, { DefaultWalletPolicy } from './bitcoin_client';
-import {
-  DESCRIPTOR,
-  RECEIVING_ADDRESS_INDEX,
-  WILL_NOT_DISPLAY,
-} from './consts';
+import { RECEIVING_ADDRESS_INDEX, WILL_NOT_DISPLAY } from './consts';
 import { getNetworkConfig } from '@sidhujag/sysweb3-network';
 import BIP32Factory from 'bip32';
 import * as ecc from 'tiny-secp256k1';
@@ -118,12 +114,18 @@ export class LedgerKeyring {
       const xpub = await this.getXpub({ index, coin, slip44 });
       this.setHdPath(coin, index, slip44);
 
-      const xpubWithDescriptor = `[${this.hdPath}]${xpub}`.replace(
+      // Convert stored/display zpub/vpub to device-friendly xpub/tpub for policy registration
+      const deviceXpub = convertExtendedKeyVersion(
+        xpub,
+        slip44 === 1 ? '043587cf' : '0488b21e'
+      );
+      const xpubWithDescriptor = `[${this.hdPath}]${deviceXpub}`.replace(
         'm',
         fingerprint
       );
       const walletPolicy = new DefaultWalletPolicy(
-        DESCRIPTOR,
+        // Ensure policy template matches BIP84 single-sig wpkh
+        'wpkh(@0/**)',
         xpubWithDescriptor
       );
 
@@ -463,6 +465,7 @@ export class LedgerKeyring {
       const fingerprint = await this.getMasterFingerprint();
 
       // Enhance each input with bip32Derivation
+      const missingInputDerivations: number[] = [];
       for (let i = 0; i < psbt.inputCount; i++) {
         const dataInput = psbt.data.inputs[i];
 
@@ -534,9 +537,17 @@ export class LedgerKeyring {
             });
           }
         }
+
+        if (
+          !dataInput.bip32Derivation ||
+          dataInput.bip32Derivation.length === 0
+        ) {
+          missingInputDerivations.push(i);
+        }
       }
 
       // Enhance each output with bip32Derivation when it's a change/output owned by the wallet
+      const missingOutputDerivations: number[] = [];
       for (let i = 0; i < psbt.data.outputs.length; i++) {
         const dataOutput = psbt.data.outputs[i];
 
@@ -596,6 +607,35 @@ export class LedgerKeyring {
             });
           }
         }
+
+        // Track outputs that declared a path but still lack derivation info
+        if (pathFromOutput) {
+          if (
+            !dataOutput.bip32Derivation ||
+            dataOutput.bip32Derivation.length === 0
+          ) {
+            missingOutputDerivations.push(i);
+          }
+        }
+      }
+
+      // If any wallet-owned inputs/outputs are missing bip32Derivation, fail early with a clear error
+      if (
+        missingInputDerivations.length > 0 ||
+        missingOutputDerivations.length > 0
+      ) {
+        const parts: string[] = [];
+        if (missingInputDerivations.length > 0) {
+          parts.push(`inputs [${missingInputDerivations.join(', ')}]`);
+        }
+        if (missingOutputDerivations.length > 0) {
+          parts.push(`outputs [${missingOutputDerivations.join(', ')}]`);
+        }
+        throw new Error(
+          `convertToLedgerFormat: Missing bip32Derivation for ${parts.join(
+            ' and '
+          )}. Ensure PSBT includes a 'path' unknownKeyVal or BIP32_DERIVATION for wallet-owned entries.`
+        );
       }
 
       return psbt;
