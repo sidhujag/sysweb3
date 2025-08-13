@@ -1225,22 +1225,22 @@
   resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-core/-/sysweb3-core-1.0.27.tgz#b7dd7d065c1845519e91ac470540ab94721eb33b"
   integrity sha512-aeUJpk+DiziPJbD6HFnfixKZj0T4HYStshjk6+adziftLwamNc3MIp+MtIVZwtzvNpbzIXwAnuJM/QXQsc01NQ==
 
-"@sidhujag/sysweb3-network@^1.0.104":
-  version "1.0.104"
-  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-network/-/sysweb3-network-1.0.104.tgz#74b6e6f1f3e5c4208f19982f7615019b2db945a8"
-  integrity sha512-GSN7IYDEOprT0e5uYcnbfeYER6DlA4/w+jYxkLFKh2op5fPizwjKHwWQdw+6xFnot3SG/ZbNl+k9rHv1q+7j/g==
+"@sidhujag/sysweb3-network@^1.0.105":
+  version "1.0.105"
+  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-network/-/sysweb3-network-1.0.105.tgz#d76eac5ccfe789086b4de2dee8772ab56ced11e6"
+  integrity sha512-Eajo1OhtMWqy8Yu5+WJvuymT+Dk+JIVU+zkCTRa0XmnBwWGrDIYgWNS4HVDdAJBmPhqFduSt5fLFBe91NrG5Nw==
   dependencies:
     "@ethersproject/bytes" "^5.8.0"
     eth-chains "^1.0.0"
 
-"@sidhujag/sysweb3-utils@^1.1.250":
-  version "1.1.250"
-  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-utils/-/sysweb3-utils-1.1.250.tgz#3a9cdae9feb5d6c12ca17cccb61525ea2383baa7"
-  integrity sha512-gR2pl8R7/Ge0isYJWcIwvAvWGWYDRYLKqB6VcorQeeBsWqMzzzRH+FIp3Td0tt/G11nsdATeNw7Xk3ns9IHo5A==
+"@sidhujag/sysweb3-utils@^1.1.254":
+  version "1.1.254"
+  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-utils/-/sysweb3-utils-1.1.254.tgz#9212ec6590e3e68247527aaec3a2b7ca52370a98"
+  integrity sha512-0yAz1mMHe9QDPfxKrP42SJsdSN59VXl7DDI5DlMuQL/azlPDAcTVnlaxjxakZGPHAoqUsTGMwGPGsKICEFw25w==
   dependencies:
     "@ethersproject/address" "^5.8.0"
     "@ethersproject/contracts" "^5.8.0"
-    "@sidhujag/sysweb3-network" "^1.0.104"
+    "@sidhujag/sysweb3-network" "^1.0.105"
     axios "^0.26.1"
     bech32 "^2.0.0"
     bip84 "^0.2.7"
@@ -4309,10 +4309,10 @@ supports-color@^7.1.0:
   dependencies:
     has-flag "^4.0.0"
 
-syscoinjs-lib@^1.0.250:
-  version "1.0.250"
-  resolved "https://registry.yarnpkg.com/syscoinjs-lib/-/syscoinjs-lib-1.0.250.tgz#9e6d84117f3301a5d6d3dde665dbd374b4f04899"
-  integrity sha512-CaVi7c+hZfMy43Fp1RUswIiPKldTsr2sWD5cluXim3/qLve3Ui4N/HQRSZhYNtI2R/rqI/eZMZFRIDFlucsITQ==
+syscoinjs-lib@^1.0.253:
+  version "1.0.253"
+  resolved "https://registry.yarnpkg.com/syscoinjs-lib/-/syscoinjs-lib-1.0.253.tgz#8e358211695d4469623fdbe3a83d8e6f8dc8f91a"
+  integrity sha512-cTZL/sAr6PjMjvkdNXx/edYhaLln4YBd9df3AmeZcj0zOD1dn9BvvVg4QwHtHMcC2n6WE7EKxXdpnKMsxHu4vA==
   dependencies:
     "@ethersproject/abi" "^5.8.0"
     "@ethersproject/keccak256" "^5.8.0"

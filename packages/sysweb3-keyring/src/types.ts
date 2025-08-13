@@ -45,7 +45,8 @@ export type SimpleTransactionRequest = {
 export interface IEthereumTransactions {
   cancelSentTransaction: (
     txHash: string,
-    isLegacy?: boolean
+    isLegacy?: boolean,
+    fallbackNonce?: number
   ) => Promise<{
     error?: boolean;
     isCanceled: boolean;

@@ -449,13 +449,19 @@ export class LedgerKeyring {
           }
         }
 
-        // Extract path from unknownKeyVals
-        if (
-          dataInput.unknownKeyVals &&
-          dataInput.unknownKeyVals.length > 1 &&
-          dataInput.unknownKeyVals[1].key.equals(Buffer.from('path'))
-        ) {
-          const fullPath = dataInput.unknownKeyVals[1].value.toString();
+        // Extract path from unknownKeyVals by searching for the key, not using hardcoded index
+        let pathFromInput: string | null = null;
+        if (dataInput.unknownKeyVals && dataInput.unknownKeyVals.length > 0) {
+          for (const kv of dataInput.unknownKeyVals) {
+            if (kv.key.equals(Buffer.from('path'))) {
+              pathFromInput = kv.value.toString();
+              break;
+            }
+          }
+        }
+
+        if (pathFromInput) {
+          const fullPath = pathFromInput;
           const accountPath = getAccountDerivationPath(
             currency,
             slip44,

@@ -9,12 +9,7 @@ import {
   TransactionResponse as EthersTransactionResponse,
 } from '@ethersproject/providers';
 import { serialize as serializeTransaction } from '@ethersproject/transactions';
-import {
-  parseEther,
-  parseUnits,
-  formatEther,
-  formatUnits,
-} from '@ethersproject/units';
+import { parseUnits, formatEther, formatUnits } from '@ethersproject/units';
 import { Wallet } from '@ethersproject/wallet';
 import {
   concatSig,
@@ -597,7 +592,10 @@ export class EthereumTransactions implements IEthereumTransactions {
       oldTxsParams;
 
     const calculateAndConvertNewValue = (feeValue: number) => {
-      const calculateValue = String(feeValue * multiplierToUse);
+      // Apply multiplier for replacement transaction (cancel or speedup)
+      const newValue = feeValue * multiplierToUse;
+
+      const calculateValue = String(newValue);
 
       const convertValueToHex =
         '0x' + parseInt(calculateValue, 10).toString(16);
@@ -613,6 +611,7 @@ export class EthereumTransactions implements IEthereumTransactions {
     const multiplierToUse = 1.2; //The same calculation we used in the edit fee modal, always using the 0.2 multiplier
 
     if (!isLegacy) {
+      // For EIP-1559 transactions
       newGasValues.maxFeePerGas = calculateAndConvertNewValue(
         maxFeePerGasToNumber as number
       );
@@ -628,7 +627,7 @@ export class EthereumTransactions implements IEthereumTransactions {
     }
 
     if (isForCancel) {
-      const DEFAULT_GAS_LIMIT_VALUE = '21000';
+      const DEFAULT_GAS_LIMIT_VALUE = '42000';
 
       const convertToHex =
         '0x' + parseInt(DEFAULT_GAS_LIMIT_VALUE, 10).toString(16);
@@ -646,35 +645,91 @@ export class EthereumTransactions implements IEthereumTransactions {
   };
   cancelSentTransaction = async (
     txHash: string,
-    isLegacy?: boolean
+    isLegacy?: boolean,
+    fallbackNonce?: number
   ): Promise<{
     error?: boolean;
     isCanceled: boolean;
     transaction?: TransactionResponse;
   }> => {
-    const tx = (await this.web3Provider.getTransaction(
+    const { activeAccountType, activeAccountId, accounts, activeNetwork } =
+      this.getState();
+    const activeAccount = accounts[activeAccountType][activeAccountId];
+
+    let tx = (await this.web3Provider.getTransaction(
       txHash
     )) as Deferrable<EthersTransactionResponse>;
 
-    if (!tx) {
-      //If we don't find the TX or is already confirmed we send as error true to show this message
-      //in the alert at Pali
+    // If transaction not found, create a minimal tx object with current gas prices
+    // This handles cases where tx with 0 gas never made it to the mempool
+    if (!tx && fallbackNonce !== undefined) {
+      // Fetch current network gas prices for the cancellation
+      if (isLegacy) {
+        const currentGasPrice = await this.web3Provider.getGasPrice();
+        tx = {
+          from: activeAccount.address,
+          to: activeAccount.address,
+          value: Zero,
+          nonce: fallbackNonce,
+          gasPrice: currentGasPrice,
+          gasLimit: BigNumber.from(42000),
+          data: '0x',
+        } as any;
+      } else {
+        const feeData = await this.getFeeDataWithDynamicMaxPriorityFeePerGas();
+        tx = {
+          from: activeAccount.address,
+          to: activeAccount.address,
+          value: Zero,
+          nonce: fallbackNonce,
+          maxFeePerGas: BigNumber.from(feeData.maxFeePerGas || 0),
+          maxPriorityFeePerGas: BigNumber.from(
+            feeData.maxPriorityFeePerGas || 0
+          ),
+          gasLimit: BigNumber.from(42000),
+          data: '0x',
+        } as any;
+      }
+    } else if (!tx) {
+      // No fallback nonce provided and tx not found
       return {
         isCanceled: false,
         error: true,
       };
     }
 
-    const { activeAccountType, activeAccountId, accounts, activeNetwork } =
-      this.getState();
-    const activeAccount = accounts[activeAccountType][activeAccountId];
-
+    // If the original tx has 0 or very low gas price, fetch current network gas prices
     const oldTxsGasValues: IGasParams = {
       maxFeePerGas: tx.maxFeePerGas as BigNumber,
       maxPriorityFeePerGas: tx.maxPriorityFeePerGas as BigNumber,
       gasPrice: tx.gasPrice as BigNumber,
       gasLimit: tx.gasLimit as BigNumber,
     };
+
+    // Only fetch current gas prices if the original tx has exactly 0 or undefined gas
+    // This avoids unnecessary backend calls for legitimate low-gas networks (L2s, testnets)
+    if (isLegacy) {
+      if (!oldTxsGasValues.gasPrice || oldTxsGasValues.gasPrice.isZero()) {
+        // Fetch current network gas price for replacement
+        const currentGasPrice = await this.web3Provider.getGasPrice();
+        oldTxsGasValues.gasPrice = currentGasPrice;
+      }
+    } else {
+      // For EIP-1559 transactions
+      if (
+        !oldTxsGasValues.maxFeePerGas ||
+        oldTxsGasValues.maxFeePerGas.isZero()
+      ) {
+        // Fetch current network fee data for replacement
+        const feeData = await this.getFeeDataWithDynamicMaxPriorityFeePerGas();
+        oldTxsGasValues.maxFeePerGas = BigNumber.from(
+          feeData.maxFeePerGas || 0
+        );
+        oldTxsGasValues.maxPriorityFeePerGas = BigNumber.from(
+          feeData.maxPriorityFeePerGas || 0
+        );
+      }
+    }
 
     const newGasValues = this.calculateNewGasValues(
       oldTxsGasValues,
@@ -695,11 +750,13 @@ export class EthereumTransactions implements IEthereumTransactions {
       ? {
           ...baseCancelTx,
           gasPrice: newGasValues.gasPrice,
+          type: 0, // Force Type 0 for legacy cancel
         }
       : {
           ...baseCancelTx,
           maxFeePerGas: newGasValues.maxFeePerGas,
           maxPriorityFeePerGas: newGasValues.maxPriorityFeePerGas,
+          // Don't set type - let ethers auto-detect
         };
 
     // Ledger cancel handler
@@ -710,11 +767,12 @@ export class EthereumTransactions implements IEthereumTransactions {
           ? {
               ...formatParams,
               chainId: activeNetwork.chainId,
+              type: 0, // Need explicit type for hardware wallet serialization
             }
           : {
               ...formatParams,
               chainId: activeNetwork.chainId,
-              type: 2,
+              type: 2, // Need explicit type for hardware wallet serialization
             };
 
         const rawTx = serializeTransaction(txFormattedForEthers);
@@ -772,6 +830,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           value: '0x0',
           nonce: this.toBigNumber(formattedTx.nonce)._hex,
           chainId: activeNetwork.chainId,
+          type: isLegacy ? 0 : 2, // Need explicit type for hardware wallet serialization
         };
 
         if (isLegacy) {
@@ -887,12 +946,13 @@ export class EthereumTransactions implements IEthereumTransactions {
             ...formatParams,
             nonce: transactionNonce,
             chainId: activeNetwork.chainId,
+            type: 0, // Force Type 0 for legacy
           }
         : {
             ...formatParams,
             nonce: transactionNonce,
             chainId: activeNetwork.chainId,
-            type: 2,
+            type: 2, // Need explicit type for hardware wallet serialization
           };
       const rawTx = serializeTransaction(txFormattedForEthers);
 
@@ -1020,12 +1080,13 @@ export class EthereumTransactions implements IEthereumTransactions {
                 ...formatParams,
                 nonce: transactionNonce,
                 chainId: activeNetwork.chainId,
+                type: 0, // Force Type 0 for legacy
               }
             : {
                 ...formatParams,
                 nonce: transactionNonce,
                 chainId: activeNetwork.chainId,
-                type: 2,
+                type: 2, // Need explicit type for hardware wallet serialization
               };
           signature.payload.v = parseInt(signature.payload.v, 16); //v parameter must be a number by ethers standards
           const signedTx = serializeTransaction(
@@ -1054,7 +1115,11 @@ export class EthereumTransactions implements IEthereumTransactions {
         );
       }
 
-      const tx: Deferrable<TransactionRequest> = params;
+      // Explicitly set transaction type based on isLegacy flag
+      const tx: Deferrable<TransactionRequest> = isLegacy
+        ? { ...params, type: 0 } // Force Type 0 for legacy transactions
+        : params; // Let ethers auto-detect for EIP-1559
+
       const wallet = new Wallet(decryptedPrivateKey, this.web3Provider);
       try {
         const transaction = await wallet.sendTransaction(tx);
@@ -1088,15 +1153,28 @@ export class EthereumTransactions implements IEthereumTransactions {
     isSpeedUp: boolean;
     transaction?: TransactionResponse;
   }> => {
-    const tx = (await this.web3Provider.getTransaction(
+    let tx = (await this.web3Provider.getTransaction(
       txHash
     )) as Deferrable<EthersTransactionResponse>;
 
     if (!tx) {
-      return {
-        isSpeedUp: false,
-        error: true,
-      };
+      // Retry a couple of times in case the node hasn't indexed the pending tx yet
+      for (let attempt = 0; attempt < 2 && !tx; attempt++) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, 500 * (attempt + 1))
+        );
+        tx = (await this.web3Provider.getTransaction(
+          txHash
+        )) as Deferrable<EthersTransactionResponse>;
+      }
+      if (!tx) {
+        return {
+          isSpeedUp: false,
+          error: true,
+          code: 'TX_NOT_FOUND',
+          message: 'Original transaction not yet available from RPC provider',
+        } as any;
+      }
     }
 
     const { activeAccountType, activeAccountId, accounts, activeNetwork } =
@@ -1132,12 +1210,38 @@ export class EthereumTransactions implements IEthereumTransactions {
 
     let txWithEditedFee: Deferrable<TransactionRequest>;
 
+    // If the original tx has 0 or very low gas price, fetch current network gas prices
     const oldTxsGasValues: IGasParams = {
       maxFeePerGas: maxFeePerGas as BigNumber,
       maxPriorityFeePerGas: maxPriorityFeePerGas as BigNumber,
       gasPrice: gasPrice as BigNumber,
       gasLimit: gasLimit as BigNumber,
     };
+
+    // Only fetch current gas prices if the original tx has exactly 0 or undefined gas
+    // This avoids unnecessary backend calls for legitimate low-gas networks (L2s, testnets)
+    if (isLegacy) {
+      if (!oldTxsGasValues.gasPrice || oldTxsGasValues.gasPrice.isZero()) {
+        // Fetch current network gas price for replacement
+        const currentGasPrice = await this.web3Provider.getGasPrice();
+        oldTxsGasValues.gasPrice = currentGasPrice;
+      }
+    } else {
+      // For EIP-1559 transactions
+      if (
+        !oldTxsGasValues.maxFeePerGas ||
+        oldTxsGasValues.maxFeePerGas.isZero()
+      ) {
+        // Fetch current network fee data for replacement
+        const feeData = await this.getFeeDataWithDynamicMaxPriorityFeePerGas();
+        oldTxsGasValues.maxFeePerGas = BigNumber.from(
+          feeData.maxFeePerGas || 0
+        );
+        oldTxsGasValues.maxPriorityFeePerGas = BigNumber.from(
+          feeData.maxPriorityFeePerGas || 0
+        );
+      }
+    }
 
     if (!isLegacy) {
       const newGasValues = this.calculateNewGasValues(
@@ -1166,18 +1270,16 @@ export class EthereumTransactions implements IEthereumTransactions {
             return {
               isSpeedUp: false,
               error: true,
-            };
+              code: 'CONTRACT_CALL_MAX_SEND',
+              message:
+                'Cannot speed up a likely max-send contract call; value cannot be adjusted to fit new gas',
+            } as any;
           }
 
-          // For non-contract calls, reduce value to fit within balance
-          adjustedValue = currentBalance.sub(newGasCost);
-
-          // Ensure we don't go below a minimum threshold (0.0001 ETH)
-          const minValue = parseEther('0.0001');
-          if (adjustedValue.lt(minValue)) {
-            console.warn('[SpeedUp] Adjusted value too low, keeping original');
-            adjustedValue = txValue;
-          }
+          // For non-contract calls, reduce value to fit within balance (clamp at zero)
+          adjustedValue = currentBalance.gt(newGasCost)
+            ? currentBalance.sub(newGasCost)
+            : Zero;
         }
       }
 
@@ -1190,6 +1292,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         maxFeePerGas: newGasValues.maxFeePerGas,
         maxPriorityFeePerGas: newGasValues.maxPriorityFeePerGas,
         gasLimit: newGasValues.gasLimit,
+        // Don't set type - let ethers auto-detect for EIP-1559
       };
     } else {
       const newGasValues = this.calculateNewGasValues(
@@ -1214,18 +1317,16 @@ export class EthereumTransactions implements IEthereumTransactions {
             return {
               isSpeedUp: false,
               error: true,
-            };
+              code: 'CONTRACT_CALL_MAX_SEND',
+              message:
+                'Cannot speed up a likely max-send contract call; value cannot be adjusted to fit new gas',
+            } as any;
           }
 
-          // For non-contract calls, reduce value to fit within balance
-          adjustedValue = currentBalance.sub(newGasCost);
-
-          // Ensure we don't go below a minimum threshold (0.0001 ETH)
-          const minValue = parseEther('0.0001');
-          if (adjustedValue.lt(minValue)) {
-            console.warn('[SpeedUp] Adjusted value too low, keeping original');
-            adjustedValue = txValue;
-          }
+          // For non-contract calls, reduce value to fit within balance (clamp at zero)
+          adjustedValue = currentBalance.gt(newGasCost)
+            ? currentBalance.sub(newGasCost)
+            : Zero;
         }
       }
 
@@ -1237,6 +1338,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         data: txData,
         gasLimit: newGasValues.gasLimit,
         gasPrice: newGasValues.gasPrice,
+        type: 0, // Force Type 0 for legacy speedup
       };
     }
 
@@ -1248,11 +1350,12 @@ export class EthereumTransactions implements IEthereumTransactions {
           ? {
               ...formatParams,
               chainId: activeNetwork.chainId,
+              type: 0, // Need explicit type for hardware wallet serialization
             }
           : {
               ...formatParams,
               chainId: activeNetwork.chainId,
-              type: 2,
+              type: 2, // Need explicit type for hardware wallet serialization
             };
 
         const rawTx = serializeTransaction(txFormattedForEthers);
@@ -1291,10 +1394,20 @@ export class EthereumTransactions implements IEthereumTransactions {
           '[SpeedUp] Failed to send replacement transaction with Ledger:',
           error
         );
+        const message = (error as any)?.message || String(error);
+        const lower = message.toLowerCase();
+        const code = lower.includes('underpriced')
+          ? 'REPLACEMENT_UNDERPRICED'
+          : lower.includes('known transaction') ||
+            lower.includes('already known')
+          ? 'REPLACEMENT_ALREADY_KNOWN'
+          : 'REPLACEMENT_SEND_FAILED';
         return {
           isSpeedUp: false,
           error: true,
-        };
+          code,
+          message,
+        } as any;
       }
     };
 
@@ -1317,6 +1430,7 @@ export class EthereumTransactions implements IEthereumTransactions {
               : `${formattedTx.value?._hex || formattedTx.value}`,
           nonce: this.toBigNumber(formattedTx.nonce)._hex,
           chainId: activeNetwork.chainId,
+          type: isLegacy ? 0 : 2, // Need explicit type for hardware wallet serialization
         };
 
         if (formattedTx.data && formattedTx.data !== '0x') {
@@ -1376,10 +1490,20 @@ export class EthereumTransactions implements IEthereumTransactions {
           '[SpeedUp] Failed to send replacement transaction with Trezor:',
           error
         );
+        const message = (error as any)?.message || String(error);
+        const lower = message.toLowerCase();
+        const code = lower.includes('underpriced')
+          ? 'REPLACEMENT_UNDERPRICED'
+          : lower.includes('known transaction') ||
+            lower.includes('already known')
+          ? 'REPLACEMENT_ALREADY_KNOWN'
+          : 'REPLACEMENT_SEND_FAILED';
         return {
           isSpeedUp: false,
           error: true,
-        };
+          code,
+          message,
+        } as any;
       }
     };
 
@@ -1389,6 +1513,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         const { decryptedPrivateKey } = this.getDecryptedPrivateKey();
         const wallet = new Wallet(decryptedPrivateKey, this.web3Provider);
 
+        // Type already set in txWithEditedFee
         const transactionResponse = await wallet.sendTransaction(
           txWithEditedFee
         );
@@ -1408,10 +1533,22 @@ export class EthereumTransactions implements IEthereumTransactions {
           '[SpeedUp] Failed to send replacement transaction:',
           error
         );
+        const message = (error as any)?.message || String(error);
+        const lower = message.toLowerCase();
+        const code = lower.includes('underpriced')
+          ? 'REPLACEMENT_UNDERPRICED'
+          : lower.includes('known transaction') ||
+            lower.includes('already known')
+          ? 'REPLACEMENT_ALREADY_KNOWN'
+          : lower.includes('insufficient funds')
+          ? 'INSUFFICIENT_FUNDS_REPLACEMENT'
+          : 'REPLACEMENT_SEND_FAILED';
         return {
           isSpeedUp: false,
           error: true,
-        };
+          code,
+          message,
+        } as any;
       }
     };
 
@@ -1454,13 +1591,12 @@ export class EthereumTransactions implements IEthereumTransactions {
           getErc20Abi(),
           walletSigned
         );
-        const calculatedTokenAmount = BigNumber.from(
-          decimals
-            ? parseUnits(
-                tokenAmount as string,
-                this.toBigNumber(decimals as number)
-              )
-            : parseEther(tokenAmount as string)
+        // Preserve zero-decimal tokens: use provided decimals when defined (including 0).
+        const resolvedDecimals =
+          decimals === undefined || decimals === null ? 18 : Number(decimals);
+        const calculatedTokenAmount = parseUnits(
+          tokenAmount as string,
+          resolvedDecimals
         );
         let transferMethod;
         if (isLegacy) {
@@ -1471,6 +1607,7 @@ export class EthereumTransactions implements IEthereumTransactions {
             ),
             gasPrice,
             ...(gasLimit && { gasLimit }),
+            type: 0, // Explicitly set Type 0 for legacy token transfers
           };
           transferMethod = await _contract.transfer(
             receiver,
@@ -1509,8 +1646,11 @@ export class EthereumTransactions implements IEthereumTransactions {
       try {
         const _contract = new Contract(tokenAddress, getErc20Abi(), signer);
 
-        const calculatedTokenAmount = BigNumber.from(
-          parseEther(tokenAmount as string)
+        const resolvedDecimals =
+          decimals === undefined || decimals === null ? 18 : Number(decimals);
+        const calculatedTokenAmount = parseUnits(
+          tokenAmount as string,
+          resolvedDecimals
         );
 
         const txData = _contract.interface.encodeFunctionData('transfer', [
@@ -1543,7 +1683,7 @@ export class EthereumTransactions implements IEthereumTransactions {
             data: txData,
             nonce: transactionNonce,
             chainId: activeNetwork.chainId,
-            type: 2,
+            type: 2, // Need explicit type for hardware wallet serialization
           };
         }
 
@@ -1589,8 +1729,11 @@ export class EthereumTransactions implements IEthereumTransactions {
       try {
         const _contract = new Contract(tokenAddress, getErc20Abi(), signer);
 
-        const calculatedTokenAmount = BigNumber.from(
-          parseEther(tokenAmount as string)
+        const resolvedDecimals =
+          decimals === undefined || decimals === null ? 18 : Number(decimals);
+        const calculatedTokenAmount = parseUnits(
+          tokenAmount as string,
+          resolvedDecimals
         );
 
         const txData = _contract.interface.encodeFunctionData('transfer', [
@@ -1661,7 +1804,7 @@ export class EthereumTransactions implements IEthereumTransactions {
                 data: txData,
                 nonce: transactionNonce,
                 chainId: activeNetwork.chainId,
-                type: 2,
+                type: 2, // Need explicit type for hardware wallet serialization
               };
             }
             signature.payload.v = parseInt(signature.payload.v, 16); //v parameter must be a number by ethers standards
@@ -1730,6 +1873,7 @@ export class EthereumTransactions implements IEthereumTransactions {
             ),
             gasPrice,
             ...(gasLimit && { gasLimit }),
+            type: 0, // Explicitly set Type 0 for legacy NFT transfers
           };
           transferMethod = await _contract.transferFrom(
             walletSigned.address,
@@ -1743,6 +1887,9 @@ export class EthereumTransactions implements IEthereumTransactions {
               walletSigned.address,
               'pending'
             ),
+            maxPriorityFeePerGas,
+            maxFeePerGas,
+            ...(gasLimit && { gasLimit }),
           };
           transferMethod = await _contract.transferFrom(
             walletSigned.address,
@@ -1796,7 +1943,7 @@ export class EthereumTransactions implements IEthereumTransactions {
             data: txData,
             nonce: transactionNonce,
             chainId: activeNetwork.chainId,
-            type: 2,
+            type: 2, // Need explicit type for hardware wallet serialization
           };
         }
 
@@ -1913,7 +2060,7 @@ export class EthereumTransactions implements IEthereumTransactions {
                 data: txData,
                 nonce: transactionNonce,
                 chainId: activeNetwork.chainId,
-                type: 2,
+                type: 2, // Need explicit type for hardware wallet serialization
               };
             }
             signature.payload.v = parseInt(signature.payload.v, 16); //v parameter must be a number by ethers standards
@@ -1975,9 +2122,31 @@ export class EthereumTransactions implements IEthereumTransactions {
           walletSigned
         );
 
-        const amount = tokenAmount ? parseInt(tokenAmount) : 1;
+        // Use BigNumber to avoid JS number overflow/precision loss
+        const amount = BigNumber.from(tokenAmount ?? '1');
 
-        const overrides = {};
+        let overrides;
+        if (isLegacy) {
+          overrides = {
+            nonce: await this.web3Provider.getTransactionCount(
+              walletSigned.address,
+              'pending'
+            ),
+            gasPrice,
+            ...(gasLimit && { gasLimit }),
+            type: 0, // Explicitly set Type 0 for legacy ERC1155 transfers
+          };
+        } else {
+          overrides = {
+            nonce: await this.web3Provider.getTransactionCount(
+              walletSigned.address,
+              'pending'
+            ),
+            maxPriorityFeePerGas,
+            maxFeePerGas,
+            ...(gasLimit && { gasLimit }),
+          };
+        }
 
         transferMethod = await _contract.safeTransferFrom(
           walletSigned.address,
@@ -2001,7 +2170,7 @@ export class EthereumTransactions implements IEthereumTransactions {
       try {
         const _contract = new Contract(tokenAddress, getErc55Abi(), signer);
 
-        const amount = tokenAmount ? parseInt(tokenAmount) : 1;
+        const amount = BigNumber.from(tokenAmount ?? '1');
 
         const txData = _contract.interface.encodeFunctionData(
           'safeTransferFrom',
@@ -2033,7 +2202,7 @@ export class EthereumTransactions implements IEthereumTransactions {
             data: txData,
             nonce: transactionNonce,
             chainId: activeNetwork.chainId,
-            type: 2,
+            type: 2, // Need explicit type for hardware wallet serialization
           };
         }
 
@@ -2078,7 +2247,7 @@ export class EthereumTransactions implements IEthereumTransactions {
       try {
         const _contract = new Contract(tokenAddress, getErc55Abi(), signer);
 
-        const amount = tokenAmount ? parseInt(tokenAmount) : 1;
+        const amount = BigNumber.from(tokenAmount ?? '1');
 
         const txData = _contract.interface.encodeFunctionData(
           'safeTransferFrom',
@@ -2148,7 +2317,7 @@ export class EthereumTransactions implements IEthereumTransactions {
                 data: txData,
                 nonce: transactionNonce,
                 chainId: activeNetwork.chainId,
-                type: 2,
+                type: 2, // Need explicit type for hardware wallet serialization
               };
             }
             signature.payload.v = parseInt(signature.payload.v, 16); //v parameter must be a number by ethers standards

@@ -1,6 +1,6 @@
 {
   "name": "@sidhujag/sysweb3-keyring",
-  "version": "1.0.514",
+  "version": "1.0.523",
   "description": "Keyring Manager for UTXO and Web3 Wallets",
   "main": "cjs/index.js",
   "types": "types/index.d.ts",
@@ -53,8 +53,8 @@
     "@ledgerhq/types-cryptoassets": "^7.25.0",
     "@metamask/eth-sig-util": "^8.2.0",
     "@sidhujag/sysweb3-core": "^1.0.27",
-    "@sidhujag/sysweb3-network": "^1.0.104",
-    "@sidhujag/sysweb3-utils": "^1.1.250",
+    "@sidhujag/sysweb3-network": "^1.0.105",
+    "@sidhujag/sysweb3-utils": "^1.1.254",
     "@trezor/connect-web": "^9.1.5",
     "@trezor/connect-webextension": "^9.6.2",
     "@trezor/utxo-lib": "^1.0.12",
@@ -72,7 +72,7 @@
     "satoshi-bitcoin": "^1.0.5"
   },
   "peerDependencies": {
-    "syscoinjs-lib": "^1.0.250"
+    "syscoinjs-lib": "^1.0.253"
   },
   "optionalDependencies": {
     "zksync-ethers": "5"
@@ -82,7 +82,7 @@
     "@types/jest": "^30.0.0",
     "@types/node": "^20.8.10",
     "rimraf": "^6.0.1",
-    "syscoinjs-lib": "^1.0.250",
+    "syscoinjs-lib": "^1.0.253",
     "tslib": "^2.8.1",
     "typescript": "^5.3.3"
   }
