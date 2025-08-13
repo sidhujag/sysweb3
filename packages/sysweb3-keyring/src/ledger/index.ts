@@ -6,12 +6,11 @@ import SysUtxoClient, { DefaultWalletPolicy } from './bitcoin_client';
 import {
   DESCRIPTOR,
   RECEIVING_ADDRESS_INDEX,
-  WILL_NOT_DISPLAY,
+  // WILL_NOT_DISPLAY,
 } from './consts';
 import { fromBase58 } from '@trezor/utxo-lib/lib/bip32';
 import { IEvmMethods, IUTXOMethods, MessageTypes } from './types';
 import LedgerEthClient, { ledgerService } from '@ledgerhq/hw-app-eth';
-import LedgerBtcClient from "@ledgerhq/hw-app-btc";
 import {
   TypedDataUtils,
   TypedMessage,
@@ -28,14 +27,11 @@ import {
   HardwareWalletManager,
   HardwareWalletType,
 } from '../hardware-wallet-manager';
-import { getCryptoCurrencyById } from "@ledgerhq/cryptoassets"
-import { findCoin } from '@sidhujag/sysweb3-network';
 import bs58check from 'bs58check';
 
 export class LedgerKeyring {
   public ledgerEVMClient!: LedgerEthClient;
   public ledgerUtxoClient!: SysUtxoClient;
-  public ledgerBtcClient!: LedgerBtcClient
   private hdPath = "m/44'/57'/0'/0/0";
   public evm: IEvmMethods;
   public utxo: IUTXOMethods;
@@ -59,7 +55,6 @@ export class LedgerKeyring {
         // Clear clients on disconnect
         this.ledgerEVMClient = null as any;
         this.ledgerUtxoClient = null as any;
-        this.ledgerBtcClient = null as any;
       }
     });
 
@@ -98,7 +93,6 @@ export class LedgerKeyring {
     if (this.transport && (!this.ledgerEVMClient || !this.ledgerUtxoClient)) {
       this.ledgerEVMClient = new LedgerEthClient(this.transport);
       this.ledgerUtxoClient = new SysUtxoClient(this.transport);
-      this.ledgerBtcClient = new LedgerBtcClient({ transport: this.transport });
     }
   }
 
@@ -114,22 +108,6 @@ export class LedgerKeyring {
     slip44: number;
   }) => {
     return this.executeWithRetry(async () => {
-      if (this.isBtcOrLtc(coin, slip44)) {
-        console.log('BTC/LTC flow using @ledgerhq/hw-app-btc');
-        this.setHdPath(coin, index, slip44);
-        const addressPath = `${this.hdPath}/${RECEIVING_ADDRESS_INDEX}/${index}`.replace(
-          /^m\//,
-          ''
-        );
-        const result: any = await this.ledgerBtcClient.getWalletPublicKey(
-          addressPath,
-          {
-            format: 'bech32',
-            verify: !!showInLedger,
-          } as any
-        );
-        return result.bitcoinAddress || result.address || '';
-      } else {
         const fingerprint = await this.ledgerUtxoClient.getMasterFingerprint();
         const xpub = await this.getXpub({ index, coin, slip44 });
         this.setHdPath(coin, index, slip44);
@@ -148,11 +126,10 @@ export class LedgerKeyring {
           null,
           RECEIVING_ADDRESS_INDEX,
           index,
-          showInLedger ? showInLedger : WILL_NOT_DISPLAY
+          !!showInLedger
         );
 
         return address;
-      }
     }, 'getUtxoAddress');
   };
 
@@ -180,37 +157,17 @@ export class LedgerKeyring {
     return this.executeWithRetry(async () => {
       this.setHdPath(coin, index, slip44);
 
-      if (this.isBtcOrLtc(coin, slip44)) {
-        console.log('BTC/LTC flow using @ledgerhq/hw-app-btc getXpub');
-        const coinData = findCoin({slip44, name: coin});
-        const coinName = coinData?.coinName.toLowerCase();
-        const cryptoCurrency = getCryptoCurrencyById(coinName);
+      const xpub = await this.ledgerUtxoClient.getExtendedPubkey(
+        this.hdPath,
+        true
+      );
 
-        const accountPath = this.hdPath.replace(/^m\//, '');
+      const decoded = Buffer.from(bs58check.decode(xpub));
+      const zpubVersion = Buffer.from('04b24746', 'hex');
+      zpubVersion.copy(decoded, 0, 0, 4);
+      const zpub = bs58check.encode(decoded);
 
-        const xpub = await this.ledgerBtcClient.getWalletXpub(
-          {
-            path: accountPath,
-            xpubVersion: cryptoCurrency?.bitcoinLikeInfo?.XPUBVersion!
-          }
-        );
-
-        const decoded = Buffer.from(bs58check.decode(xpub));
-        const zpubVersion = Buffer.from('04b24746', 'hex');
-        zpubVersion.copy(decoded, 0, 0, 4);
-        const zpub = bs58check.encode(decoded);
-
-        return zpub
-      } else {
-        // Syscoin UTXO flow
-        const xpub = await this.ledgerUtxoClient.getExtendedPubkey(
-          this.hdPath,
-          WILL_NOT_DISPLAY
-        );
-
-        // Always return raw xpub - descriptor format is built inline where needed
-        return xpub;
-      }
+      return zpub
     }, 'getXpub');
   };
 
@@ -398,13 +355,6 @@ export class LedgerKeyring {
     }
   }
 
-  private isBtcOrLtc(coin: string, slip44: number): boolean {
-    const c = (coin || '').toLowerCase();
-
-    if (c.includes('bitcoin') || c === 'btc' || slip44 === 0) return true;
-    if (c.includes('litecoin') || c === 'ltc' || slip44 === 2) return true;
-    return false;
-  }
 
   /**
    * Convert PSBT to Ledger format with retry logic
