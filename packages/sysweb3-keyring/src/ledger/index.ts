@@ -7,9 +7,10 @@ import {
   DESCRIPTOR,
   RECEIVING_ADDRESS_INDEX,
   WILL_NOT_DISPLAY,
-  // WILL_NOT_DISPLAY,
 } from './consts';
-import { fromBase58 } from '@trezor/utxo-lib/lib/bip32';
+import { getNetworkConfig } from '@sidhujag/sysweb3-network';
+import BIP32Factory from 'bip32';
+import * as ecc from 'tiny-secp256k1';
 import { IEvmMethods, IUTXOMethods, MessageTypes } from './types';
 import LedgerEthClient, { ledgerService } from '@ledgerhq/hw-app-eth';
 import {
@@ -22,13 +23,14 @@ import {
   getAccountDerivationPath,
   getAddressDerivationPath,
   isEvmCoin,
+  convertExtendedKeyVersion,
 } from '../utils/derivation-paths';
 import { Transaction } from 'syscoinjs-lib';
 import {
   HardwareWalletManager,
   HardwareWalletType,
 } from '../hardware-wallet-manager';
-import bs58check from 'bs58check';
+//
 
 export class LedgerKeyring {
   public ledgerEVMClient!: LedgerEthClient;
@@ -112,30 +114,30 @@ export class LedgerKeyring {
     slip44: number;
   }) => {
     return this.executeWithRetry(async () => {
-        const fingerprint = await this.ledgerUtxoClient.getMasterFingerprint();
-        const xpub = await this.getXpub({ index, coin, slip44 });
-        this.setHdPath(coin, index, slip44);
+      const fingerprint = await this.ledgerUtxoClient.getMasterFingerprint();
+      const xpub = await this.getXpub({ index, coin, slip44 });
+      this.setHdPath(coin, index, slip44);
 
-        const xpubWithDescriptor = `[${this.hdPath}]${xpub}`.replace(
-          'm',
-          fingerprint
-        );
-        const walletPolicy = new DefaultWalletPolicy(
-          DESCRIPTOR,
-          xpubWithDescriptor
-        );
+      const xpubWithDescriptor = `[${this.hdPath}]${xpub}`.replace(
+        'm',
+        fingerprint
+      );
+      const walletPolicy = new DefaultWalletPolicy(
+        DESCRIPTOR,
+        xpubWithDescriptor
+      );
 
-        const hmac = await this.getOrRegisterHmac(walletPolicy, fingerprint);
+      const hmac = await this.getOrRegisterHmac(walletPolicy, fingerprint);
 
-        const address = await this.ledgerUtxoClient.getWalletAddress(
-          walletPolicy,
-          hmac,
-          RECEIVING_ADDRESS_INDEX,
-          index,
-          !!showInLedger
-        );
+      const address = await this.ledgerUtxoClient.getWalletAddress(
+        walletPolicy,
+        hmac,
+        RECEIVING_ADDRESS_INDEX,
+        index,
+        !!showInLedger
+      );
 
-        return address;
+      return address;
     }, 'getUtxoAddress');
   };
 
@@ -170,20 +172,25 @@ export class LedgerKeyring {
             this.hdPath,
             WILL_NOT_DISPLAY
           );
-    
-          const decoded = Buffer.from(bs58check.decode(xpub));
-          const zpubVersion = Buffer.from('04b24746', 'hex');
-          zpubVersion.copy(decoded, 0, 0, 4);
-          const zpub = bs58check.encode(decoded);
-    
-          return zpub
+          // Normalize to BIP84 prefix for Blockbook using network-config magic bytes
+          const { types } = getNetworkConfig(slip44, coin);
+          const target =
+            slip44 === 1
+              ? (types.zPubType as any).testnet.vpub
+              : types.zPubType.mainnet.zpub;
+          return convertExtendedKeyVersion(xpub, target);
         } catch (err) {
           // Retry with display=true to allow unusual paths with user approval
           const xpubWithDisplay = await this.ledgerUtxoClient.getExtendedPubkey(
             this.hdPath,
             true
           );
-          return xpubWithDisplay;
+          const { types } = getNetworkConfig(slip44, coin);
+          const target =
+            slip44 === 1
+              ? (types.zPubType as any).testnet.vpub
+              : types.zPubType.mainnet.zpub;
+          return convertExtendedKeyVersion(xpubWithDisplay, target);
         }
       }
     }, 'getXpub');
@@ -434,8 +441,23 @@ export class LedgerKeyring {
       // Ensure Ledger is connected before attempting operations
       // This is now handled by executeWithRetry
 
-      // Create BIP32 node from account xpub
-      const accountNode = fromBase58(accountXpub);
+      // Build a bitcoinjs-bip32 network from slip44/currency so zpub/vpub parse directly
+      const { networks, types } = getNetworkConfig(slip44, currency);
+      const isTestnet = slip44 === 1;
+      const pubTypes = isTestnet
+        ? (types.zPubType as any).testnet
+        : types.zPubType.mainnet;
+      const baseNetwork = isTestnet ? networks.testnet : networks.mainnet;
+      const network = {
+        ...baseNetwork,
+        bip32: {
+          public: parseInt(pubTypes.vpub || pubTypes.zpub, 16),
+          private: parseInt(pubTypes.vprv || pubTypes.zprv, 16),
+        },
+      } as any;
+
+      const bip32 = BIP32Factory(ecc as any);
+      const accountNode = bip32.fromBase58(accountXpub, network);
 
       // Get master fingerprint
       const fingerprint = await this.getMasterFingerprint();

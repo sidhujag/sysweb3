@@ -109,3 +109,25 @@ export function getAddressDerivationPath(
     return `m/${bip}'/${slip44}'/${accountIndex}'/${changeValue}/${addressIndex}`;
   }
 }
+
+/**
+ * Convert an extended key's version bytes to a target version (e.g., xpub->zpub or tpub->vpub)
+ * - Pass targetVersionHex as a 4-byte hex string (e.g., '04b24746' for zpub, '045f1cf6' for vpub)
+ */
+export function convertExtendedKeyVersion(
+  extendedKey: string,
+  targetVersionHex: string
+): string {
+  try {
+    // Lazy import to avoid bundling when unused
+    /* eslint-disable @typescript-eslint/no-var-requires */
+    const bs58check = require('bs58check');
+    const decoded: Buffer = Buffer.from(bs58check.decode(extendedKey));
+    const target = Buffer.from(targetVersionHex, 'hex');
+    target.copy(decoded, 0, 0, 4);
+    return bs58check.encode(decoded);
+  } catch (e) {
+    // If conversion fails, return original key
+    return extendedKey;
+  }
+}

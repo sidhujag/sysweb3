@@ -934,22 +934,17 @@ export class KeyringManager implements IKeyringManager {
     const { receivingIndex, changeIndex } =
       this.setLatestIndexesFromXPubTokens(tokens);
 
-    // Get network configuration for BIP84
+    // Get network configuration for BIP84 using network-provided pub type macros
     const networkConfig = getNetworkConfig(
       activeNetwork.slip44,
       activeNetwork.currency
     );
 
-    // BIP84 needs pubTypes and networks config
-    // For read-only operations, we construct these from networkConfig
-    const pubTypes = networkConfig?.types?.zPubType || {
-      mainnet: { zprv: 0x04b2430c, zpub: 0x04b24746 },
-      testnet: { vprv: 0x045f18bc, vpub: 0x045f1cf6 },
-    };
-    const networks = networkConfig?.networks || {
-      mainnet: {},
-      testnet: {},
-    };
+    const pubTypes = networkConfig?.types?.zPubType;
+    if (!pubTypes) {
+      throw new Error('Missing zPubType in network configuration');
+    }
+    const networks = networkConfig.networks;
 
     const currentAccount = new BIP84.fromZPub(xpub, pubTypes, networks);
 
