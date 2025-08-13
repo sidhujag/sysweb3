@@ -12,7 +12,10 @@ import {
   KeyringAccountType,
   accountType,
 } from '../types';
-import { getAccountDerivationPath } from '../utils/derivation-paths';
+import {
+  getAccountDerivationPath,
+  convertExtendedKeyVersion,
+} from '../utils/derivation-paths';
 import { PsbtUtils } from '../utils/psbt';
 
 type EstimateFeeParams = {
@@ -315,7 +318,12 @@ export class SyscoinTransactions implements ISyscoinTransactions {
         );
       }
 
-      const xpubWithDescriptor = `[${hdPath}]${accountXpub}`.replace(
+      // Convert stored/display zpub/vpub to device-friendly xpub/tpub for policy descriptor
+      const deviceXpub = convertExtendedKeyVersion(
+        accountXpub,
+        activeNetwork.slip44 === 1 ? '043587cf' : '0488b21e'
+      );
+      const xpubWithDescriptor = `[${hdPath}]${deviceXpub}`.replace(
         'm',
         fingerprint
       );
