@@ -469,7 +469,10 @@ export class KeyringManager implements IKeyringManager {
     if (!account) {
       throw new Error('Active account not found');
     }
-    const { xpub } = account;
+    const { xpub, isImported, address } = account as any;
+    // For imported single-address accounts, always return the single address
+    const looksLikeSingleAddress = isImported && xpub === address;
+    if (looksLikeSingleAddress) return address;
     return await this.getAddress(xpub, true); // Don't skip increment - get next unused
   };
 
@@ -480,8 +483,8 @@ export class KeyringManager implements IKeyringManager {
     if (!account) {
       throw new Error(`Account with id ${id} not found`);
     }
-    const { xpub } = account;
-
+    const { xpub, isImported, address } = account as any;
+    if (isImported && xpub === address) return address;
     return await this.getAddress(xpub, true);
   };
 
@@ -495,8 +498,12 @@ export class KeyringManager implements IKeyringManager {
     if (!account) {
       throw new Error(`Account with id ${id} not found`);
     }
-    const { xpub } = account;
-
+    const { xpub, isImported, address } = account as any;
+    if (isImported && xpub === address) {
+      throw new Error(
+        'Public key not available for single-address imported accounts'
+      );
+    }
     return await this.getCurrentAddressPubkey(xpub, isChangeAddress);
   };
 
@@ -510,8 +517,12 @@ export class KeyringManager implements IKeyringManager {
     if (!account) {
       throw new Error(`Account with id ${id} not found`);
     }
-    const { xpub } = account;
-
+    const { xpub, isImported, address } = account as any;
+    if (isImported && xpub === address) {
+      throw new Error(
+        'BIP32 path not available for single-address imported accounts'
+      );
+    }
     return await this.getCurrentAddressBip32Path(xpub, isChangeAddress);
   };
 
@@ -522,12 +533,12 @@ export class KeyringManager implements IKeyringManager {
     if (!account) {
       throw new Error('Active account not found');
     }
-    const { xpub } = account;
-
-    const address = await this.getAddress(xpub, false);
+    const { xpub, isImported, address } = account as any;
+    if (isImported && xpub === address) return address;
+    const nextAddress = await this.getAddress(xpub, false);
     // NOTE: Address updates should be dispatched to Redux store, not updated here
     // The calling code should handle the Redux dispatch
-    return address;
+    return nextAddress;
   };
 
   public getAccountById = (
@@ -1089,10 +1100,8 @@ export class KeyringManager implements IKeyringManager {
       // Determine key type: zprv = mainnet key, vprv = testnet key
       const keyIsTestnet = prefix === 'vprv';
 
-      // Determine target network type: testnet networks typically have chainId 5700+ or slip44 1
-      const targetIsTestnet =
-        networkToValidateAgainst.chainId >= 5700 ||
-        networkToValidateAgainst.slip44 === 1;
+      // Determine target network type: testnet networks typically have slip44 1
+      const targetIsTestnet = networkToValidateAgainst.slip44 === 1;
 
       // Cross-network validation: reject if key type doesn't match target network
       if (keyIsTestnet && !targetIsTestnet) {
@@ -1156,6 +1165,60 @@ export class KeyringManager implements IKeyringManager {
         network,
         message: 'The extended private key is valid for this network.',
       };
+    } catch (error) {
+      return { isValid: false, message: error.message };
+    }
+  }
+
+  public validateWif(wif: string, targetNetwork?: INetwork) {
+    // Use the active network if targetNetwork is not provided
+    const networkToValidateAgainst =
+      targetNetwork || this.getVault().activeNetwork;
+
+    if (!networkToValidateAgainst) {
+      throw new Error('No network available for validation');
+    }
+
+    try {
+      // Get bitcoinjs network for the target network (Syscoin/BTC etc.)
+      const { networks } = getNetworkConfig(
+        networkToValidateAgainst.slip44,
+        networkToValidateAgainst.currency || 'Bitcoin'
+      );
+
+      const isTestnet = networkToValidateAgainst.slip44 === 1;
+      const bitcoinNetwork = isTestnet ? networks.testnet : networks.mainnet;
+
+      // Try to parse the WIF for the given network
+      const keyPair = (syscoinjs.utils as any).bitcoinjs.ECPair.fromWIF(
+        wif,
+        bitcoinNetwork
+      );
+      if (!keyPair || !keyPair.privateKey)
+        throw new Error('Invalid WIF private key');
+
+      // Derive an address based on network capability
+      // Prefer native segwit if the network supports bech32, otherwise fall back to P2PKH
+      let address: string | undefined;
+      try {
+        if ((bitcoinNetwork as any).bech32) {
+          address = bjs.payments.p2wpkh({
+            pubkey: keyPair.publicKey,
+            network: bitcoinNetwork,
+          }).address as string | undefined;
+        }
+        if (!address) {
+          address = bjs.payments.p2pkh({
+            pubkey: keyPair.publicKey,
+            network: bitcoinNetwork,
+          }).address as string | undefined;
+        }
+      } catch (e) {
+        // ignore and handle below
+      }
+      if (!address) throw new Error('Failed to derive address from WIF');
+
+      return { isValid: true };
     } catch (error) {
       return { isValid: false, message: error.message };
     }
@@ -1261,7 +1324,7 @@ export class KeyringManager implements IKeyringManager {
   };
 
   private getSigner = (): {
-    hd: SyscoinHDSigner;
+    hd: any; // SyscoinHDSigner or WIFSigner wrapper with sign(psbt)
     main: any; // syscoinjs-lib Syscoin instance
   } => {
     if (!this.sessionPassword) {
@@ -1271,22 +1334,65 @@ export class KeyringManager implements IKeyringManager {
       throw new Error('Switch to UTXO chain');
     }
 
-    // Create fresh on-demand signer for active account (now synchronous!)
-    const freshHDSigner = this.createOnDemandSignerForActiveAccount();
-
-    // Create fresh syscoinjs instance with current network
     const vault = this.getVault();
+    const { activeAccount } = vault;
+    const accountId = activeAccount.id;
+    const accountType = activeAccount.type;
+
+    // Determine signer type: HD or WIF single-address
+    let signerForUse: any;
+    if (accountType === KeyringAccountType.HDAccount) {
+      signerForUse = this.createOnDemandUTXOSigner(accountId);
+    } else if (accountType === KeyringAccountType.Imported) {
+      // Decrypt stored key material
+      const decrypted = this.withSecureData((sessionPwd) => {
+        const account = vault.accounts[KeyringAccountType.Imported][accountId];
+        const res = CryptoJS.AES.decrypt(account.xprv, sessionPwd).toString(
+          CryptoJS.enc.Utf8
+        );
+        if (!res) throw new Error('Failed to decrypt imported account key');
+        return res;
+      });
+
+      if (this.isZprv(decrypted)) {
+        signerForUse = this.createFreshUTXOSigner(decrypted, accountId);
+      } else {
+        // Treat as WIF single-address signer wrapper exposing sign(psbt)
+        const network = vault.activeNetwork;
+        const { networks } = getNetworkConfig(network.slip44, network.currency);
+        const isTestnet = network.slip44 === 1;
+        const bitcoinjsNetwork = isTestnet
+          ? networks.testnet
+          : networks.mainnet;
+
+        signerForUse = {
+          sign: async (psbt: any) => {
+            return await (syscoinjs.utils as any).signWithWIF(
+              psbt,
+              decrypted,
+              bitcoinjsNetwork
+            );
+          },
+        };
+      }
+    } else {
+      throw new Error(
+        `Unsupported account type for UTXO signing: ${accountType}`
+      );
+    }
+
+    // Create syscoinjs instance with current network (no need to attach signer for signing flow)
     const network = vault.activeNetwork;
     const networkConfig = getNetworkConfig(network.slip44, network.currency);
 
     const syscoinMainSigner = new syscoinjs.SyscoinJSLib(
-      freshHDSigner,
+      null,
       network.url,
       networkConfig?.networks?.mainnet || undefined
     );
 
     return {
-      hd: freshHDSigner,
+      hd: signerForUse,
       main: syscoinMainSigner,
     };
   };
@@ -1831,20 +1937,20 @@ export class KeyringManager implements IKeyringManager {
       address: string;
       privateKey: string;
       publicKey: string;
-    };
+    } | null = null;
 
     const balances = {
       syscoin: 0,
       ethereum: 0,
     };
+    let isUtxoImported = false;
 
-    // Try to validate as extended private key first, regardless of prefix
+    // Try to validate as extended private key first
     const networkToUse = vault.activeNetwork;
     const zprvValidation = this.validateZprv(privKey, networkToUse);
 
     // Check if we're on an EVM network (slip44 = 60) or UTXO network
     const isEvmNetwork = networkToUse.slip44 === 60;
-    const isUtxoNetwork = !isEvmNetwork;
 
     if (zprvValidation.isValid) {
       // This is a valid UTXO extended private key
@@ -1881,7 +1987,55 @@ export class KeyringManager implements IKeyringManager {
       };
 
       balances.syscoin = 0;
+      isUtxoImported = true;
     } else {
+      // If not a valid zprv/vprv, on UTXO networks try WIF
+      const isEvmNetwork = networkToUse.slip44 === 60;
+      let handledAsUtxo = false;
+      if (!isEvmNetwork) {
+        const wifValidation = this.validateWif(privKey, networkToUse);
+        if (wifValidation.isValid) {
+          // Create address from WIF and treat as single-address imported account
+          const { networks } = getNetworkConfig(
+            networkToUse.slip44,
+            networkToUse.currency || 'Bitcoin'
+          );
+          const isTestnet = networkToUse.slip44 === 1;
+          const bitcoinNetwork = isTestnet
+            ? networks.testnet
+            : networks.mainnet;
+
+          const keyPair = (syscoinjs.utils as any).bitcoinjs.ECPair.fromWIF(
+            privKey,
+            bitcoinNetwork
+          );
+          const { address } = bjs.payments.p2wpkh({
+            pubkey: keyPair.publicKey,
+            network: bitcoinNetwork,
+          });
+          if (!address) {
+            throw new Error('Failed to generate address from WIF');
+          }
+
+          importedAccountValue = {
+            address,
+            // For single-address WIF accounts, store xpub as the address marker
+            publicKey: address,
+            privateKey: privKey,
+          };
+
+          // Set UTXO balance bucket
+          balances.syscoin = 0;
+          isUtxoImported = true;
+          handledAsUtxo = true;
+
+          // Proceed to account creation below
+        } else if (!isEvmNetwork && wifValidation.message) {
+          // Provide useful feedback on UTXO network if WIF was attempted and failed
+          // Continue to EVM handling only if actually EVM network
+        }
+      }
+
       // Check if the validation failed due to network mismatch
       if (
         zprvValidation.message &&
@@ -1938,31 +2092,39 @@ export class KeyringManager implements IKeyringManager {
         );
       }
 
-      // If it's not an extended key, treat it as an Ethereum private key
+      // If it's not an extended key and not a valid WIF, treat it as an Ethereum private key
       // But first check if we're on an EVM network
-      if (isUtxoNetwork) {
+      if (!isEvmNetwork && !handledAsUtxo) {
         throw new Error(
           'Cannot import EVM private key on UTXO network. Please switch to an EVM network first.'
         );
       }
 
-      const hexPrivateKey =
-        privKey.slice(0, 2) === '0x' ? privKey : `0x${privKey}`;
+      if (!handledAsUtxo) {
+        const hexPrivateKey =
+          privKey.slice(0, 2) === '0x' ? privKey : `0x${privKey}`;
 
-      // Validate it's a valid hex string (32 bytes = 64 hex chars)
-      if (
-        !/^0x[0-9a-fA-F]{64}$/.test(hexPrivateKey) &&
-        !/^[0-9a-fA-F]{64}$/.test(privKey)
-      ) {
-        throw new Error(
-          'Invalid private key format. Expected 32-byte hex string or extended private key.'
-        );
+        // Validate it's a valid hex string (32 bytes = 64 hex chars)
+        if (
+          !/^0x[0-9a-fA-F]{64}$/.test(hexPrivateKey) &&
+          !/^[0-9a-fA-F]{64}$/.test(privKey)
+        ) {
+          throw new Error(
+            'Invalid private key format. Expected 32-byte hex string or extended private key.'
+          );
+        }
+
+        importedAccountValue =
+          this.ethereumTransaction.importAccount(hexPrivateKey);
+
+        balances.ethereum = 0;
       }
+    }
 
-      importedAccountValue =
-        this.ethereumTransaction.importAccount(hexPrivateKey);
-
-      balances.ethereum = 0;
+    if (!importedAccountValue) {
+      throw new Error(
+        'Invalid private key format. Expected WIF, extended private key, or 32-byte hex.'
+      );
     }
 
     const { address, publicKey, privateKey } = importedAccountValue;
@@ -1987,7 +2149,7 @@ export class KeyringManager implements IKeyringManager {
     // Generate appropriate label based on account type
     const network = vault.activeNetwork;
     let defaultLabel: string;
-    if (zprvValidation.isValid) {
+    if (zprvValidation.isValid || isUtxoImported) {
       // UTXO imported account - use network-aware label
       const networkPrefix = network.label;
       defaultLabel = label || `${networkPrefix} Imported ${id + 1}`;
@@ -2097,65 +2259,6 @@ export class KeyringManager implements IKeyringManager {
     // Use common method to avoid code duplication
     const mnemonic = this.getDecryptedMnemonic();
     return this.createFreshUTXOSigner(mnemonic, accountId);
-  }
-
-  /**
-   * Creates a fresh UTXO signer for imported accounts from stored zprv
-   * OPTIMIZED: No RPC call needed - uses network config directly
-   */
-  private createOnDemandUTXOSignerFromImported(
-    accountId: number
-  ): SyscoinHDSigner {
-    if (!this.sessionPassword) {
-      throw new Error('Session password not available');
-    }
-
-    const vault = this.getVault();
-    const account = vault.accounts[KeyringAccountType.Imported][accountId];
-
-    if (!account) {
-      throw new Error(`Imported account ${accountId} not found`);
-    }
-
-    // Decrypt the stored zprv
-    const zprv = this.withSecureData((sessionPwd) => {
-      const decrypted = CryptoJS.AES.decrypt(account.xprv, sessionPwd).toString(
-        CryptoJS.enc.Utf8
-      );
-
-      if (!decrypted) {
-        throw new Error('Failed to decrypt imported account private key');
-      }
-
-      return decrypted;
-    });
-
-    if (!this.isZprv(zprv)) {
-      throw new Error('Imported account does not contain a valid zprv');
-    }
-
-    return this.createFreshUTXOSigner(zprv, accountId);
-  }
-
-  /**
-   * Common method to create on-demand signer for active account
-   * Handles account type determination and delegates to appropriate method
-   */
-  private createOnDemandSignerForActiveAccount(): SyscoinHDSigner {
-    const vault = this.getVault();
-    const { activeAccount } = vault;
-    const accountId = activeAccount.id;
-    const accountType = activeAccount.type;
-
-    if (accountType === KeyringAccountType.HDAccount) {
-      return this.createOnDemandUTXOSigner(accountId);
-    } else if (accountType === KeyringAccountType.Imported) {
-      return this.createOnDemandUTXOSignerFromImported(accountId);
-    } else {
-      throw new Error(
-        `Unsupported account type for UTXO signing: ${accountType}`
-      );
-    }
   }
 
   // NEW: Helper methods for HD signer management

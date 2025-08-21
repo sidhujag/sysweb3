@@ -97,8 +97,8 @@ export class SyscoinTransactions implements ISyscoinTransactions {
     txOptions,
     outputs,
     changeAddress,
-    xpub,
     feeRateBN,
+    xpub,
   }: EstimateFeeParams) => {
     // Use read-only signer since we're just creating an unsigned PSBT
     const { main } = this.getReadOnlySigner();
@@ -194,6 +194,9 @@ export class SyscoinTransactions implements ISyscoinTransactions {
       throw new Error('Active account not found');
     }
     const xpub = account.xpub;
+    const isSingleAddressImported =
+      activeAccountType === KeyringAccountType.Imported &&
+      xpub === account.address;
     // Convert amount to satoshis (1 SYS = 1e8 satoshis)
     // Using BigNumber to prevent precision loss
     const amountStr = amount.toString();
@@ -214,7 +217,10 @@ export class SyscoinTransactions implements ISyscoinTransactions {
     const trimmedSatoshis = satoshiStr.replace(/^0+/, '') || '0';
 
     const value = new syscoinjs.utils.BN(trimmedSatoshis);
-    const changeAddress = await this.getAddress(xpub, true);
+    // If this is a single-address imported account (WIF import), use the account.address for both from and change
+    const changeAddress = isSingleAddressImported
+      ? account.address
+      : await this.getAddress(xpub, true);
 
     try {
       if (token && token.guid) {
@@ -238,7 +244,7 @@ export class SyscoinTransactions implements ISyscoinTransactions {
           assetMap,
           changeAddress,
           feeRateBN,
-          xpub // Pass xpub to get PSBT back
+          isSingleAddressImported ? account.address : xpub // Pass source
         );
 
         // Return PSBT and fee
@@ -258,7 +264,7 @@ export class SyscoinTransactions implements ISyscoinTransactions {
           outputs,
           changeAddress,
           feeRateBN,
-          xpub,
+          xpub: isSingleAddressImported ? account.address : xpub,
         });
 
         return result;
@@ -318,10 +324,21 @@ export class SyscoinTransactions implements ISyscoinTransactions {
         );
       }
 
-      // Convert stored/display zpub/vpub to device-friendly xpub/tpub for policy descriptor
+      // Convert stored/display zpub/vpub to device-friendly xpub/tpub for policy descriptor using network macros
+      const { types: deviceTypes } = getNetworkConfig(
+        activeNetwork.slip44,
+        activeNetwork.currency
+      );
+      const devicePubMagicDec =
+        activeNetwork.slip44 === 1
+          ? (deviceTypes.xPubType as any).testnet.vpub
+          : deviceTypes.xPubType.mainnet.zpub;
+      const devicePubMagicHex = Number(devicePubMagicDec)
+        .toString(16)
+        .padStart(8, '0');
       const deviceXpub = convertExtendedKeyVersion(
         accountXpub,
-        activeNetwork.slip44 === 1 ? '043587cf' : '0488b21e'
+        devicePubMagicHex
       );
       const xpubWithDescriptor = `[${hdPath}]${deviceXpub}`.replace(
         'm',

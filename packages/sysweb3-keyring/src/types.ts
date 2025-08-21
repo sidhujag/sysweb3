@@ -204,6 +204,10 @@ export interface IKeyringManager {
     zprv: string,
     targetNetwork?: INetwork
   ) => IValidateZprvResponse;
+  validateWif: (
+    wif: string,
+    targetNetwork?: INetwork
+  ) => { isValid: boolean; message?: string };
   // Account management
   importAccount: (
     privKey: string,

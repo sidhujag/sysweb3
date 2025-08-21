@@ -114,11 +114,16 @@ export class LedgerKeyring {
       const xpub = await this.getXpub({ index, coin, slip44 });
       this.setHdPath(coin, index, slip44);
 
-      // Convert stored/display zpub/vpub to device-friendly xpub/tpub for policy registration
-      const deviceXpub = convertExtendedKeyVersion(
-        xpub,
-        slip44 === 1 ? '043587cf' : '0488b21e'
-      );
+      // Convert stored/display zpub/vpub to device-friendly xpub/tpub for policy registration using network macros
+      const { types: deviceTypes } = getNetworkConfig(slip44, coin);
+      const devicePubMagicDec =
+        slip44 === 1
+          ? (deviceTypes.xPubType as any).testnet.vpub
+          : deviceTypes.xPubType.mainnet.zpub;
+      const devicePubMagicHex = Number(devicePubMagicDec)
+        .toString(16)
+        .padStart(8, '0');
+      const deviceXpub = convertExtendedKeyVersion(xpub, devicePubMagicHex);
       const xpubWithDescriptor = `[${this.hdPath}]${deviceXpub}`.replace(
         'm',
         fingerprint
