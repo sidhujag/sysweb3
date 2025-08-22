@@ -499,10 +499,15 @@ export class KeyringManager implements IKeyringManager {
       throw new Error(`Account with id ${id} not found`);
     }
     const { xpub, isImported, address } = account as any;
+    // Guard: single-address imported are watch-only
     if (isImported && xpub === address) {
       throw new Error(
         'Public key not available for single-address imported accounts'
       );
+    }
+    // Guard: descriptor/xpub watch-only (no xprv and not hardware)
+    if (this.isWatchOnlyAccount(account as any)) {
+      throw new Error('Public key not available for watch-only accounts');
     }
     return await this.getCurrentAddressPubkey(xpub, isChangeAddress);
   };
@@ -518,10 +523,15 @@ export class KeyringManager implements IKeyringManager {
       throw new Error(`Account with id ${id} not found`);
     }
     const { xpub, isImported, address } = account as any;
+    // Guard: single-address imported are watch-only
     if (isImported && xpub === address) {
       throw new Error(
         'BIP32 path not available for single-address imported accounts'
       );
+    }
+    // Guard: descriptor/xpub watch-only (no xprv and not hardware)
+    if (this.isWatchOnlyAccount(account as any)) {
+      throw new Error('BIP32 path not available for watch-only accounts');
     }
     return await this.getCurrentAddressBip32Path(xpub, isChangeAddress);
   };
@@ -627,6 +637,21 @@ export class KeyringManager implements IKeyringManager {
       activeAccountType,
     };
   };
+
+  private isDescriptor = (s: string): boolean =>
+    /^(addr|pkh|wpkh|sh|wsh|tr|combo|multi|sortedmulti)\s*\(/i.test(s || '');
+
+  private isXpubLike = (s: string): boolean =>
+    /^(xpub|tpub|zpub|vpub)/i.test(s || '');
+
+  private isWatchOnlyAccount(a: IKeyringAccountState): boolean {
+    if (a.isLedgerWallet || a.isTrezorWallet) return false;
+    if (!a.xprv || a.xprv === '') {
+      if (a.xpub === a.address) return true; // single-address imported
+      if (this.isXpubLike(a.xpub) || this.isDescriptor(a.xpub)) return true; // xpub/descriptor watch-only
+    }
+    return false;
+  }
 
   public getEncryptedXprv = (hd: SyscoinHDSigner) => {
     return this.withSecureData((sessionPwd) => {
@@ -1040,6 +1065,82 @@ export class KeyringManager implements IKeyringManager {
     // The calling code should handle the Redux dispatch
     // Return the created account for Pali to add to store
     return importedAccount;
+  }
+
+  public async importWatchOnly(identifier: string, label?: string) {
+    // Validate via Blockbook and create a watch-only Imported account
+    const vault = this.getVault();
+    const { accounts, activeNetwork } = vault;
+
+    if (!identifier || typeof identifier !== 'string') {
+      throw new Error('Identifier is required');
+    }
+
+    const isXpub = this.isXpubLike(identifier);
+    const isDesc = this.isDescriptor(identifier);
+    const isAddress = !isXpub && !isDesc;
+
+    // Confirm with Blockbook
+    const options = 'details=basic&tokens=used';
+    let res: any = null;
+    try {
+      res = await syscoinjs.utils.fetchBackendAccount(
+        activeNetwork.url.replace(/\/$/, ''),
+        identifier,
+        options,
+        isXpub || isDesc,
+        undefined
+      );
+    } catch (e) {
+      // continue to throw below
+    }
+    if (!res) {
+      throw new Error('Identifier not found on the active network');
+    }
+
+    // Compute address field
+    let addressToStore = identifier;
+    if (isXpub) {
+      try {
+        addressToStore = await this.getAddress(identifier, false);
+      } catch (e) {
+        // Fallback to identifier if derivation fails (e.g., non-BIP84)
+        addressToStore = identifier;
+      }
+    }
+
+    // Validate duplicates
+    const existsInImported = Object.values(
+      accounts[KeyringAccountType.Imported] as IKeyringAccountState[]
+    ).some((a) => a.address === addressToStore);
+    const existsInHD = Object.values(
+      accounts[KeyringAccountType.HDAccount] as IKeyringAccountState[]
+    ).some((a) => a.address === addressToStore);
+    if (existsInImported || existsInHD) {
+      throw new Error('Account already exists on your Wallet.');
+    }
+
+    const id = this.getNextAccountId(accounts[KeyringAccountType.Imported]);
+    const defaultLabel = label || `${activeNetwork.label} Watch-only ${id + 1}`;
+
+    const balances = { syscoin: 0, ethereum: 0 };
+
+    const watchOnlyAccount = {
+      ...initialActiveImportedAccountState,
+      address: addressToStore,
+      label: defaultLabel,
+      id,
+      balances,
+      isImported: true,
+      xprv: '',
+      xpub: isAddress ? addressToStore : identifier,
+      assets: {
+        syscoin: [],
+        ethereum: [],
+      },
+    } as IKeyringAccountState;
+
+    return watchOnlyAccount;
   }
 
   public validateZprv(zprv: string, targetNetwork?: INetwork) {
