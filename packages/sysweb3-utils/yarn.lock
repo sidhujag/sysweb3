@@ -3420,10 +3420,10 @@ supports-preserve-symlinks-flag@^1.0.0:
   resolved "https://registry.yarnpkg.com/supports-preserve-symlinks-flag/-/supports-preserve-symlinks-flag-1.0.0.tgz#6eda4bd344a3c94aea376d4cc31bc77311039e09"
   integrity sha512-ot0WnXS9fgdkgIcePe6RHNk1WA8+muPa6cSjeR3V8K27q9BB1rTE3R1p7Hv0z1ZyAc8s6Vvv8DIyWf681MAt0w==
 
-syscoinjs-lib@^1.0.254:
-  version "1.0.254"
-  resolved "https://registry.yarnpkg.com/syscoinjs-lib/-/syscoinjs-lib-1.0.254.tgz#9b155f1ad2663017dd5ae52b14f005c5b517efc1"
-  integrity sha512-7VIp0RjOWJJKBnjnVfbs5x25wtI0IIlanwicPb0DbeNShcCCN+STxdGqXGHD6EWy5+FzafPlXSnLtQG2j0kkFQ==
+syscoinjs-lib@^1.0.255:
+  version "1.0.255"
+  resolved "https://registry.yarnpkg.com/syscoinjs-lib/-/syscoinjs-lib-1.0.255.tgz#ed2899f8f0e6f90dca95102f273bba0675991d7b"
+  integrity sha512-iufGsBT8B0FSRdrBmMYL0P7hLvYoiDAmogsW6eU2CGLL6d7FV1CdEte0CAKLvgk9FUdODymT63PrhQKH4XdHDA==
   dependencies:
     "@ethersproject/abi" "^5.8.0"
     "@ethersproject/keccak256" "^5.8.0"

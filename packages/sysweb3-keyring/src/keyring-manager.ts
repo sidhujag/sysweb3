@@ -1080,24 +1080,6 @@ export class KeyringManager implements IKeyringManager {
     const isDesc = this.isDescriptor(identifier);
     const isAddress = !isXpub && !isDesc;
 
-    // Confirm with Blockbook
-    const options = 'details=basic&tokens=used';
-    let res: any = null;
-    try {
-      res = await syscoinjs.utils.fetchBackendAccount(
-        activeNetwork.url.replace(/\/$/, ''),
-        identifier,
-        options,
-        isXpub || isDesc,
-        undefined
-      );
-    } catch (e) {
-      // continue to throw below
-    }
-    if (!res) {
-      throw new Error('Identifier not found on the active network');
-    }
-
     // Compute address field
     let addressToStore = identifier;
     if (isXpub) {
@@ -1118,6 +1100,43 @@ export class KeyringManager implements IKeyringManager {
     ).some((a) => a.address === addressToStore);
     if (existsInImported || existsInHD) {
       throw new Error('Account already exists on your Wallet.');
+    }
+    // Confirm with Blockbook
+    const options = 'details=basic';
+    // Validate against Blockbook directly to capture precise error details (e.g., checksum mismatch)
+    const baseUrl = activeNetwork.url.replace(/\/$/, '');
+    const path = isXpub || isDesc ? '/api/v2/xpub/' : '/api/v2/address/';
+    const url = `${baseUrl}${path}${encodeURIComponent(identifier)}?${options}`;
+    let res: any = null;
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        let errorText = response.statusText || 'Request failed';
+        try {
+          const bodyText = await response.text();
+          if (bodyText) {
+            try {
+              const json = JSON.parse(bodyText);
+              if (json && json.error) {
+                errorText = json.error;
+              } else {
+                errorText = bodyText;
+              }
+            } catch {
+              errorText = bodyText;
+            }
+          }
+        } catch (parseError) {
+          // ignore body parse error; fall back to statusText
+        }
+        throw new Error(errorText);
+      }
+      res = await response.json();
+    } catch (e: any) {
+      throw new Error(e?.message || 'Identifier validation failed');
+    }
+    if (!res) {
+      throw new Error('Identifier not found on the active network');
     }
 
     const id = this.getNextAccountId(accounts[KeyringAccountType.Imported]);

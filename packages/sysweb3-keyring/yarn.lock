@@ -1133,10 +1133,10 @@
     "@ethersproject/bytes" "^5.8.0"
     eth-chains "^1.0.0"
 
-"@sidhujag/sysweb3-utils@^1.1.255":
-  version "1.1.255"
-  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-utils/-/sysweb3-utils-1.1.255.tgz#960045aa151e80c1e8520024deb57e6ab625ea30"
-  integrity sha512-OTRxFPaZiZ2kx3X2Wruij/G6tYbfIZx35a3lFeW98JMFNDpw09mUgcVZTRxxMExiIQgYjkiwHRC4n2WIsv3MhQ==
+"@sidhujag/sysweb3-utils@^1.1.256":
+  version "1.1.256"
+  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-utils/-/sysweb3-utils-1.1.256.tgz#3c363165b6cf94065b5f1fb67cc8187596d6a732"
+  integrity sha512-OPjzK32zQiwKAAql5W3e23VHfE2OleYnIBgBtETHbXAvNAzXCml8g7Du5vWrpLcaTfO74C8w9DbUc8M1Mg1z+g==
   dependencies:
     "@ethersproject/address" "^5.8.0"
     "@ethersproject/contracts" "^5.8.0"
@@ -2724,15 +2724,8 @@ eth-json-rpc-middleware@^6.0.0:
     pify "^3.0.0"
     safe-event-emitter "^1.0.1"
 
-eth-object@^1.0.3:
+eth-object@^1.0.3, "eth-object@git+https://github.com/syscoin/eth-object.git":
   version "1.0.3"
-  resolved "https://github.com/syscoin/eth-object.git#b5ff300f57c136138b31d6e570c816a147e0f1c9"
-  dependencies:
-    eth-util-lite "^1.0.1"
-
-"eth-object@git+https://github.com/syscoin/eth-object.git":
-  version "1.0.3"
-  uid b5ff300f57c136138b31d6e570c816a147e0f1c9
   resolved "git+https://github.com/syscoin/eth-object.git#b5ff300f57c136138b31d6e570c816a147e0f1c9"
   dependencies:
     eth-util-lite "^1.0.1"
@@ -3979,10 +3972,10 @@ strip-hex-prefix@1.0.0:
   dependencies:
     is-hex-prefixed "1.0.0"
 
-syscoinjs-lib@^1.0.254:
-  version "1.0.254"
-  resolved "https://registry.yarnpkg.com/syscoinjs-lib/-/syscoinjs-lib-1.0.254.tgz#9b155f1ad2663017dd5ae52b14f005c5b517efc1"
-  integrity sha512-7VIp0RjOWJJKBnjnVfbs5x25wtI0IIlanwicPb0DbeNShcCCN+STxdGqXGHD6EWy5+FzafPlXSnLtQG2j0kkFQ==
+syscoinjs-lib@^1.0.255:
+  version "1.0.255"
+  resolved "https://registry.yarnpkg.com/syscoinjs-lib/-/syscoinjs-lib-1.0.255.tgz#ed2899f8f0e6f90dca95102f273bba0675991d7b"
+  integrity sha512-iufGsBT8B0FSRdrBmMYL0P7hLvYoiDAmogsW6eU2CGLL6d7FV1CdEte0CAKLvgk9FUdODymT63PrhQKH4XdHDA==
   dependencies:
     "@ethersproject/abi" "^5.8.0"
     "@ethersproject/keccak256" "^5.8.0"
