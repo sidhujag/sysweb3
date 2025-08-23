@@ -223,7 +223,7 @@ export interface IKeyringManager {
     activeAccountType: KeyringAccountType;
   };
   importWeb3Account: (mnemonicOrPrivKey: string) => any;
-  createNewSeed: () => string;
+  createNewSeed: (wordCount?: number) => string;
   getUTXOState: () => any;
   importLedgerAccount: (
     label?: string

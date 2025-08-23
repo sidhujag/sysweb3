@@ -854,7 +854,18 @@ export class KeyringManager implements IKeyringManager {
 
   public isSeedValid = (seedPhrase: string) => validateMnemonic(seedPhrase);
 
-  public createNewSeed = () => generateMnemonic();
+  public createNewSeed = (wordCount?: number) => {
+    // Map BIP39 word counts to entropy strength
+    const wordCountToStrength: Record<number, number> = {
+      12: 128,
+      15: 160,
+      18: 192,
+      21: 224,
+      24: 256,
+    };
+    const strength = wordCount ? wordCountToStrength[wordCount] : 128;
+    return strength ? generateMnemonic(strength) : generateMnemonic();
+  };
 
   public getUTXOState = () => {
     const vault = this.getVault();
