@@ -1061,7 +1061,11 @@ export class KeyringManager implements IKeyringManager {
     this.lockWallet();
   };
 
-  public async importAccount(privKey: string, label?: string) {
+  public async importAccount(
+    privKey: string,
+    label?: string,
+    options?: { utxoAddressType?: 'p2wpkh' | 'p2pkh' }
+  ) {
     // Check if wallet is unlocked
     if (!this.isUnlocked()) {
       throw new Error('Wallet must be unlocked to import accounts');
@@ -1069,7 +1073,8 @@ export class KeyringManager implements IKeyringManager {
 
     const importedAccount = await this._getPrivateKeyAccountInfos(
       privKey,
-      label
+      label,
+      options
     );
 
     // NOTE: Account creation should be dispatched to Redux store, not updated here
@@ -1077,6 +1082,9 @@ export class KeyringManager implements IKeyringManager {
     // Return the created account for Pali to add to store
     return importedAccount;
   }
+
+  // Import a WIF on UTXO networks and force legacy P2PKH address/type.
+  // Keeps it as a single-address Imported account, storing the address in both xpub and address.
 
   public async importWatchOnly(identifier: string, label?: string) {
     // Validate via Blockbook and create a watch-only Imported account
@@ -2061,7 +2069,11 @@ export class KeyringManager implements IKeyringManager {
     }
   }
 
-  private async _getPrivateKeyAccountInfos(privKey: string, label?: string) {
+  private async _getPrivateKeyAccountInfos(
+    privKey: string,
+    label?: string,
+    options?: { utxoAddressType?: 'p2wpkh' | 'p2pkh' }
+  ) {
     const vault = this.getVault();
     const { accounts } = vault;
     let importedAccountValue: {
@@ -2140,10 +2152,18 @@ export class KeyringManager implements IKeyringManager {
             privKey,
             bitcoinNetwork
           );
-          const { address } = bjs.payments.p2wpkh({
-            pubkey: keyPair.publicKey,
-            network: bitcoinNetwork,
-          });
+          // Choose address type based on options or default behavior
+          const useLegacyP2PKH = options?.utxoAddressType === 'p2pkh';
+          const addrObj = useLegacyP2PKH
+            ? bjs.payments.p2pkh({
+                pubkey: keyPair.publicKey,
+                network: bitcoinNetwork,
+              })
+            : bjs.payments.p2wpkh({
+                pubkey: keyPair.publicKey,
+                network: bitcoinNetwork,
+              });
+          const address = addrObj.address;
           if (!address) {
             throw new Error('Failed to generate address from WIF');
           }

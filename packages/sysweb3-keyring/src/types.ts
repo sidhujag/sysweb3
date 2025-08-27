@@ -211,7 +211,8 @@ export interface IKeyringManager {
   // Account management
   importAccount: (
     privKey: string,
-    label?: string
+    label?: string,
+    options?: { utxoAddressType?: 'p2wpkh' | 'p2pkh' }
   ) => Promise<IKeyringAccountState>;
   getNewChangeAddress: () => Promise<string>;
   getChangeAddress: (id: number) => Promise<string>;
