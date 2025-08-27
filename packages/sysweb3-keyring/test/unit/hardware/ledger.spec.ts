@@ -370,10 +370,15 @@ describe('Ledger Hardware Wallet', () => {
         signMessage: jest.fn(),
       } as any;
 
-      // Mock convertToLedgerFormat to return a proper PSBT mock with toBase64 method
-      keyringManager.ledgerSigner.convertToLedgerFormat = jest
-        .fn()
-        .mockResolvedValue({
+      // No convertToLedgerFormat anymore; rely on PSBT from parser
+    });
+
+    it('should prepare PSBT for Ledger signing', async () => {
+      // Mock the PSBT parsing to avoid base64 validation issues
+      const mockSyscoinjs = require('syscoinjs-lib');
+      const originalImportPsbtFromJson = mockSyscoinjs.utils.importPsbtFromJson;
+      mockSyscoinjs.utils.importPsbtFromJson = jest.fn().mockReturnValue({
+        psbt: {
           toBase64: jest
             .fn()
             .mockReturnValue(
@@ -384,15 +389,7 @@ describe('Ledger Hardware Wallet', () => {
           }),
           updateInput: jest.fn(),
           finalizeAllInputs: jest.fn(),
-        });
-    });
-
-    it('should prepare PSBT for Ledger signing', async () => {
-      // Mock the PSBT parsing to avoid base64 validation issues
-      const mockSyscoinjs = require('syscoinjs-lib');
-      const originalImportPsbtFromJson = mockSyscoinjs.utils.importPsbtFromJson;
-      mockSyscoinjs.utils.importPsbtFromJson = jest.fn().mockReturnValue({
-        psbt: 'mocked_psbt_object',
+        },
       });
 
       const psbtData = {
@@ -404,7 +401,6 @@ describe('Ledger Hardware Wallet', () => {
         psbt: psbtData,
         isTrezor: false,
         isLedger: true,
-        pathIn: undefined,
       });
 
       expect(result).toBeDefined();

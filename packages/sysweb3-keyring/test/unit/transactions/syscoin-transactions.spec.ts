@@ -152,7 +152,6 @@ describe('Syscoin Transactions', () => {
         psbt: mockPsbtData,
         isTrezor: false,
         isLedger: false,
-        pathIn: undefined,
       });
 
       expect(result).toBeDefined();
@@ -169,7 +168,6 @@ describe('Syscoin Transactions', () => {
           psbt: 'invalid-psbt-format',
           isTrezor: false,
           isLedger: false,
-          pathIn: undefined,
         })
       ).rejects.toThrow();
     });
@@ -233,7 +231,6 @@ describe('Syscoin Transactions', () => {
         psbt: mockPsbtData,
         isTrezor: true,
         isLedger: false,
-        pathIn: undefined,
       });
 
       expect(trezorResult).toBeDefined();
@@ -300,7 +297,6 @@ describe('Syscoin Transactions', () => {
         psbt: feeEstimate.psbt,
         isTrezor: false,
         isLedger: false,
-        pathIn: undefined,
       });
 
       // Mock sendTransaction to avoid network calls
@@ -456,7 +452,6 @@ describe('Syscoin Transactions', () => {
         psbt: feeEstimate.psbt,
         isTrezor: false,
         isLedger: false,
-        pathIn: undefined,
       });
 
       // Mock sendTransaction to avoid network calls

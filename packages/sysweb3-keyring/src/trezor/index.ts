@@ -405,8 +405,43 @@ export class TrezorKeyring {
           ];
           psbt.updateInput(i, { partialSig });
         }
+
         try {
-          if (psbt.validateSignaturesOfAllInputs()) {
+          const validator = (
+            pubkey: Buffer,
+            msghash: Buffer,
+            signature: Buffer
+          ) => {
+            if (signature && signature.length === 64) {
+              try {
+                const xOnly =
+                  pubkey.length === 32 ? pubkey : pubkey.slice(1, 33);
+                // @ts-ignore ecc injected via bitcoinjs initEccLib; runtime available in syscoinjs-lib
+                const eccLib =
+                  (require('bitcoinjs-lib') as any).ecc ||
+                  require('tiny-secp256k1');
+                return eccLib && typeof eccLib.verifySchnorr === 'function'
+                  ? eccLib.verifySchnorr(signature, msghash, xOnly)
+                  : false;
+              } catch (e) {
+                return false;
+              }
+            }
+            try {
+              // eslint-disable-next-line @typescript-eslint/no-var-requires
+              const ECPairFactory =
+                require('ecpair').ECPairFactory ||
+                require('ecpair').default ||
+                require('ecpair');
+              // eslint-disable-next-line @typescript-eslint/no-var-requires
+              const ecc = require('@bitcoinerlab/secp256k1');
+              const ECPair = ECPairFactory(ecc);
+              return ECPair.fromPublicKey(pubkey).verify(msghash, signature);
+            } catch (e) {
+              return false;
+            }
+          };
+          if (psbt.validateSignaturesOfAllInputs(validator)) {
             psbt.finalizeAllInputs();
           }
         } catch (err) {
@@ -510,7 +545,7 @@ export class TrezorKeyring {
     return false;
   }
 
-  public convertToTrezorFormat({ psbt, pathIn, coin, network }: any) {
+  public convertToTrezorFormat({ psbt, coin, network }: any) {
     const trezortx: any = {};
 
     trezortx.coin = coin;
@@ -519,7 +554,6 @@ export class TrezorKeyring {
     trezortx.outputs = [];
 
     for (let i = 0; i < psbt.txInputs.length; i++) {
-      const scriptTypes = psbt.getInputType(i);
       const input = psbt.txInputs[i];
       const inputItem: any = {};
       inputItem.prev_index = input.index;
@@ -528,42 +562,62 @@ export class TrezorKeyring {
       const dataInput = psbt.data.inputs[i];
       let path = '';
 
-      // Find path from unknownKeyVals by searching for the key, not using hardcoded index
-      let pathFromInput: string | null = null;
-      if (dataInput.unknownKeyVals && dataInput.unknownKeyVals.length > 0) {
-        for (const kv of dataInput.unknownKeyVals) {
-          if (kv.key.equals(Buffer.from('path'))) {
-            pathFromInput = kv.value.toString();
-            break;
-          }
-        }
-      }
+      // Prefer PSBT derivations over unknownKeyVals
+      const tapDer =
+        dataInput.tapBip32Derivation && dataInput.tapBip32Derivation.length > 0
+          ? dataInput.tapBip32Derivation[0]
+          : null;
+      const b32Der =
+        dataInput.bip32Derivation && dataInput.bip32Derivation.length > 0
+          ? dataInput.bip32Derivation[0]
+          : null;
 
-      if (
-        pathIn ||
-        (pathFromInput &&
-          (!dataInput.bip32Derivation ||
-            dataInput.bip32Derivation.length === 0))
-      ) {
-        path = pathIn || pathFromInput;
+      if (tapDer && tapDer.path) {
+        path = tapDer.path;
         inputItem.address_n = this.convertToAddressNFormat(path);
+      } else if (b32Der && b32Der.path) {
+        path = b32Der.path;
+        inputItem.address_n = this.convertToAddressNFormat(path);
+      } else {
+        throw new Error(
+          'convertToTrezorFormat: Missing PSBT derivation (tapBip32Derivation/bip32Derivation)'
+        );
       }
-      switch (scriptTypes) {
-        case 'multisig':
-          inputItem.script_type = 'SPENDMULTISIG';
-          break;
-        case 'witnesspubkeyhash':
-          inputItem.script_type = 'SPENDWITNESS';
-          break;
-        default:
-          inputItem.script_type = this.isP2WSHScript(
-            psbt.data.inputs[i].witnessUtxo.script
-              ? psbt.data.inputs[i].witnessUtxo.script
-              : ''
-          )
-            ? 'SPENDP2SHWITNESS'
-            : 'SPENDADDRESS';
-          break;
+      // Coerce witnessUtxo.script to Buffer for downstream helpers
+      const inScriptBuf =
+        psbt.data.inputs[i] &&
+        psbt.data.inputs[i].witnessUtxo &&
+        psbt.data.inputs[i].witnessUtxo.script
+          ? Buffer.isBuffer(psbt.data.inputs[i].witnessUtxo.script)
+            ? psbt.data.inputs[i].witnessUtxo.script
+            : Buffer.from(psbt.data.inputs[i].witnessUtxo.script)
+          : Buffer.alloc(0);
+
+      // Select Trezor script_type (detect Taproot explicitly)
+      const isTaproot =
+        inScriptBuf &&
+        inScriptBuf.length === 34 &&
+        inScriptBuf[0] === bitcoinops.OP_1 &&
+        inScriptBuf[1] === 0x20;
+
+      if (isTaproot) {
+        // Trezor Taproot key-path spend
+        inputItem.script_type = 'SPENDTAPROOT';
+      } else {
+        const scriptTypes = psbt.getInputType(i);
+        switch (scriptTypes) {
+          case 'multisig':
+            inputItem.script_type = 'SPENDMULTISIG';
+            break;
+          case 'witnesspubkeyhash':
+            inputItem.script_type = 'SPENDWITNESS';
+            break;
+          default:
+            inputItem.script_type = this.isP2WSHScript(inScriptBuf)
+              ? 'SPENDP2SHWITNESS'
+              : 'SPENDADDRESS';
+            break;
+        }
       }
       trezortx.inputs.push(inputItem);
     }
@@ -571,7 +625,10 @@ export class TrezorKeyring {
     for (let i = 0; i < psbt.txOutputs.length; i++) {
       const output = psbt.txOutputs[i];
       const outputItem: any = {};
-      const chunks = decompile(output.script);
+      const scriptBuf = Buffer.isBuffer(output.script)
+        ? output.script
+        : Buffer.from(output.script || []);
+      const chunks = decompile(scriptBuf);
 
       // Debug logging to understand the output structure
       console.log(`[Trezor] Processing output ${i}:`, {
@@ -605,13 +662,13 @@ export class TrezorKeyring {
       if (chunks && chunks[0] === bitcoinops.OP_RETURN) {
         outputItem.script_type = 'PAYTOOPRETURN';
         // @ts-ignore
-        outputItem.op_return_data = chunks[1].toString('hex');
+        outputItem.op_return_data = Buffer.from(chunks[1]).toString('hex');
       } else {
         if (output && this.isBech32(output.address)) {
           if (
-            output.script.length === 34 &&
-            output.script[0] === 0 &&
-            output.script[1] === 0x20
+            scriptBuf.length === 34 &&
+            scriptBuf[0] === 0 &&
+            scriptBuf[1] === 0x20
           ) {
             outputItem.script_type = 'PAYTOP2SHWITNESS';
           } else {

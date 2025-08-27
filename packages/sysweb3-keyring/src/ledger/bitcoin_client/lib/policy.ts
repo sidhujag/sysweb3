@@ -1,4 +1,12 @@
-import { crypto } from 'bitcoinjs-lib';
+import CryptoJS from 'crypto-js';
+
+// Helper function for SHA256 hashing (browser-compatible)
+function sha256(data: Buffer): Buffer {
+  const wordArray = CryptoJS.lib.WordArray.create(data);
+  const hash = CryptoJS.SHA256(wordArray);
+  const hashBuffer = Buffer.from(hash.toString(CryptoJS.enc.Hex), 'hex');
+  return hashBuffer;
+}
 
 import { BufferWriter } from './buffertools';
 import { hashLeaf, Merkle } from './merkle';
@@ -37,7 +45,7 @@ export class WalletPolicy {
    * Returns the unique 32-bytes id of this wallet policy.
    */
   getId(): Buffer {
-    return crypto.sha256(this.serialize());
+    return sha256(this.serialize());
   }
 
   /**
@@ -57,7 +65,7 @@ export class WalletPolicy {
     // length of descriptor template
     buf.writeVarInt(this.descriptorTemplate.length);
     // sha256 hash of descriptor template
-    buf.writeSlice(crypto.sha256(Buffer.from(this.descriptorTemplate)));
+    buf.writeSlice(sha256(Buffer.from(this.descriptorTemplate)));
 
     // number of keys
     buf.writeVarInt(this.keys.length);

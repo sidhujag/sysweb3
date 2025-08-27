@@ -133,12 +133,10 @@ export interface SyscoinHDSigner {
     psbt,
     isTrezor,
     isLedger,
-    pathIn,
   }: {
     psbt: any;
     isTrezor?: boolean;
     isLedger?: boolean;
-    pathIn?: string;
   }) => Promise<any>;
   getNewChangeAddress: (
     skipIncrement?: boolean,
@@ -148,7 +146,7 @@ export interface SyscoinHDSigner {
   mnemonicOrZprv: string;
   setLatestIndexesFromXPubTokens: (tokens: any) => void;
   // Made async
-  sign: (psbt: Psbt, pathIn?: string) => Promise<Psbt>;
+  sign: (psbt: Psbt) => Promise<Psbt>;
   // Made async
   getMasterFingerprint: () => Buffer;
 }

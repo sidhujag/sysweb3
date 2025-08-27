@@ -161,12 +161,10 @@ export class SyscoinTransactions implements ISyscoinTransactions {
   private signPSBTWithSigner = async ({
     psbt,
     signer,
-    pathIn,
   }: {
-    pathIn?: string;
     psbt: any;
     signer: any;
-  }): Promise<any> => await signer.sign(psbt, pathIn);
+  }): Promise<any> => await signer.sign(psbt);
 
   // Create unsigned PSBT for any transaction type
   private createUnsignedPSBT = async ({
@@ -288,8 +286,7 @@ export class SyscoinTransactions implements ISyscoinTransactions {
   private signPSBTWithMethod = async (
     psbt: any,
     isTrezor: boolean,
-    isLedger = false,
-    pathIn = ''
+    isLedger = false
   ): Promise<any> => {
     const { activeNetwork, activeAccountId, activeAccountType, accounts } =
       this.getState();
@@ -302,27 +299,17 @@ export class SyscoinTransactions implements ISyscoinTransactions {
       }
       const accountXpub = account.xpub;
       const accountId = account.id;
-      const enhancedPsbt = await this.ledger.convertToLedgerFormat(
-        psbt,
-        accountXpub,
-        accountId,
-        activeNetwork.currency,
-        activeNetwork.slip44
-      );
+      const enhancedPsbt = psbt;
 
       // Get wallet policy for Ledger
       const fingerprint =
         await this.ledger.ledgerUtxoClient.getMasterFingerprint();
 
-      // Use dynamic path generation if no path provided
-      let hdPath = pathIn;
-      if (!pathIn || pathIn.length === 0) {
-        hdPath = getAccountDerivationPath(
-          activeNetwork.currency,
-          activeNetwork.slip44,
-          accountId
-        );
-      }
+      const hdPath = getAccountDerivationPath(
+        activeNetwork.currency,
+        activeNetwork.slip44,
+        accountId
+      );
 
       // Convert stored/display zpub/vpub to device-friendly xpub/tpub for policy descriptor using network macros
       const { types: deviceTypes } = getNetworkConfig(
@@ -389,7 +376,6 @@ export class SyscoinTransactions implements ISyscoinTransactions {
 
       const trezorTx = this.trezor.convertToTrezorFormat({
         psbt,
-        pathIn, // Pass pathIn to Trezor
         coin: activeNetwork.currency.toLowerCase(),
         network: bitcoinjsNetwork || undefined, // Pass network config for isScriptHash check
       });
@@ -400,7 +386,6 @@ export class SyscoinTransactions implements ISyscoinTransactions {
       const signedPsbt = await this.signPSBTWithSigner({
         psbt,
         signer: hd,
-        pathIn,
       });
       return signedPsbt;
     }
@@ -531,19 +516,16 @@ export class SyscoinTransactions implements ISyscoinTransactions {
     psbt,
     isTrezor = false,
     isLedger = false,
-    pathIn,
   }: {
     psbt: any;
     isTrezor?: boolean;
     isLedger?: boolean;
-    pathIn?: string;
   }): Promise<any> => {
     const psbtObj = PsbtUtils.fromPali(psbt);
     const signedPsbt = await this.signPSBTWithMethod(
       psbtObj,
       isTrezor,
-      isLedger,
-      pathIn
+      isLedger
     );
     return PsbtUtils.toPali(signedPsbt);
   };

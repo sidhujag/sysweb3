@@ -255,11 +255,41 @@ jest.mock('@sidhujag/sysweb3-utils', () => {
 jest.mock('syscoinjs-lib', () => {
   const actualSyscoinjs = jest.requireActual('syscoinjs-lib');
 
+  // Create a mock HDSigner class that extends the real one
+  class MockHDSigner extends actualSyscoinjs.utils.HDSigner {
+    // Override sign method to avoid real PSBT signing
+    async sign(psbt) {
+      // If psbt is a string (from mock), just return it
+      if (typeof psbt === 'string') {
+        return psbt;
+      }
+
+      // If it's a mock PSBT object, return a properly signed mock
+      if (psbt && psbt.data && psbt.data.inputs) {
+        // Mock the signing process
+        return {
+          ...psbt,
+          signed: true,
+          extractTransaction: jest.fn().mockReturnValue({
+            getId: jest.fn().mockReturnValue('mock_txid'),
+            toHex: jest.fn().mockReturnValue('mock_hex'),
+          }),
+          finalizeAllInputs: jest.fn(),
+          validateSignaturesOfAllInputs: jest.fn().mockReturnValue(true),
+        };
+      }
+
+      // Otherwise return the psbt as-is
+      return psbt;
+    }
+  }
+
   return {
     ...actualSyscoinjs,
-    // Use real HDSigner - no mock needed for deterministic crypto operations
     utils: {
       ...actualSyscoinjs.utils,
+      // Replace HDSigner with our mock version
+      HDSigner: MockHDSigner,
       // Only mock network-dependent functions
       fetchBackendAccount: jest.fn().mockResolvedValue({
         balance: 100000000, // 1 SYS in satoshis

@@ -431,14 +431,14 @@ export class PsbtV2 {
     this.setGlobalOutputCount(tx.outs.length);
 
     for (let i = 0; i < tx.ins.length; i++) {
-      this.setInputPreviousTxId(i, tx.ins[i].hash);
+      this.setInputPreviousTxId(i, Buffer.from(tx.ins[i].hash));
       this.setInputOutputIndex(i, tx.ins[i].index);
       this.setInputSequence(i, tx.ins[i].sequence);
     }
 
     for (let i = 0; i < tx.outs.length; i++) {
-      this.setOutputAmount(i, tx.outs[i].value);
-      this.setOutputScript(i, tx.outs[i].script);
+      this.setOutputAmount(i, Number(tx.outs[i].value));
+      this.setOutputScript(i, Buffer.from(tx.outs[i].script));
     }
 
     // PSBT_GLOBAL_UNSIGNED_TX must be removed in a valid PSBTv2
@@ -484,7 +484,10 @@ export class PsbtV2 {
     psbtBJS.data.inputs.forEach((input, index) => {
       if (isTaprootInput(input))
         throw new Error(`Taproot inputs not supported`);
-      this.setInputPreviousTxId(index, psbtBJS.txInputs[index].hash);
+      this.setInputPreviousTxId(
+        index,
+        Buffer.from(psbtBJS.txInputs[index].hash)
+      );
       if (psbtBJS.txInputs[index].sequence !== undefined)
         // @ts-ignore
         this.setInputSequence(index, psbtBJS.txInputs[index].sequence);
@@ -492,18 +495,18 @@ export class PsbtV2 {
       if (input.sighashType !== undefined)
         this.setInputSighashType(index, input.sighashType);
       if (input.nonWitnessUtxo)
-        this.setInputNonWitnessUtxo(index, input.nonWitnessUtxo);
+        this.setInputNonWitnessUtxo(index, Buffer.from(input.nonWitnessUtxo));
       if (input.witnessUtxo) {
         this.setInputWitnessUtxo(
           index,
-          input.witnessUtxo.value,
-          input.witnessUtxo.script
+          Number(input.witnessUtxo.value),
+          Buffer.from(input.witnessUtxo.script)
         );
       }
       if (input.witnessScript)
-        this.setInputWitnessScript(index, input.witnessScript);
+        this.setInputWitnessScript(index, Buffer.from(input.witnessScript));
       if (input.redeemScript)
-        this.setInputRedeemScript(index, input.redeemScript);
+        this.setInputRedeemScript(index, Buffer.from(input.redeemScript));
       // @ts-ignore
       psbtBJS.data.inputs[index].bip32Derivation.forEach((derivation) => {
         if (!/^m\//i.test(derivation.path))
@@ -516,15 +519,15 @@ export class PsbtV2 {
           );
         this.setInputBip32Derivation(
           index,
-          derivation.pubkey,
-          derivation.masterFingerprint,
+          Buffer.from(derivation.pubkey),
+          Buffer.from(derivation.masterFingerprint),
           pathArray
         );
       });
     });
     psbtBJS.txOutputs.forEach((output, index) => {
-      this.setOutputAmount(index, output.value);
-      this.setOutputScript(index, output.script);
+      this.setOutputAmount(index, Number(output.value));
+      this.setOutputScript(index, Buffer.from(output.script));
     });
     return this;
   }

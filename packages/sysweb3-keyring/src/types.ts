@@ -155,11 +155,9 @@ export interface ISyscoinTransactions {
     psbt,
     isTrezor,
     isLedger,
-    pathIn,
   }: {
     isLedger?: boolean;
     isTrezor?: boolean;
-    pathIn?: string;
     psbt: any;
   }) => Promise<any>;
 }

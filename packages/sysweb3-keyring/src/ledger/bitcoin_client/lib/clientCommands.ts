@@ -1,5 +1,13 @@
 /* eslint-disable camelcase */
-import { crypto } from 'bitcoinjs-lib';
+import CryptoJS from 'crypto-js';
+
+// Helper function for SHA256 hashing (browser-compatible)
+function sha256(data: Buffer): Buffer {
+  const wordArray = CryptoJS.lib.WordArray.create(data);
+  const hash = CryptoJS.SHA256(wordArray);
+  const hashBuffer = Buffer.from(hash.toString(CryptoJS.enc.Hex), 'hex');
+  return hashBuffer;
+}
 
 import { BufferReader } from './buffertools';
 import { hashLeaf, Merkle } from './merkle';
@@ -309,7 +317,7 @@ export class ClientCommandInterpreter {
   }
 
   addKnownPreimage(preimage: Buffer): void {
-    this.preimages.set(crypto.sha256(preimage).toString('hex'), preimage);
+    this.preimages.set(sha256(preimage).toString('hex'), preimage);
   }
 
   addKnownList(elements: readonly Buffer[]): void {

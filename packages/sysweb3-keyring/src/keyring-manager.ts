@@ -1064,7 +1064,7 @@ export class KeyringManager implements IKeyringManager {
   public async importAccount(
     privKey: string,
     label?: string,
-    options?: { utxoAddressType?: 'p2wpkh' | 'p2pkh' }
+    options?: { utxoAddressType?: 'p2wpkh' | 'p2pkh' | 'p2tr' }
   ) {
     // Check if wallet is unlocked
     if (!this.isUnlocked()) {
@@ -1337,14 +1337,19 @@ export class KeyringManager implements IKeyringManager {
         throw new Error('Invalid WIF private key');
 
       // Derive an address based on network capability
-      // Prefer native segwit if the network supports bech32, otherwise fall back to P2PKH
+      // Try different address types to ensure the key can derive addresses
       let address: string | undefined;
       try {
+        // Try P2TR (Taproot) first if bech32 is supported
         if ((bitcoinNetwork as any).bech32) {
-          address = bjs.payments.p2wpkh({
-            pubkey: keyPair.publicKey,
-            network: bitcoinNetwork,
-          }).address as string | undefined;
+          try {
+            address = bjs.payments.p2wpkh({
+              pubkey: keyPair.publicKey,
+              network: bitcoinNetwork,
+            }).address as string | undefined;
+          } catch (e) {
+            // P2TR might not be supported, try P2WPKH
+          }
         }
         if (!address) {
           address = bjs.payments.p2pkh({
@@ -2072,7 +2077,7 @@ export class KeyringManager implements IKeyringManager {
   private async _getPrivateKeyAccountInfos(
     privKey: string,
     label?: string,
-    options?: { utxoAddressType?: 'p2wpkh' | 'p2pkh' }
+    options?: { utxoAddressType?: 'p2wpkh' | 'p2pkh' | 'p2tr' }
   ) {
     const vault = this.getVault();
     const { accounts } = vault;
@@ -2113,11 +2118,32 @@ export class KeyringManager implements IKeyringManager {
         throw new Error('Failed to derive child node');
       }
 
-      const { address } = bjs.payments.p2wpkh({
-        pubkey: nodeChild.publicKey,
-        network,
-      });
+      // Choose address type based on options or default to p2wpkh
+      let addrObj;
+      if (options?.utxoAddressType === 'p2pkh') {
+        addrObj = bjs.payments.p2pkh({
+          pubkey: nodeChild.publicKey,
+          network,
+        });
+      } else if (options?.utxoAddressType === 'p2tr') {
+        // For taproot, use x-only public key (32 bytes instead of 33)
+        const xOnly =
+          nodeChild.publicKey.length === 33
+            ? nodeChild.publicKey.slice(1, 33)
+            : nodeChild.publicKey;
+        addrObj = bjs.payments.p2tr({
+          internalPubkey: xOnly,
+          network,
+        });
+      } else {
+        // Default to SegWit (p2wpkh)
+        addrObj = bjs.payments.p2wpkh({
+          pubkey: nodeChild.publicKey,
+          network,
+        });
+      }
 
+      const { address } = addrObj;
       if (!address) {
         throw new Error('Failed to generate address');
       }
@@ -2151,16 +2177,29 @@ export class KeyringManager implements IKeyringManager {
             bitcoinNetwork
           );
           // Choose address type based on options or default behavior
-          const useLegacyP2PKH = options?.utxoAddressType === 'p2pkh';
-          const addrObj = useLegacyP2PKH
-            ? bjs.payments.p2pkh({
-                pubkey: keyPair.publicKey,
-                network: bitcoinNetwork,
-              })
-            : bjs.payments.p2wpkh({
-                pubkey: keyPair.publicKey,
-                network: bitcoinNetwork,
-              });
+          let addrObj;
+          if (options?.utxoAddressType === 'p2pkh') {
+            addrObj = bjs.payments.p2pkh({
+              pubkey: keyPair.publicKey,
+              network: bitcoinNetwork,
+            });
+          } else if (options?.utxoAddressType === 'p2tr') {
+            // For taproot, use x-only public key (32 bytes instead of 33)
+            const xOnly =
+              keyPair.publicKey.length === 33
+                ? keyPair.publicKey.slice(1, 33)
+                : keyPair.publicKey;
+            addrObj = bjs.payments.p2tr({
+              internalPubkey: xOnly,
+              network: bitcoinNetwork,
+            });
+          } else {
+            // Default to SegWit (p2wpkh)
+            addrObj = bjs.payments.p2wpkh({
+              pubkey: keyPair.publicKey,
+              network: bitcoinNetwork,
+            });
+          }
           const address = addrObj.address;
           if (!address) {
             throw new Error('Failed to generate address from WIF');

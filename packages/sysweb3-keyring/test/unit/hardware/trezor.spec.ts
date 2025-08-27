@@ -394,7 +394,6 @@ describe('Trezor Hardware Wallet', () => {
         psbt: psbtData,
         isTrezor: true,
         isLedger: false,
-        pathIn: undefined,
       });
 
       expect(result).toBeDefined();
@@ -625,7 +624,6 @@ describe('Trezor Hardware Wallet', () => {
           psbt: psbtData,
           isTrezor: true,
           isLedger: false,
-          pathIn: undefined,
         })
       ).rejects.toThrow();
     });
