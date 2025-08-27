@@ -4,7 +4,6 @@ import {
   type Event,
 } from '@ethersproject/contracts';
 import { retryableFetch } from '@sidhujag/sysweb3-network';
-import camelcaseKeys from 'camelcase-keys';
 import * as sys from 'syscoinjs-lib';
 
 import { createContractUsingAbi } from '.';
@@ -394,45 +393,6 @@ export const reversePromise = (promise: Promise<unknown>): Promise<unknown> =>
 export const IMAGE_EXT_RE = /\.(?:png|svg|jpg|jepg|gif|webp|jxl|avif)$/;
 export const VIDEO_EXT_RE = /\.(?:mp4|mov|webm|ogv)$/;
 
-export const getTokenIconBySymbol = async (symbol: string): Promise<string> => {
-  symbol = symbol.toUpperCase();
-  const searchResults = await getSearch(symbol);
-
-  const tokens = searchResults.coins.filter(
-    (token: any) => token.symbol.toUpperCase() === symbol
-  );
-
-  if (tokens[0]) return tokens[0].thumb;
-
-  throw new Error('Token icon not found');
-};
-
-export const isNFT = (guid: number) => {
-  const assetGuid = BigInt.asUintN(64, BigInt(guid));
-
-  return assetGuid >> BigInt(32) > 0;
-};
-
-export const getHost = (url: string) => {
-  if (typeof url === 'string' && url !== '') {
-    return new URL(url).host;
-  }
-
-  return url;
-};
-
-export const getToken = async (id: string): Promise<ICoingeckoToken> => {
-  let token;
-  try {
-    const response = await retryableFetch(`${COINGECKO_API}/coins/${id}`);
-    token = await response.json();
-  } catch (error) {
-    throw new Error('Unable to retrieve token data');
-  }
-
-  return camelcaseKeys(token, { deep: true });
-};
-
 export const getTokenStandardMetadata = async (
   contractAddress: string,
   address: string,
@@ -509,55 +469,6 @@ export const getFiatValueByToken = async (
   }
 };
 
-/**
- * Get token symbol by chain
- * @param chain should be written in lower case and by extense
- * @example 'ethereum' | 'syscoin'
- */
-export const getSymbolByChain = async (chain: string): Promise<string> => {
-  const { symbol } = await getToken(chain);
-
-  return symbol.toUpperCase();
-};
-
-export const getTokenBySymbol = async (
-  symbol: string
-): Promise<ICoingeckoSearchResultToken> => {
-  const searchResults = await getSearch(symbol);
-  const firstCoin = searchResults.coins[0];
-
-  const symbolsAreEqual =
-    firstCoin.symbol.toUpperCase() === symbol.toUpperCase();
-
-  if (symbolsAreEqual) return firstCoin;
-  else throw new Error('Unable to find token');
-};
-
-export const getSearch = async (
-  query: string
-): Promise<ICoingeckoSearchResults> => {
-  const response = await retryableFetch(
-    `${COINGECKO_API}/search?query=${query}`
-  );
-  const data = await response.json();
-  return camelcaseKeys(data, { deep: true });
-};
-
-export const getSearchTokenAtCoingecko = async (
-  tokenSymbol: string
-): Promise<ICoingeckoSearchResultToken | null> => {
-  try {
-    const { coins } = await getSearch(tokenSymbol);
-
-    if (coins && coins[0]) {
-      return coins[0];
-    } else {
-      return null;
-    }
-  } catch (error) {
-    return null;
-  }
-};
 const isImageUrlAvailable = async (imageUrl: string) => {
   try {
     const response = await retryableFetch(imageUrl);
@@ -605,27 +516,6 @@ export const getSearchTokenAtSysGithubRepo = async (tokenSymbol: string) => {
     };
   }
 };
-
-/**
- *
- * @param contractAddress Contract address of the token to get info from
- */
-export const getTokenByContract = async (
-  contractAddress: string
-): Promise<ICoingeckoToken> => {
-  let token;
-  try {
-    const response = await retryableFetch(
-      `${COINGECKO_API}/coins/ethereum/contract/${contractAddress}`
-    );
-    token = await response.json();
-  } catch (error) {
-    throw new Error('Token not found');
-  }
-
-  return camelcaseKeys(token, { deep: true });
-};
-
 /**
  *
  * @param address Contract address of the token to validate
