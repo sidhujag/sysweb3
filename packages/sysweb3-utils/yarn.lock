@@ -1664,9 +1664,9 @@ eth-object@^1.0.3:
   dependencies:
     eth-util-lite "^1.0.1"
 
-"eth-object@https://github.com/syscoin/eth-object.git":
+"eth-object@git+https://github.com/syscoin/eth-object.git":
   version "1.0.3"
-  resolved "https://github.com/syscoin/eth-object.git#b5ff300f57c136138b31d6e570c816a147e0f1c9"
+  resolved "git+https://github.com/syscoin/eth-object.git#b5ff300f57c136138b31d6e570c816a147e0f1c9"
   dependencies:
     eth-util-lite "^1.0.1"
 
@@ -3352,10 +3352,10 @@ supports-preserve-symlinks-flag@^1.0.0:
   resolved "https://registry.yarnpkg.com/supports-preserve-symlinks-flag/-/supports-preserve-symlinks-flag-1.0.0.tgz#6eda4bd344a3c94aea376d4cc31bc77311039e09"
   integrity sha512-ot0WnXS9fgdkgIcePe6RHNk1WA8+muPa6cSjeR3V8K27q9BB1rTE3R1p7Hv0z1ZyAc8s6Vvv8DIyWf681MAt0w==
 
-syscoinjs-lib@^1.0.258:
-  version "1.0.258"
-  resolved "https://registry.yarnpkg.com/syscoinjs-lib/-/syscoinjs-lib-1.0.258.tgz#83be4488042fdeaab2d775058a139e7640c4346f"
-  integrity sha512-QN/E5so3IUp5T7TtQU2rg0S/xjb2topaZefub6ITYS+LEv7y8tM5iErrRmmU8iBITrJx02pTrCAYb7iB1MKPUQ==
+syscoinjs-lib@^1.0.259:
+  version "1.0.259"
+  resolved "https://registry.yarnpkg.com/syscoinjs-lib/-/syscoinjs-lib-1.0.259.tgz#577ea517af06ccff300c71d5ecbafb9de4d70b38"
+  integrity sha512-HsF//2V1MjLEhER+G9Zk+RHp//ZobF4a91IERQx1zTv+d1vkYPbVCcrdSnPLjvuBNdgpxBIFnicv0g1EXnGtSw==
   dependencies:
     "@bitcoinerlab/secp256k1" "^1.2.0"
     "@ethersproject/abi" "^5.8.0"
