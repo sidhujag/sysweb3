@@ -1631,9 +1631,9 @@ ecpair@^3.0.0-rc.0:
     wif "^5.0.0"
 
 electron-to-chromium@^1.5.204:
-  version "1.5.210"
-  resolved "https://registry.yarnpkg.com/electron-to-chromium/-/electron-to-chromium-1.5.210.tgz#fa9ec9483c61940ed28993ae1470ac2cebe729a8"
-  integrity sha512-20kSVv1tyNBN2VFsjCIJZfyvxqo7ylHPrJLME040f/030lzNMA7uQNpxtqJjWSNpccD8/2sqe53EAjrFPvQmjw==
+  version "1.5.211"
+  resolved "https://registry.yarnpkg.com/electron-to-chromium/-/electron-to-chromium-1.5.211.tgz#749317bf9cf894c06f67980940cf8074e5eb08ca"
+  integrity sha512-IGBvimJkotaLzFnwIVgW9/UD/AOJ2tByUmeOrtqBfACSbAw5b1G0XpvdaieKyc7ULmbwXVx+4e4Be8pOPBrYkw==
 
 elliptic@6.6.1, elliptic@^6.5.2, elliptic@^6.5.7:
   version "6.6.1"
@@ -1732,7 +1732,14 @@ eth-chains@^1.0.0:
   resolved "https://registry.yarnpkg.com/eth-chains/-/eth-chains-1.0.0.tgz#1386496ee1aa231a4d050fde6a87fe36741ecb83"
   integrity sha512-SnJrJPSr5I3rKpW6RZT/qhX8qbmE5bsMeeHoRWBXkvbifudfi3YLKHXZMdLsg+Yv+PP8oqSyPxOvQxKwjNVqmQ==
 
-eth-object@^1.0.3, "eth-object@git+https://github.com/syscoin/eth-object.git":
+eth-object@^1.0.3:
+  version "1.0.3"
+  resolved "https://registry.yarnpkg.com/eth-object/-/eth-object-1.0.3.tgz#5e7a58615793e570c6b1c009eb282876b4d059b6"
+  integrity sha512-VOWso/tO0Pz66wNlzUveYN0FgaqHQGVr+n60GL6QWQSUW3kwTyyaMxrHNnaDCeq/61YvMUxygGr9FJsnmWKqEg==
+  dependencies:
+    eth-util-lite "^1.0.1"
+
+"eth-object@git+https://github.com/syscoin/eth-object.git":
   version "1.0.3"
   resolved "git+https://github.com/syscoin/eth-object.git#b5ff300f57c136138b31d6e570c816a147e0f1c9"
   dependencies:
@@ -3430,10 +3437,10 @@ supports-preserve-symlinks-flag@^1.0.0:
   resolved "https://registry.yarnpkg.com/supports-preserve-symlinks-flag/-/supports-preserve-symlinks-flag-1.0.0.tgz#6eda4bd344a3c94aea376d4cc31bc77311039e09"
   integrity sha512-ot0WnXS9fgdkgIcePe6RHNk1WA8+muPa6cSjeR3V8K27q9BB1rTE3R1p7Hv0z1ZyAc8s6Vvv8DIyWf681MAt0w==
 
-syscoinjs-lib@^1.0.257:
-  version "1.0.257"
-  resolved "https://registry.yarnpkg.com/syscoinjs-lib/-/syscoinjs-lib-1.0.257.tgz#ce53c0a6265deb0a2cd8ef321cb92488fdd458e3"
-  integrity sha512-lcXVZzvfFELj4tgJH+um5USq1LOh7Q35Mv6UbCHyZLOSDbe4XQ0sDQfI9owi+g4iKCSPyEpda7VArV5sc1qtkw==
+syscoinjs-lib@^1.0.258:
+  version "1.0.258"
+  resolved "https://registry.yarnpkg.com/syscoinjs-lib/-/syscoinjs-lib-1.0.258.tgz#83be4488042fdeaab2d775058a139e7640c4346f"
+  integrity sha512-QN/E5so3IUp5T7TtQU2rg0S/xjb2topaZefub6ITYS+LEv7y8tM5iErrRmmU8iBITrJx02pTrCAYb7iB1MKPUQ==
   dependencies:
     "@bitcoinerlab/secp256k1" "^1.2.0"
     "@ethersproject/abi" "^5.8.0"
@@ -3441,10 +3448,11 @@ syscoinjs-lib@^1.0.257:
     "@ethersproject/providers" "^5.8.0"
     axios "^0.21.1"
     bip32 "^5.0.0-rc.0"
-    bip84 "^0.2.7"
+    bip39 "^3.1.0"
     bitcoin-ops "^1.4.1"
     bitcoinjs-lib "^7.0.0-rc.0"
     bn.js "^5.1.3"
+    bs58 "^6.0.0"
     ecpair "^3.0.0-rc.0"
     eth-object "https://github.com/syscoin/eth-object.git"
     eth-proof "^2.1.6"

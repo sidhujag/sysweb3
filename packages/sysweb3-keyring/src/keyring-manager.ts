@@ -9,8 +9,6 @@ import {
   getNetworkConfig,
 } from '@sidhujag/sysweb3-network';
 import { BIP32Factory } from 'bip32';
-import { generateMnemonic, validateMnemonic } from 'bip39';
-import BIP84 from 'bip84';
 import * as bjs from 'bitcoinjs-lib';
 import bs58check from 'bs58check';
 import crypto from 'crypto';
@@ -18,6 +16,15 @@ import CryptoJS from 'crypto-js';
 import mapValues from 'lodash/mapValues';
 import omit from 'lodash/omit';
 import * as syscoinjs from 'syscoinjs-lib';
+import * as BIP84 from 'syscoinjs-lib/bip84-replacement';
+
+// Initialize ECC backend for bitcoinjs-lib (required for Taproot/P2TR)
+// Avoids "No ECC Library provided" errors in browser/extension builds
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const _bjsAny: any = bjs as any;
+if (typeof _bjsAny.initEccLib === 'function') {
+  _bjsAny.initEccLib(ecc);
+}
 
 import {
   initialActiveImportedAccountState,
@@ -852,7 +859,8 @@ export class KeyringManager implements IKeyringManager {
     return account.xpub;
   };
 
-  public isSeedValid = (seedPhrase: string) => validateMnemonic(seedPhrase);
+  public isSeedValid = (seedPhrase: string) =>
+    BIP84.validateMnemonic(seedPhrase);
 
   public createNewSeed = (wordCount?: number) => {
     // Map BIP39 word counts to entropy strength
@@ -864,7 +872,9 @@ export class KeyringManager implements IKeyringManager {
       24: 256,
     };
     const strength = wordCount ? wordCountToStrength[wordCount] : 128;
-    return strength ? generateMnemonic(strength) : generateMnemonic();
+    return strength
+      ? BIP84.generateMnemonic(strength)
+      : BIP84.generateMnemonic();
   };
 
   public getUTXOState = () => {
@@ -2447,7 +2457,7 @@ export class KeyringManager implements IKeyringManager {
     password: string
   ): Promise<void> => {
     // Validate inputs first
-    if (!validateMnemonic(seedPhrase)) {
+    if (!BIP84.validateMnemonic(seedPhrase)) {
       throw new Error('Invalid Seed');
     }
 

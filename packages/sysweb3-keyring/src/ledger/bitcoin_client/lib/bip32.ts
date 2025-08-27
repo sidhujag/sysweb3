@@ -1,4 +1,4 @@
-import bippath from 'bip32-path'; // TODO: get rid of this dependency
+import bippath from 'bip32-path';
 import bs58check from 'bs58check';
 
 export function pathElementsToBuffer(paths: readonly number[]): Buffer {

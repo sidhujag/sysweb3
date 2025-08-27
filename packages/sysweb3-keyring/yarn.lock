@@ -1133,10 +1133,10 @@
     "@ethersproject/bytes" "^5.8.0"
     eth-chains "^1.0.0"
 
-"@sidhujag/sysweb3-utils@^1.1.258":
-  version "1.1.258"
-  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-utils/-/sysweb3-utils-1.1.258.tgz#73125e826d63207acbb9f4400e945053c22d15ef"
-  integrity sha512-067FM4HvXzyYlZTK8nedE6ecqfH6Z1TN2J8YURyYUb748BYtzpuHpS8pjw4wYHHTvk10QY0G/ltzDtQxxc/y/Q==
+"@sidhujag/sysweb3-utils@^1.1.259":
+  version "1.1.259"
+  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-utils/-/sysweb3-utils-1.1.259.tgz#883f28ee727c1cf383b13fc604fd471add422cd2"
+  integrity sha512-7kkj4RHLSJs0suU2fislda3yY3L476Al0tFCihcHpCV16o96qYsMdp+ufQZAmIKOO/XvZoVLexJcOCHHfbQ1JA==
   dependencies:
     "@ethersproject/address" "^5.8.0"
     "@ethersproject/contracts" "^5.8.0"
@@ -2166,7 +2166,7 @@ bip32@^5.0.0-rc.0:
     valibot "^0.37.0"
     wif "^5.0.0"
 
-bip39@^3.0.4, bip39@^3.1.0:
+bip39@^3.1.0:
   version "3.1.0"
   resolved "https://registry.yarnpkg.com/bip39/-/bip39-3.1.0.tgz#c55a418deaf48826a6ceb34ac55b3ee1577e18a3"
   integrity sha512-c9kiwdk45Do5GL0vJMe7tS95VjCii65mYAH7DfWl3uW8AVzXKQVUm64i3hzVybBDMp9r7j9iNxR85+ul8MdN/A==
@@ -3963,10 +3963,10 @@ strip-hex-prefix@1.0.0:
   dependencies:
     is-hex-prefixed "1.0.0"
 
-syscoinjs-lib@^1.0.257:
-  version "1.0.257"
-  resolved "https://registry.yarnpkg.com/syscoinjs-lib/-/syscoinjs-lib-1.0.257.tgz#ce53c0a6265deb0a2cd8ef321cb92488fdd458e3"
-  integrity sha512-lcXVZzvfFELj4tgJH+um5USq1LOh7Q35Mv6UbCHyZLOSDbe4XQ0sDQfI9owi+g4iKCSPyEpda7VArV5sc1qtkw==
+syscoinjs-lib@^1.0.258:
+  version "1.0.258"
+  resolved "https://registry.yarnpkg.com/syscoinjs-lib/-/syscoinjs-lib-1.0.258.tgz#83be4488042fdeaab2d775058a139e7640c4346f"
+  integrity sha512-QN/E5so3IUp5T7TtQU2rg0S/xjb2topaZefub6ITYS+LEv7y8tM5iErrRmmU8iBITrJx02pTrCAYb7iB1MKPUQ==
   dependencies:
     "@bitcoinerlab/secp256k1" "^1.2.0"
     "@ethersproject/abi" "^5.8.0"
@@ -3974,10 +3974,11 @@ syscoinjs-lib@^1.0.257:
     "@ethersproject/providers" "^5.8.0"
     axios "^0.21.1"
     bip32 "^5.0.0-rc.0"
-    bip84 "^0.2.7"
+    bip39 "^3.1.0"
     bitcoin-ops "^1.4.1"
     bitcoinjs-lib "^7.0.0-rc.0"
     bn.js "^5.1.3"
+    bs58 "^6.0.0"
     ecpair "^3.0.0-rc.0"
     eth-object "https://github.com/syscoin/eth-object.git"
     eth-proof "^2.1.6"
