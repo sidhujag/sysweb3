@@ -1159,7 +1159,7 @@ export class KeyringManager implements IKeyringManager {
     }
 
     const id = this.getNextAccountId(accounts[KeyringAccountType.Imported]);
-    const defaultLabel = label || `${activeNetwork.label} Watch-only ${id + 1}`;
+    const defaultLabel = label || `Watch-only ${id + 1}`;
 
     const balances = { syscoin: 0, ethereum: 0 };
 
@@ -2086,7 +2086,6 @@ export class KeyringManager implements IKeyringManager {
       syscoin: 0,
       ethereum: 0,
     };
-    let isUtxoImported = false;
 
     // Try to validate as extended private key first
     const networkToUse = vault.activeNetwork;
@@ -2130,7 +2129,6 @@ export class KeyringManager implements IKeyringManager {
       };
 
       balances.syscoin = 0;
-      isUtxoImported = true;
     } else {
       // If not a valid zprv/vprv, on UTXO networks try WIF
       const isEvmNetwork = networkToUse.slip44 === 60;
@@ -2177,7 +2175,6 @@ export class KeyringManager implements IKeyringManager {
 
           // Set UTXO balance bucket
           balances.syscoin = 0;
-          isUtxoImported = true;
           handledAsUtxo = true;
 
           // Proceed to account creation below
@@ -2296,19 +2293,7 @@ export class KeyringManager implements IKeyringManager {
       );
 
     const id = this.getNextAccountId(accounts[KeyringAccountType.Imported]);
-
-    // Generate appropriate label based on account type
-    const network = vault.activeNetwork;
-    let defaultLabel: string;
-    if (zprvValidation.isValid || isUtxoImported) {
-      // UTXO imported account - use network-aware label
-      const networkPrefix = network.label;
-      defaultLabel = label || `${networkPrefix} Imported ${id + 1}`;
-    } else {
-      // EVM imported account - use generic label
-      defaultLabel = label || `Imported ${id + 1}`;
-    }
-
+    const defaultLabel: string = label || `Imported ${id + 1}`;
     return {
       ...initialActiveImportedAccountState,
       address,

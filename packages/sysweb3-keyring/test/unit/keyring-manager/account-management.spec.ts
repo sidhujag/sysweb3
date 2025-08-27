@@ -481,7 +481,7 @@ describe('KeyringManager - Account Management', () => {
         expect(imported.isImported).toBe(true);
         expect(imported.address.startsWith('sys1')).toBe(true);
         expect(imported.id).toBe(0);
-        expect(imported.label).toBe('Syscoin Mainnet Imported 1');
+        expect(imported.label).toBe('Imported 1');
       });
 
       it('should validate zprv before import', async () => {
