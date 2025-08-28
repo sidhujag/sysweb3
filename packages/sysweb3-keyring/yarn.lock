@@ -1133,10 +1133,10 @@
     "@ethersproject/bytes" "^5.8.0"
     eth-chains "^1.0.0"
 
-"@sidhujag/sysweb3-utils@^1.1.263":
-  version "1.1.263"
-  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-utils/-/sysweb3-utils-1.1.263.tgz#506c6d2ff20b086fd8949e5aa7ffd417965bb74b"
-  integrity sha512-ZC3Q0RgNWpPtNu4EFwFWeTgXIbM7lgzOxOGZewESKbTtpWHvkWp+00SrcedNGHh9SFMMVOlyCWTj66cwgg0zeQ==
+"@sidhujag/sysweb3-utils@^1.1.264":
+  version "1.1.264"
+  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-utils/-/sysweb3-utils-1.1.264.tgz#32f9c2fea56502b959e9310794a022fe474287c9"
+  integrity sha512-wLN7+Nygh8mzzvtUyNKgIDq4sSkAaN1oFntECB7b87Kg9Ju3TIZ6AgxYtA8USPrJbCaQFSju+sriVV8TOiTUSA==
   dependencies:
     "@ethersproject/address" "^5.8.0"
     "@ethersproject/contracts" "^5.8.0"
@@ -2690,14 +2690,7 @@ eth-json-rpc-middleware@^6.0.0:
     pify "^3.0.0"
     safe-event-emitter "^1.0.1"
 
-eth-object@^1.0.3:
-  version "1.0.3"
-  resolved "https://registry.yarnpkg.com/eth-object/-/eth-object-1.0.3.tgz#5e7a58615793e570c6b1c009eb282876b4d059b6"
-  integrity sha512-VOWso/tO0Pz66wNlzUveYN0FgaqHQGVr+n60GL6QWQSUW3kwTyyaMxrHNnaDCeq/61YvMUxygGr9FJsnmWKqEg==
-  dependencies:
-    eth-util-lite "^1.0.1"
-
-"eth-object@git+https://github.com/syscoin/eth-object.git":
+eth-object@^1.0.3, "eth-object@git+https://github.com/syscoin/eth-object.git":
   version "1.0.3"
   resolved "git+https://github.com/syscoin/eth-object.git#b5ff300f57c136138b31d6e570c816a147e0f1c9"
   dependencies:
@@ -3917,10 +3910,10 @@ strip-hex-prefix@1.0.0:
   dependencies:
     is-hex-prefixed "1.0.0"
 
-syscoinjs-lib@^1.0.261:
-  version "1.0.261"
-  resolved "https://registry.yarnpkg.com/syscoinjs-lib/-/syscoinjs-lib-1.0.261.tgz#b58adf3557a72c15fd4fbb79c2b759df32f801bd"
-  integrity sha512-oB1FNLNnNwzKpxy7RWVBADj4GsnYeJPlKthuRETbkrJhHHJl12wjFia3stJ6ugMSaSapOU/vM35RnOGsRv0a8Q==
+syscoinjs-lib@^1.0.262:
+  version "1.0.262"
+  resolved "https://registry.yarnpkg.com/syscoinjs-lib/-/syscoinjs-lib-1.0.262.tgz#18582a6ad84fe91257692148c25428e8a0e4400f"
+  integrity sha512-2RDwWOBC8z54bBbNFBCfNAlMZyWhHH/fqVMSI7NRMc5xwcrP5kATy4ttgyBUhzdcE2uTHlhQClixfi0Vq1YY9w==
   dependencies:
     "@bitcoinerlab/secp256k1" "^1.2.0"
     "@ethersproject/abi" "^5.8.0"
