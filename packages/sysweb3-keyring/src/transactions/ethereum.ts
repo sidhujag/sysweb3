@@ -3,7 +3,7 @@ import { BigNumber } from '@ethersproject/bignumber';
 import { isHexString } from '@ethersproject/bytes';
 import { Zero } from '@ethersproject/constants';
 import { Contract } from '@ethersproject/contracts';
-import { Deferrable } from '@ethersproject/properties';
+import { Deferrable, resolveProperties } from '@ethersproject/properties';
 import {
   TransactionRequest,
   TransactionResponse as EthersTransactionResponse,
@@ -762,7 +762,15 @@ export class EthereumTransactions implements IEthereumTransactions {
     // Ledger cancel handler
     const cancelWithLedger = async () => {
       try {
-        const formatParams = omit(changedTxToCancel, 'from');
+        const resolvedParams = await resolveProperties(
+          omit(changedTxToCancel, 'from')
+        );
+        const formatParams = {
+          ...resolvedParams,
+          nonce: resolvedParams.nonce
+            ? Number(resolvedParams.nonce.toString())
+            : undefined,
+        };
         const txFormattedForEthers = isLegacy
           ? {
               ...formatParams,
@@ -819,16 +827,18 @@ export class EthereumTransactions implements IEthereumTransactions {
       try {
         const trezorCoin =
           activeNetwork.slip44 === 60 ? 'eth' : activeNetwork.currency;
-        const formattedTx = omit(changedTxToCancel, 'from');
+        const formattedTx = await resolveProperties(
+          omit(changedTxToCancel, 'from')
+        );
 
         const txFormattedForTrezor: any = {
           ...formattedTx,
           gasLimit:
             typeof formattedTx.gasLimit === 'string'
               ? formattedTx.gasLimit
-              : `${formattedTx.gasLimit?._hex || formattedTx.gasLimit}`,
+              : this.toBigNumber(String(formattedTx.gasLimit || 0))._hex,
           value: '0x0',
-          nonce: this.toBigNumber(formattedTx.nonce)._hex,
+          nonce: this.toBigNumber(String(formattedTx.nonce || 0))._hex,
           chainId: activeNetwork.chainId,
           type: isLegacy ? 0 : 2, // Need explicit type for hardware wallet serialization
         };
@@ -837,7 +847,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           txFormattedForTrezor.gasPrice =
             typeof formattedTx.gasPrice === 'string'
               ? formattedTx.gasPrice
-              : `${formattedTx.gasPrice?._hex || formattedTx.gasPrice}`;
+              : this.toBigNumber(String(formattedTx.gasPrice || 0))._hex;
         } else {
           txFormattedForTrezor.maxFeePerGas =
             typeof (formattedTx as any).maxFeePerGas === 'string'
@@ -1345,7 +1355,15 @@ export class EthereumTransactions implements IEthereumTransactions {
     // Ledger speedup handler
     const speedUpWithLedger = async () => {
       try {
-        const formatParams = omit(txWithEditedFee, 'from');
+        const resolvedParams = await resolveProperties(
+          omit(txWithEditedFee, 'from')
+        );
+        const formatParams = {
+          ...resolvedParams,
+          nonce: resolvedParams.nonce
+            ? Number(resolvedParams.nonce.toString())
+            : undefined,
+        };
         const txFormattedForEthers = isLegacy
           ? {
               ...formatParams,
@@ -1416,19 +1434,21 @@ export class EthereumTransactions implements IEthereumTransactions {
       try {
         const trezorCoin =
           activeNetwork.slip44 === 60 ? 'eth' : activeNetwork.currency;
-        const formattedTx = omit(txWithEditedFee, 'from');
+        const formattedTx = await resolveProperties(
+          omit(txWithEditedFee, 'from')
+        );
 
         const txFormattedForTrezor: any = {
           ...formattedTx,
           gasLimit:
             typeof formattedTx.gasLimit === 'string'
               ? formattedTx.gasLimit
-              : `${formattedTx.gasLimit?._hex || formattedTx.gasLimit}`,
+              : this.toBigNumber(String(formattedTx.gasLimit || 0))._hex,
           value:
             typeof formattedTx.value === 'string'
               ? formattedTx.value
-              : `${formattedTx.value?._hex || formattedTx.value}`,
-          nonce: this.toBigNumber(formattedTx.nonce)._hex,
+              : this.toBigNumber(String(formattedTx.value || 0))._hex,
+          nonce: this.toBigNumber(String(formattedTx.nonce || 0))._hex,
           chainId: activeNetwork.chainId,
           type: isLegacy ? 0 : 2, // Need explicit type for hardware wallet serialization
         };
@@ -1441,7 +1461,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           txFormattedForTrezor.gasPrice =
             typeof formattedTx.gasPrice === 'string'
               ? formattedTx.gasPrice
-              : `${formattedTx.gasPrice?._hex || formattedTx.gasPrice}`;
+              : this.toBigNumber(String(formattedTx.gasPrice || 0))._hex;
         } else {
           txFormattedForTrezor.maxFeePerGas =
             typeof (formattedTx as any).maxFeePerGas === 'string'
