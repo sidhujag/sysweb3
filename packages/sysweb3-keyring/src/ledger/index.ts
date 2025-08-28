@@ -5,8 +5,11 @@ import Transport from '@ledgerhq/hw-transport';
 import SysUtxoClient, { DefaultWalletPolicy } from './bitcoin_client';
 import { RECEIVING_ADDRESS_INDEX, WILL_NOT_DISPLAY } from './consts';
 import { getNetworkConfig } from '@sidhujag/sysweb3-network';
+import BIP32Factory from 'bip32';
+import ecc from '@bitcoinerlab/secp256k1';
 import { IEvmMethods, IUTXOMethods, MessageTypes } from './types';
 import LedgerEthClient, { ledgerService } from '@ledgerhq/hw-app-eth';
+import { Transaction } from 'syscoinjs-lib';
 import {
   TypedDataUtils,
   TypedMessage,
@@ -356,6 +359,18 @@ export class LedgerKeyring {
       return `0x${signature.r}${signature.s}${signature.v.toString(16)}`;
     }, 'signTypedData');
   };
+
+  private getMasterFingerprint = async () => {
+    try {
+      const masterFingerprint =
+        await this.ledgerUtxoClient.getMasterFingerprint();
+      return masterFingerprint;
+    } catch (error) {
+      console.log('Fingerprint error: ', error);
+      throw error;
+    }
+  };
+
   // Build a stable cache key for a policy bound to the device and derivation path
   private buildWalletCacheKey(
     fingerprint: string,
@@ -418,6 +433,218 @@ export class LedgerKeyring {
       // For UTXO, use account-level derivation path
       this.hdPath = getAccountDerivationPath(coin, slip44, accountIndex);
     }
+  }
+  /**
+   * Convert PSBT to Ledger format with retry logic
+   */
+  public async convertToLedgerFormat(
+    psbt: any,
+    accountXpub: string,
+    accountId: number,
+    currency: string,
+    slip44: number
+  ): Promise<any> {
+    return this.executeWithRetry(async () => {
+      // Ensure Ledger is connected before attempting operations
+      // This is now handled by executeWithRetry
+
+      // Build a bitcoinjs-bip32 network from slip44/currency so zpub/vpub parse directly
+      const { networks, types } = getNetworkConfig(slip44, currency);
+      const isTestnet = slip44 === 1;
+      const pubTypes = isTestnet
+        ? (types.zPubType as any).testnet
+        : types.zPubType.mainnet;
+      const baseNetwork = isTestnet ? networks.testnet : networks.mainnet;
+      const network = {
+        ...baseNetwork,
+        bip32: {
+          public: parseInt(pubTypes.vpub || pubTypes.zpub, 16),
+          private: parseInt(pubTypes.vprv || pubTypes.zprv, 16),
+        },
+      } as any;
+
+      const bip32 = BIP32Factory(ecc as any);
+      const accountNode = bip32.fromBase58(accountXpub, network);
+
+      // Get master fingerprint
+      const fingerprint = await this.getMasterFingerprint();
+
+      // Enhance each input with bip32Derivation
+      const missingInputDerivations: number[] = [];
+      for (let i = 0; i < psbt.inputCount; i++) {
+        const dataInput = psbt.data.inputs[i];
+
+        // Skip if already has bip32Derivation
+        if (dataInput.bip32Derivation && dataInput.bip32Derivation.length > 0) {
+          continue;
+        }
+
+        // Ensure witnessUtxo is present if nonWitnessUtxo exists
+        if (!dataInput.witnessUtxo && dataInput.nonWitnessUtxo) {
+          const txBuffer = dataInput.nonWitnessUtxo;
+          const tx = Transaction.fromBuffer(txBuffer);
+          const vout = psbt.txInputs[i].index;
+
+          if (tx.outs[vout]) {
+            dataInput.witnessUtxo = {
+              script: tx.outs[vout].script,
+              value: tx.outs[vout].value,
+            };
+          }
+        }
+
+        // Extract path from unknownKeyVals by searching for the key, not using hardcoded index
+        let pathFromInput: string | null = null;
+        if (dataInput.unknownKeyVals && dataInput.unknownKeyVals.length > 0) {
+          for (const kv of dataInput.unknownKeyVals) {
+            if (kv.key.equals(Buffer.from('path'))) {
+              pathFromInput = kv.value.toString();
+              break;
+            }
+          }
+        }
+
+        if (pathFromInput) {
+          const fullPath = pathFromInput;
+          const accountPath = getAccountDerivationPath(
+            currency,
+            slip44,
+            accountId
+          );
+          const relativePath = fullPath
+            .replace(accountPath, '')
+            .replace(/^\//, '');
+          const derivationTokens = relativePath.split('/').filter((t) => t);
+
+          const derivedAccount = derivationTokens.reduce(
+            (acc: any, token: string) => {
+              const index = parseInt(token);
+              if (isNaN(index)) {
+                return acc;
+              }
+              return acc.derive(index);
+            },
+            accountNode
+          );
+
+          const pubkey = derivedAccount.publicKey;
+
+          if (pubkey && Buffer.isBuffer(pubkey)) {
+            // Add the bip32Derivation that Ledger needs
+            const bip32Derivation = {
+              masterFingerprint: Buffer.from(fingerprint, 'hex'),
+              path: fullPath,
+              pubkey: pubkey,
+            };
+
+            psbt.updateInput(i, {
+              bip32Derivation: [bip32Derivation],
+            });
+          }
+        }
+
+        if (
+          !dataInput.bip32Derivation ||
+          dataInput.bip32Derivation.length === 0
+        ) {
+          missingInputDerivations.push(i);
+        }
+      }
+
+      // Enhance each output with bip32Derivation when it's a change/output owned by the wallet
+      const missingOutputDerivations: number[] = [];
+      for (let i = 0; i < psbt.data.outputs.length; i++) {
+        const dataOutput = psbt.data.outputs[i];
+
+        // Skip if derivation already present
+        if (
+          dataOutput.bip32Derivation &&
+          dataOutput.bip32Derivation.length > 0
+        ) {
+          continue;
+        }
+
+        // Extract path from unknownKeyVals by searching for the key 'path'
+        let pathFromOutput: string | null = null;
+        if (dataOutput.unknownKeyVals && dataOutput.unknownKeyVals.length > 0) {
+          for (const kv of dataOutput.unknownKeyVals) {
+            if (kv.key.equals(Buffer.from('path'))) {
+              pathFromOutput = kv.value.toString();
+              break;
+            }
+          }
+        }
+
+        if (pathFromOutput) {
+          const fullPath = pathFromOutput;
+          const accountPath = getAccountDerivationPath(
+            currency,
+            slip44,
+            accountId
+          );
+          const relativePath = fullPath
+            .replace(accountPath, '')
+            .replace(/^\//, '');
+          const derivationTokens = relativePath.split('/').filter((t) => t);
+
+          const derivedAccount = derivationTokens.reduce(
+            (acc: any, token: string) => {
+              const index = parseInt(token);
+              if (isNaN(index)) {
+                return acc;
+              }
+              return acc.derive(index);
+            },
+            accountNode
+          );
+
+          const pubkey = derivedAccount.publicKey;
+
+          if (pubkey && Buffer.isBuffer(pubkey)) {
+            const bip32Derivation = {
+              masterFingerprint: Buffer.from(fingerprint, 'hex'),
+              path: fullPath,
+              pubkey: pubkey,
+            };
+
+            psbt.updateOutput(i, {
+              bip32Derivation: [bip32Derivation],
+            });
+          }
+        }
+
+        // Track outputs that declared a path but still lack derivation info
+        if (pathFromOutput) {
+          if (
+            !dataOutput.bip32Derivation ||
+            dataOutput.bip32Derivation.length === 0
+          ) {
+            missingOutputDerivations.push(i);
+          }
+        }
+      }
+
+      // If any wallet-owned inputs/outputs are missing bip32Derivation, fail early with a clear error
+      if (
+        missingInputDerivations.length > 0 ||
+        missingOutputDerivations.length > 0
+      ) {
+        const parts: string[] = [];
+        if (missingInputDerivations.length > 0) {
+          parts.push(`inputs [${missingInputDerivations.join(', ')}]`);
+        }
+        if (missingOutputDerivations.length > 0) {
+          parts.push(`outputs [${missingOutputDerivations.join(', ')}]`);
+        }
+        throw new Error(
+          `convertToLedgerFormat: Missing bip32Derivation for ${parts.join(
+            ' and '
+          )}. Ensure PSBT includes a 'path' unknownKeyVal or BIP32_DERIVATION for wallet-owned entries.`
+        );
+      }
+
+      return psbt;
+    }, 'convertToLedgerFormat');
   }
 
   /**

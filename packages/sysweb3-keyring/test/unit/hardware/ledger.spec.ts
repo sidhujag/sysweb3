@@ -370,7 +370,21 @@ describe('Ledger Hardware Wallet', () => {
         signMessage: jest.fn(),
       } as any;
 
-      // No convertToLedgerFormat anymore; rely on PSBT from parser
+      // Mock convertToLedgerFormat to return a proper PSBT mock with toBase64 method
+      keyringManager.ledgerSigner.convertToLedgerFormat = jest
+        .fn()
+        .mockResolvedValue({
+          toBase64: jest
+            .fn()
+            .mockReturnValue(
+              'cHNidP8BAHECAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAfgAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=='
+            ),
+          extractTransaction: jest.fn().mockReturnValue({
+            getId: jest.fn().mockReturnValue('mock_transaction_id'),
+          }),
+          updateInput: jest.fn(),
+          finalizeAllInputs: jest.fn(),
+        });
     });
 
     it('should prepare PSBT for Ledger signing', async () => {
@@ -405,7 +419,6 @@ describe('Ledger Hardware Wallet', () => {
 
       expect(result).toBeDefined();
       // Verify Ledger-specific handling was applied
-
       // Restore original function
       mockSyscoinjs.utils.importPsbtFromJson = originalImportPsbtFromJson;
     });

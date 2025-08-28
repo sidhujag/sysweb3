@@ -1133,10 +1133,10 @@
     "@ethersproject/bytes" "^5.8.0"
     eth-chains "^1.0.0"
 
-"@sidhujag/sysweb3-utils@^1.1.261":
-  version "1.1.261"
-  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-utils/-/sysweb3-utils-1.1.261.tgz#874f9fbf8711a27f7c0cf7b2e8a6389c12a25a46"
-  integrity sha512-LLm3LMUpt97mYVuPpAa9AkQXK1LwnMXBsSM/nfWgHfaX8C4dQxy/1TM4F7XtgXN4QngIY3FGAudJ4bmDcQDZ0Q==
+"@sidhujag/sysweb3-utils@^1.1.263":
+  version "1.1.263"
+  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-utils/-/sysweb3-utils-1.1.263.tgz#506c6d2ff20b086fd8949e5aa7ffd417965bb74b"
+  integrity sha512-ZC3Q0RgNWpPtNu4EFwFWeTgXIbM7lgzOxOGZewESKbTtpWHvkWp+00SrcedNGHh9SFMMVOlyCWTj66cwgg0zeQ==
   dependencies:
     "@ethersproject/address" "^5.8.0"
     "@ethersproject/contracts" "^5.8.0"
@@ -3917,10 +3917,10 @@ strip-hex-prefix@1.0.0:
   dependencies:
     is-hex-prefixed "1.0.0"
 
-syscoinjs-lib@^1.0.259:
-  version "1.0.259"
-  resolved "https://registry.yarnpkg.com/syscoinjs-lib/-/syscoinjs-lib-1.0.259.tgz#577ea517af06ccff300c71d5ecbafb9de4d70b38"
-  integrity sha512-HsF//2V1MjLEhER+G9Zk+RHp//ZobF4a91IERQx1zTv+d1vkYPbVCcrdSnPLjvuBNdgpxBIFnicv0g1EXnGtSw==
+syscoinjs-lib@^1.0.261:
+  version "1.0.261"
+  resolved "https://registry.yarnpkg.com/syscoinjs-lib/-/syscoinjs-lib-1.0.261.tgz#b58adf3557a72c15fd4fbb79c2b759df32f801bd"
+  integrity sha512-oB1FNLNnNwzKpxy7RWVBADj4GsnYeJPlKthuRETbkrJhHHJl12wjFia3stJ6ugMSaSapOU/vM35RnOGsRv0a8Q==
   dependencies:
     "@bitcoinerlab/secp256k1" "^1.2.0"
     "@ethersproject/abi" "^5.8.0"

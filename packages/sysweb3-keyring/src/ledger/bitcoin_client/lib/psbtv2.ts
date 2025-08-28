@@ -3,6 +3,7 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
 
 import * as bjs from 'bitcoinjs-lib';
+import { Transaction } from 'syscoinjs-lib';
 
 import {
   BufferReader,
@@ -11,7 +12,6 @@ import {
   unsafeTo64bitLE,
 } from './buffertools';
 import { sanitizeBigintToNumber } from './varint';
-
 export enum psbtGlobal {
   UNSIGNED_TX = 0x00,
   XPUB = 0x01,
@@ -388,7 +388,7 @@ export class PsbtV2 {
     if (psbtVersion == 0) {
       // if PSBTv0, we parse the PSBT_GLOBAL_UNSIGNED_TX field
       const txRaw = this.getGlobal(psbtGlobal.UNSIGNED_TX);
-      const tx = bjs.Transaction.fromBuffer(txRaw);
+      const tx = Transaction.fromBuffer(txRaw);
       nInputs = tx.ins.length;
       nOutputs = tx.outs.length;
     } else {
@@ -422,7 +422,7 @@ export class PsbtV2 {
     // Convert PsbtV0 to PsbtV2 by parsing the PSBT_GLOBAL_UNSIGNED_TX field
     // and filling in the corresponding fields.
     const txRaw = this.getGlobal(psbtGlobal.UNSIGNED_TX);
-    const tx = bjs.Transaction.fromBuffer(txRaw);
+    const tx = Transaction.fromBuffer(txRaw);
 
     this.setGlobalPsbtVersion(2);
     this.setGlobalTxVersion(tx.version);

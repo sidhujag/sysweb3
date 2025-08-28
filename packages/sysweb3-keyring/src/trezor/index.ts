@@ -419,7 +419,7 @@ export class TrezorKeyring {
                 // @ts-ignore ecc injected via bitcoinjs initEccLib; runtime available in syscoinjs-lib
                 const eccLib =
                   (require('bitcoinjs-lib') as any).ecc ||
-                  require('tiny-secp256k1');
+                  require('@bitcoinerlab/secp256k1');
                 return eccLib && typeof eccLib.verifySchnorr === 'function'
                   ? eccLib.verifySchnorr(signature, msghash, xOnly)
                   : false;
@@ -559,10 +559,11 @@ export class TrezorKeyring {
       inputItem.prev_index = input.index;
       inputItem.prev_hash = input.hash.reverse().toString('hex');
       if (input.sequence) inputItem.sequence = input.sequence;
-      const dataInput = psbt.data.inputs[i];
-      let path = '';
 
-      // Prefer PSBT derivations over unknownKeyVals
+      const dataInput = psbt.data.inputs[i];
+
+      // Resolve derivation path for this input
+      let resolvedPath: string | null = null;
       const tapDer =
         dataInput.tapBip32Derivation && dataInput.tapBip32Derivation.length > 0
           ? dataInput.tapBip32Derivation[0]
@@ -573,24 +574,33 @@ export class TrezorKeyring {
           : null;
 
       if (tapDer && tapDer.path) {
-        path = tapDer.path;
-        inputItem.address_n = this.convertToAddressNFormat(path);
+        resolvedPath = tapDer.path;
       } else if (b32Der && b32Der.path) {
-        path = b32Der.path;
-        inputItem.address_n = this.convertToAddressNFormat(path);
-      } else {
+        resolvedPath = b32Der.path;
+      } else if (dataInput.unknownKeyVals && dataInput.unknownKeyVals.length) {
+        for (const kv of dataInput.unknownKeyVals) {
+          if (Buffer.isBuffer(kv.key) && kv.key.toString() === 'path') {
+            resolvedPath = kv.value.toString();
+            break;
+          }
+        }
+      }
+
+      if (!resolvedPath) {
         throw new Error(
-          'convertToTrezorFormat: Missing PSBT derivation (tapBip32Derivation/bip32Derivation)'
+          'convertToTrezorFormat: Missing path (tapBip32Derivation/bip32Derivation/unknownKeyVals)'
         );
       }
+
+      // Map path to Trezor address_n
+      inputItem.address_n = this.convertToAddressNFormat(resolvedPath);
+
       // Coerce witnessUtxo.script to Buffer for downstream helpers
       const inScriptBuf =
-        psbt.data.inputs[i] &&
-        psbt.data.inputs[i].witnessUtxo &&
-        psbt.data.inputs[i].witnessUtxo.script
-          ? Buffer.isBuffer(psbt.data.inputs[i].witnessUtxo.script)
-            ? psbt.data.inputs[i].witnessUtxo.script
-            : Buffer.from(psbt.data.inputs[i].witnessUtxo.script)
+        dataInput && dataInput.witnessUtxo && dataInput.witnessUtxo.script
+          ? Buffer.isBuffer(dataInput.witnessUtxo.script)
+            ? dataInput.witnessUtxo.script
+            : Buffer.from(dataInput.witnessUtxo.script)
           : Buffer.alloc(0);
 
       // Select Trezor script_type (detect Taproot explicitly)
@@ -601,7 +611,6 @@ export class TrezorKeyring {
         inScriptBuf[1] === 0x20;
 
       if (isTaproot) {
-        // Trezor Taproot key-path spend
         inputItem.script_type = 'SPENDTAPROOT';
       } else {
         const scriptTypes = psbt.getInputType(i);
@@ -619,6 +628,7 @@ export class TrezorKeyring {
             break;
         }
       }
+
       trezortx.inputs.push(inputItem);
     }
 

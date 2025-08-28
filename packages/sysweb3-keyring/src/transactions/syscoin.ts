@@ -93,16 +93,10 @@ export class SyscoinTransactions implements ISyscoinTransactions {
     this.ledger = ledgerSigner;
   }
 
-  private getTransactionPSBT = async ({
-    txOptions,
-    outputs,
-    changeAddress,
-    feeRateBN,
-    xpub,
-  }: EstimateFeeParams) => {
-    // Use read-only signer since we're just creating an unsigned PSBT
-    const { main } = this.getReadOnlySigner();
-
+  private getTransactionPSBT = async (
+    { txOptions, outputs, changeAddress, feeRateBN, xpub }: EstimateFeeParams,
+    main: any
+  ) => {
     try {
       // Use syscoinjs-lib directly for transaction creation
       const result = await main.createTransaction(
@@ -257,13 +251,16 @@ export class SyscoinTransactions implements ISyscoinTransactions {
           },
         ];
 
-        const result = await this.getTransactionPSBT({
-          txOptions: finalTxOptions,
-          outputs,
-          changeAddress,
-          feeRateBN,
-          xpub: isSingleAddressImported ? account.address : xpub,
-        });
+        const result = await this.getTransactionPSBT(
+          {
+            txOptions: finalTxOptions,
+            outputs,
+            changeAddress,
+            feeRateBN,
+            xpub: isSingleAddressImported ? account.address : xpub,
+          },
+          main
+        );
 
         return result;
       }
@@ -299,7 +296,13 @@ export class SyscoinTransactions implements ISyscoinTransactions {
       }
       const accountXpub = account.xpub;
       const accountId = account.id;
-      const enhancedPsbt = psbt;
+      const enhancedPsbt = await this.ledger.convertToLedgerFormat(
+        psbt,
+        accountXpub,
+        accountId,
+        activeNetwork.currency,
+        activeNetwork.slip44
+      );
 
       // Get wallet policy for Ledger
       const fingerprint =
