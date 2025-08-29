@@ -1,7 +1,6 @@
 declare module 'syscoinjs-lib';
 declare module '@sidhujag/sysweb3-core';
 declare module 'bip32-path';
-declare module 'satoshi-bitcoin';
 interface Window {
   pali: Readonly<any>;
 }

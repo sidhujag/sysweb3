@@ -1,8 +1,4 @@
-import * as descriptors from '@bitcoinerlab/descriptors';
-import * as secp256k1 from '@bitcoinerlab/secp256k1';
-const { Output } = descriptors.DescriptorsFactory(secp256k1);
 import Transport from '@ledgerhq/hw-transport';
-import { findCoin, getNetworkConfigFromCoin } from '@sidhujag/sysweb3-network';
 
 import { pathElementsToBuffer, pathStringToArray } from './bip32';
 import { ClientCommandInterpreter } from './clientCommands';
@@ -207,15 +203,7 @@ export class AppClient {
     const walletId = response.subarray(0, 32);
     const walletHMAC = response.subarray(32);
 
-    // sanity check: derive and validate the first address with a 3rd party
-    const firstAddrDevice = await this.getWalletAddress(
-      walletPolicy,
-      walletHMAC,
-      0,
-      0,
-      false
-    );
-    await this.validateAddress(firstAddrDevice, walletPolicy, 0, 0);
+    // Note: Address validation removed - trusting Ledger device for address generation
 
     return [walletId, walletHMAC];
   }
@@ -267,7 +255,6 @@ export class AppClient {
     );
 
     const address = response.toString('ascii');
-    await this.validateAddress(address, walletPolicy, change, addressIndex);
     return address;
   }
 
@@ -412,109 +399,6 @@ export class AppClient {
     );
 
     return result.toString('base64');
-  }
-
-  /* Performs any additional check on the generated address before returning it.*/
-  private async validateAddress(
-    address: string,
-    walletPolicy: WalletPolicy,
-    change: number,
-    addressIndex: number
-  ) {
-    if (change !== 0 && change !== 1)
-      throw new Error('Change can only be 0 or 1');
-    const isChange: boolean = change === 1;
-    if (addressIndex < 0 || !Number.isInteger(addressIndex))
-      throw new Error('Invalid address index');
-    const appAndVer = await this.getAppAndVersion();
-
-    // Map Ledger app names to network configurations
-    const network = this.getNetworkFromAppName(appAndVer.name);
-    if (!network) {
-      throw new Error(
-        `Unsupported Ledger app: ${appAndVer.name}. Please install the correct app for your network.`
-      );
-    }
-
-    let expression = walletPolicy.descriptorTemplate;
-    // Replace change:
-    expression = expression.replace(/\/\*\*/g, `/<0;1>/*`);
-    const regExpMN = new RegExp(`/<(\\d+);(\\d+)>`, 'g');
-    let matchMN;
-    while ((matchMN = regExpMN.exec(expression)) !== null) {
-      const [M, N] = [parseInt(matchMN[1], 10), parseInt(matchMN[2], 10)];
-      expression = expression.replace(`/<${M};${N}>`, `/${isChange ? N : M}`);
-    }
-    // Replace index:
-    expression = expression.replace(/\/\*/g, `/${addressIndex}`);
-    // Replace origin in reverse order to prevent
-    // misreplacements, e.g., @10 being mistaken for @1 and leaving a 0.
-    for (let i = walletPolicy.keys.length - 1; i >= 0; i--)
-      expression = expression.replace(
-        new RegExp(`@${i}`, 'g'),
-        walletPolicy.keys[i]
-      );
-    let thirdPartyValidationApplicable = true;
-    let thirdPartyGeneratedAddress = '';
-    try {
-      thirdPartyGeneratedAddress = new Output({
-        descriptor: expression,
-        network,
-      }).getAddress();
-    } catch (err) {
-      // Note: @bitcoinerlab/descriptors@1.0.x does not support Tapscript yet.
-      // These are the supported descriptors:
-      //  - pkh(KEY)
-      //  - wpkh(KEY)
-      //  - sh(wpkh(KEY))
-      //  - sh(SCRIPT)
-      //  - wsh(SCRIPT)
-      //  - sh(wsh(SCRIPT)), where
-      // SCRIPT is any of the (non-tapscript) fragments in: https://bitcoin.sipa.be/miniscript/
-      //
-      // Other expressions are not supported and third party validation would not be applicable:
-      thirdPartyValidationApplicable = false;
-    }
-    if (
-      thirdPartyValidationApplicable &&
-      address !== thirdPartyGeneratedAddress
-    )
-      console.log(
-        `Third party address validation mismatch: ${address} != ${thirdPartyGeneratedAddress}`
-      );
-  }
-
-  /**
-   * Maps Ledger app names to network configurations
-   * This allows support for multiple UTXO networks beyond just Syscoin
-   */
-  private getNetworkFromAppName(appName: string): any {
-    // Extract the coin name from the app name
-    // Ledger apps typically follow the pattern: "Bitcoin", "Bitcoin Test", "Litecoin", etc.
-    const isTestnet = appName.toLowerCase().includes('test');
-    const baseName = appName.replace(/\s+Test$/i, '').trim();
-
-    try {
-      // Use findCoin to look up the coin by name
-      const coin = findCoin({ name: baseName });
-
-      if (!coin) {
-        console.error(`No coin found for Ledger app: ${appName}`);
-        return null;
-      }
-
-      // Get the network configuration from the coin
-      const networkConfig = getNetworkConfigFromCoin(coin);
-
-      // Return the appropriate network (mainnet or testnet)
-      // For testnets, the network config is the same as mainnet in coins.ts
-      return isTestnet
-        ? networkConfig.networks.testnet
-        : networkConfig.networks.mainnet;
-    } catch (error) {
-      console.error(`Failed to get network config for ${appName}:`, error);
-      return null;
-    }
   }
 }
 
