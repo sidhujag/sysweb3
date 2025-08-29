@@ -41,7 +41,7 @@ import {
 import omit from 'lodash/omit';
 
 import { LedgerKeyring } from '../ledger';
-import { CustomJsonRpcProvider, CustomL2JsonRpcProvider } from '../providers';
+import { CustomJsonRpcProvider } from '../providers';
 import { TrezorKeyring } from '../trezor';
 import {
   IResponseFromSendErcSignedTransaction,
@@ -53,19 +53,8 @@ import {
   IGasParams,
 } from '../types';
 
-/**
- * Chain IDs for zkSync Era networks that require specialized L2 provider functionality.
- * These networks use CustomL2JsonRpcProvider (which extends zksync-ethers.Provider)
- * instead of CustomJsonRpcProvider.
- *
- * zkSync Era networks:
- * - 324: zkSync Era Mainnet
- * - 300: zkSync Era Sepolia Testnet
- */
-const L2_NETWORK_CHAIN_IDS = [324, 300];
-
 export class EthereumTransactions implements IEthereumTransactions {
-  private _web3Provider: CustomJsonRpcProvider | CustomL2JsonRpcProvider;
+  private _web3Provider: CustomJsonRpcProvider;
   public trezorSigner: TrezorKeyring;
   public ledgerSigner: LedgerKeyring;
   private getNetwork: () => INetwork;
@@ -120,7 +109,7 @@ export class EthereumTransactions implements IEthereumTransactions {
   }
 
   // Getter that automatically ensures providers are initialized when accessed
-  public get web3Provider(): CustomJsonRpcProvider | CustomL2JsonRpcProvider {
+  public get web3Provider(): CustomJsonRpcProvider {
     this.ensureProvidersInitialized();
     return this._web3Provider;
   }
@@ -2475,14 +2464,7 @@ export class EthereumTransactions implements IEthereumTransactions {
       // Clear any existing providers for UTXO networks
       this._web3Provider = undefined as any;
     } else {
-      // For EVM networks, create normal providers
-      const isL2Network = L2_NETWORK_CHAIN_IDS.includes(network.chainId);
-
-      const CurrentProvider = isL2Network
-        ? CustomL2JsonRpcProvider
-        : CustomJsonRpcProvider;
-
-      this._web3Provider = new CurrentProvider(
+      this._web3Provider = new CustomJsonRpcProvider(
         this.abortController.signal,
         network.url
       );

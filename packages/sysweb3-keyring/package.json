@@ -1,6 +1,6 @@
 {
   "name": "@sidhujag/sysweb3-keyring",
-  "version": "1.0.547",
+  "version": "1.0.549",
   "description": "Keyring Manager for UTXO and Web3 Wallets",
   "main": "cjs/index.js",
   "types": "types/index.d.ts",
@@ -60,9 +60,6 @@
   },
   "peerDependencies": {
     "syscoinjs-lib": "^1.0.267"
-  },
-  "optionalDependencies": {
-    "zksync-ethers": "5"
   },
   "devDependencies": {
     "@types/crypto-js": "^4.1.3",

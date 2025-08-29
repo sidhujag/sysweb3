@@ -200,13 +200,6 @@ jest.mock('../../src/providers', () => ({
 
     return provider;
   }),
-  CustomL2JsonRpcProvider: jest.fn().mockImplementation((_signal, _url) => {
-    // Return the same mock as CustomJsonRpcProvider for simplicity
-    const CustomJsonRpcProviderMock = jest.requireMock(
-      '../../src/providers'
-    ).CustomJsonRpcProvider;
-    return new CustomJsonRpcProviderMock(_signal, _url);
-  }),
 }));
 
 // Mock storage for sysweb3-core

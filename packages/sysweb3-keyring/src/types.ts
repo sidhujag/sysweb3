@@ -10,7 +10,7 @@ import {
 } from '@metamask/eth-sig-util';
 import { INetwork, INetworkType } from '@sidhujag/sysweb3-network';
 import { ITxid } from '@sidhujag/sysweb3-utils';
-import { CustomJsonRpcProvider, CustomL2JsonRpcProvider } from 'providers';
+import { CustomJsonRpcProvider } from 'providers';
 
 import { LedgerKeyring } from './ledger';
 import { SyscoinHDSigner } from './signers';
@@ -127,7 +127,7 @@ export interface IEthereumTransactions {
         gwei: string;
       }
   >;
-  web3Provider: CustomJsonRpcProvider | CustomL2JsonRpcProvider;
+  web3Provider: CustomJsonRpcProvider;
   getTxGasLimit: (tx: SimpleTransactionRequest) => Promise<BigNumber>;
 }
 
