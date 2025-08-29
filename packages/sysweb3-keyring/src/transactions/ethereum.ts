@@ -939,7 +939,9 @@ export class EthereumTransactions implements IEthereumTransactions {
       const transactionNonce = await this.getRecommendedNonce(
         activeAccount.address
       );
-      const formatParams = omit(params, 'from'); //From is not needed we're already passing in the HD derivation path so it can be inferred
+      const formatParams = isLegacy
+        ? omit(params, 'from')
+        : omit(params, ['from', 'gasPrice']); // Strip gasPrice for EIP-1559
       const txFormattedForEthers = isLegacy
         ? {
             ...formatParams,
@@ -988,7 +990,9 @@ export class EthereumTransactions implements IEthereumTransactions {
         activeAccount.address
       );
       let txFormattedForTrezor = {};
-      const formatParams = omit(params, 'from'); //From is not needed we're already passing in the HD derivation path so it can be inferred
+      const formatParams = isLegacy
+        ? omit(params, 'from')
+        : omit(params, ['from', 'gasPrice']); // Strip gasPrice for EIP-1559
       switch (isLegacy) {
         case true:
           txFormattedForTrezor = {
@@ -1115,9 +1119,10 @@ export class EthereumTransactions implements IEthereumTransactions {
       }
 
       // Explicitly set transaction type based on isLegacy flag
+      // For EIP-1559, ensure gasPrice is not present to avoid ethers throwing
       const tx: Deferrable<TransactionRequest> = isLegacy
         ? { ...params, type: 0 } // Force Type 0 for legacy transactions
-        : params; // Let ethers auto-detect for EIP-1559
+        : (omit(params, ['gasPrice']) as Deferrable<TransactionRequest>); // Strip gasPrice for EIP-1559
 
       const wallet = new Wallet(decryptedPrivateKey, this.web3Provider);
       try {
