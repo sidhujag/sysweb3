@@ -1,19 +1,19 @@
 import { INetworkType } from '@sidhujag/sysweb3-network';
 import * as bjs from 'bitcoinjs-lib';
-import wif from 'wif';
+import * as wif from 'wif';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
 import { setupMocks } from '../../helpers/setup';
 
 // Helper to generate deterministic WIFs from a fixed private key for given network
-const generateWif = (network: any) => {
+const generateWif = (network: any): string => {
   const priv = Buffer.from(
     '0101010101010101010101010101010101010101010101010101010101010101',
     'hex'
   );
   const version = network.wif; // 0x80 mainnet, 0xef testnet
-  return wif.encode(version, priv, true);
+  return wif.encode({ version, privateKey: priv, compressed: true });
 };
 
 describe('WIF Import - KeyringManager', () => {
