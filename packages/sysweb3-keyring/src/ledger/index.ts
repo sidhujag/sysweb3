@@ -141,7 +141,7 @@ export class LedgerKeyring {
         walletPolicy,
         hmac,
         RECEIVING_ADDRESS_INDEX,
-        index,
+        0, // verify imported account address at first receive index
         !!showInLedger
       );
 

@@ -43,7 +43,11 @@ import {
   IEthereumTransactions,
   IKeyringManager,
 } from './types';
-import { getAddressDerivationPath, isEvmCoin } from './utils/derivation-paths';
+import {
+  getAddressDerivationPath,
+  isEvmCoin,
+  convertExtendedKeyVersion,
+} from './utils/derivation-paths';
 
 export interface ISysAccount {
   address: string;
@@ -1014,14 +1018,20 @@ export class KeyringManager implements IKeyringManager {
     };
   };
 
-  public getAddress = async (xpub: string, isChangeAddress: boolean) => {
+  public getAddress = async (
+    xpub: string,
+    isChangeAddress: boolean,
+    options?: { forceIndex0?: boolean }
+  ) => {
     const { currentAccount, addressIndex } = await this.fetchCurrentAccountData(
       xpub,
       isChangeAddress
     );
 
+    const effectiveIndex = options?.forceIndex0 ? 0 : addressIndex;
+
     const address = currentAccount.getAddress(
-      addressIndex,
+      effectiveIndex,
       isChangeAddress,
       84
     ) as string;
@@ -1112,10 +1122,22 @@ export class KeyringManager implements IKeyringManager {
     // Compute address field
     let addressToStore = identifier;
     if (isXpub) {
+      // Minimal approach: treat any extended pubkey as BIP84 by converting to zpub/vpub
       try {
-        addressToStore = await this.getAddress(identifier, false);
+        const { types } = getNetworkConfig(
+          activeNetwork.slip44,
+          activeNetwork.currency || 'Syscoin'
+        );
+        const target =
+          activeNetwork.slip44 === 1
+            ? (types.zPubType as any).testnet.vpub
+            : types.zPubType.mainnet.zpub;
+        const bip84Key = convertExtendedKeyVersion(identifier, target);
+        addressToStore = await this.getAddress(bip84Key, false, {
+          forceIndex0: true,
+        });
       } catch (e) {
-        // Fallback to identifier if derivation fails (e.g., non-BIP84)
+        // Fallback to identifier if derivation fails (e.g., malformed)
         addressToStore = identifier;
       }
     }
@@ -1687,7 +1709,8 @@ export class KeyringManager implements IKeyringManager {
       ethPubKey = response.publicKey;
     } else {
       // For UTXO, use the xpub to derive the address
-      address = await this.getAddress(xpub, false);
+      // Always use first receive address (index 0) for imported account display
+      address = await this.getAddress(xpub, false, { forceIndex0: true });
     }
 
     const accountAlreadyExists =
@@ -1777,8 +1800,8 @@ export class KeyringManager implements IKeyringManager {
           slip44,
         });
         xpub = ledgerXpub;
-        // Use the generic getAddress method like Trezor does - no need to query device again
-        address = await this.getAddress(xpub, false);
+        // Always use first receive address (index 0) for imported account display
+        address = await this.getAddress(xpub, false, { forceIndex0: true });
       } catch (e) {
         throw new Error(e);
       }
