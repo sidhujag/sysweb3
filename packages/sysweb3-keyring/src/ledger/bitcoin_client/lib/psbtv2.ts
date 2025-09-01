@@ -2,8 +2,7 @@
 /* eslint-disable camelcase */
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
 
-import * as bjs from 'bitcoinjs-lib';
-import { Transaction } from 'syscoinjs-lib';
+import * as syscoinjs from 'syscoinjs-lib';
 
 import {
   BufferReader,
@@ -12,6 +11,8 @@ import {
   unsafeTo64bitLE,
 } from './buffertools';
 import { sanitizeBigintToNumber } from './varint';
+
+import type { Psbt } from 'bitcoinjs-lib';
 export enum psbtGlobal {
   UNSIGNED_TX = 0x00,
   XPUB = 0x01,
@@ -388,7 +389,9 @@ export class PsbtV2 {
     if (psbtVersion == 0) {
       // if PSBTv0, we parse the PSBT_GLOBAL_UNSIGNED_TX field
       const txRaw = this.getGlobal(psbtGlobal.UNSIGNED_TX);
-      const tx = Transaction.fromBuffer(txRaw);
+      const tx = (syscoinjs.utils as any).bitcoinjs.Transaction.fromBuffer(
+        txRaw
+      );
       nInputs = tx.ins.length;
       nOutputs = tx.outs.length;
     } else {
@@ -422,7 +425,7 @@ export class PsbtV2 {
     // Convert PsbtV0 to PsbtV2 by parsing the PSBT_GLOBAL_UNSIGNED_TX field
     // and filling in the corresponding fields.
     const txRaw = this.getGlobal(psbtGlobal.UNSIGNED_TX);
-    const tx = Transaction.fromBuffer(txRaw);
+    const tx = (syscoinjs.utils as any).bitcoinjs.Transaction.fromBuffer(txRaw);
 
     this.setGlobalPsbtVersion(2);
     this.setGlobalTxVersion(tx.version);
@@ -455,11 +458,14 @@ export class PsbtV2 {
    * Note: This method supports all the policies that the Ledger is able to
    * sign, with the exception of taproot: tr(@0).
    */
-  fromBitcoinJS(psbtBJS: bjs.Psbt): PsbtV2 {
+  fromBitcoinJS(psbtBJS: Psbt): PsbtV2 {
     function isTaprootInput(input: any): boolean {
       let isP2TR;
       try {
-        bjs.payments.p2tr({ output: input.witnessUtxo.script });
+        // Use bitcoinjs from syscoinjs-lib to avoid direct dependency
+        (syscoinjs.utils as any).bitcoinjs.payments.p2tr({
+          output: input.witnessUtxo.script,
+        });
         isP2TR = true;
       } catch (err) {
         isP2TR = false;

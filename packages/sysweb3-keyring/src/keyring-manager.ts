@@ -9,7 +9,6 @@ import {
   getNetworkConfig,
 } from '@sidhujag/sysweb3-network';
 import { BIP32Factory } from 'bip32';
-import * as bjs from 'bitcoinjs-lib';
 import bs58check from 'bs58check';
 import crypto from 'crypto';
 import CryptoJS from 'crypto-js';
@@ -18,13 +17,9 @@ import omit from 'lodash/omit';
 import * as syscoinjs from 'syscoinjs-lib';
 import * as BIP84 from 'syscoinjs-lib/bip84-replacement';
 
-// Initialize ECC backend for bitcoinjs-lib (required for Taproot/P2TR)
-// Avoids "No ECC Library provided" errors in browser/extension builds
+// Reference embedded bitcoinjs from syscoinjs-lib
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const _bjsAny: any = bjs as any;
-if (typeof _bjsAny.initEccLib === 'function') {
-  _bjsAny.initEccLib(ecc);
-}
+const bjs: any = (syscoinjs.utils as any).bitcoinjs;
 
 import {
   initialActiveImportedAccountState,

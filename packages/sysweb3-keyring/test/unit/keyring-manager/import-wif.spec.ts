@@ -1,5 +1,5 @@
 import { INetworkType } from '@sidhujag/sysweb3-network';
-import * as bjs from 'bitcoinjs-lib';
+import * as syscoinjs from 'syscoinjs-lib';
 import * as wif from 'wif';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
@@ -44,7 +44,9 @@ describe('WIF Import - KeyringManager', () => {
         mockVaultStateGetter
       );
 
-      MAINNET_WIF = generateWif(bjs.networks.bitcoin);
+      MAINNET_WIF = generateWif(
+        (syscoinjs.utils as any).bitcoinjs.networks.bitcoin
+      );
     });
 
     it('validates and imports a mainnet WIF as single-address account', async () => {
@@ -109,11 +111,15 @@ describe('WIF Import - KeyringManager', () => {
         mockVaultStateGetter
       );
 
-      TESTNET_WIF = generateWif(bjs.networks.testnet);
+      TESTNET_WIF = generateWif(
+        (syscoinjs.utils as any).bitcoinjs.networks.testnet
+      );
     });
 
     it('rejects mainnet WIF on testnet (validateWif false)', async () => {
-      const mainnetWif = generateWif(bjs.networks.bitcoin);
+      const mainnetWif = generateWif(
+        (syscoinjs.utils as any).bitcoinjs.networks.bitcoin
+      );
       const validation = (keyringManager as any).validateWif(mainnetWif);
       expect(validation.isValid).toBe(false);
     });

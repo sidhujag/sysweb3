@@ -1,7 +1,9 @@
 import { BitcoinNetwork, IPubTypes, INetwork } from '@sidhujag/sysweb3-network';
 import { BIP32Interface } from 'bip32';
-import { Psbt } from 'bitcoinjs-lib';
 import * as syscoinjs from 'syscoinjs-lib';
+
+import type { Psbt } from 'bitcoinjs-lib';
+// NOTE: Avoid direct bitcoinjs-lib types; rely on syscoinjs's embedded bitcoinjs
 
 export const getSyscoinSigners = ({
   mnemonic,

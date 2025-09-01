@@ -14,9 +14,9 @@ import TrezorConnect, {
 } from '@trezor/connect-webextension';
 import { address } from '@trezor/utxo-lib';
 import bitcoinops from 'bitcoin-ops';
-import { Transaction, payments, script } from 'bitcoinjs-lib';
 import { Buffer } from 'buffer';
 import { stripHexPrefix } from 'ethereumjs-util';
+import * as syscoinjs from 'syscoinjs-lib';
 
 import {
   HardwareWalletManager,
@@ -28,8 +28,9 @@ import {
   isEvmCoin,
 } from '../utils/derivation-paths';
 
-const { p2wsh } = payments;
-const { decompile } = script;
+const bitcoinjs: any = (syscoinjs.utils as any).bitcoinjs;
+const { p2wsh } = bitcoinjs.payments;
+const { decompile } = bitcoinjs.script;
 const { fromBase58Check, fromBech32 } = address;
 
 const initialHDPath = `m/44'/60'/0'/0/0`;
@@ -390,7 +391,7 @@ export class TrezorKeyring {
       );
 
       if (success) {
-        const tx = Transaction.fromHex(payload.serializedTx);
+        const tx = bitcoinjs.Transaction.fromHex(payload.serializedTx);
         for (const i of this.range(psbt.data.inputs.length)) {
           if (tx.ins[i].witness == null) {
             throw new Error(
@@ -418,8 +419,7 @@ export class TrezorKeyring {
                   pubkey.length === 32 ? pubkey : pubkey.slice(1, 33);
                 // @ts-ignore ecc injected via bitcoinjs initEccLib; runtime available in syscoinjs-lib
                 const eccLib =
-                  (require('bitcoinjs-lib') as any).ecc ||
-                  require('@bitcoinerlab/secp256k1');
+                  bitcoinjs.ecc || require('@bitcoinerlab/secp256k1');
                 return eccLib && typeof eccLib.verifySchnorr === 'function'
                   ? eccLib.verifySchnorr(signature, msghash, xOnly)
                   : false;
