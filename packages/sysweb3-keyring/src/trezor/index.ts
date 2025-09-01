@@ -557,7 +557,11 @@ export class TrezorKeyring {
       const input = psbt.txInputs[i];
       const inputItem: any = {};
       inputItem.prev_index = input.index;
-      inputItem.prev_hash = input.hash.reverse().toString('hex');
+      const hashBuf = Buffer.isBuffer(input.hash)
+        ? input.hash
+        : Buffer.from(input.hash);
+      const prevHashHex = hashBuf.reverse().toString('hex'); // 64-char hex
+      inputItem.prev_hash = prevHashHex;
       if (input.sequence) inputItem.sequence = input.sequence;
 
       const dataInput = psbt.data.inputs[i];
