@@ -408,42 +408,7 @@ export class TrezorKeyring {
         }
 
         try {
-          const validator = (
-            pubkey: Buffer,
-            msghash: Buffer,
-            signature: Buffer
-          ) => {
-            if (signature && signature.length === 64) {
-              try {
-                const xOnly =
-                  pubkey.length === 32 ? pubkey : pubkey.slice(1, 33);
-                // @ts-ignore ecc injected via bitcoinjs initEccLib; runtime available in syscoinjs-lib
-                const eccLib =
-                  bitcoinjs.ecc || require('@bitcoinerlab/secp256k1');
-                return eccLib && typeof eccLib.verifySchnorr === 'function'
-                  ? eccLib.verifySchnorr(signature, msghash, xOnly)
-                  : false;
-              } catch (e) {
-                return false;
-              }
-            }
-            try {
-              // eslint-disable-next-line @typescript-eslint/no-var-requires
-              const ECPairFactory =
-                require('ecpair').ECPairFactory ||
-                require('ecpair').default ||
-                require('ecpair');
-              // eslint-disable-next-line @typescript-eslint/no-var-requires
-              const ecc = require('@bitcoinerlab/secp256k1');
-              const ECPair = ECPairFactory(ecc);
-              return ECPair.fromPublicKey(pubkey).verify(msghash, signature);
-            } catch (e) {
-              return false;
-            }
-          };
-          if (psbt.validateSignaturesOfAllInputs(validator)) {
-            psbt.finalizeAllInputs();
-          }
+          syscoinjs.utils.finalizePSBT(psbt);
         } catch (err) {
           console.log(err);
         }
