@@ -527,14 +527,17 @@ export class LedgerKeyring {
             accountNode
           );
 
-          const pubkey = derivedAccount.publicKey;
+          const rawPubkey = derivedAccount.publicKey;
+          const pubkeyBuf = Buffer.isBuffer(rawPubkey)
+            ? rawPubkey
+            : Buffer.from(rawPubkey);
 
-          if (pubkey && Buffer.isBuffer(pubkey)) {
+          if (pubkeyBuf && pubkeyBuf.length === 33) {
             // Add the bip32Derivation that Ledger needs
             bip32Derivation = {
               masterFingerprint: Buffer.from(fingerprint, 'hex'),
               path: fullPath,
-              pubkey: pubkey,
+              pubkey: pubkeyBuf,
             };
 
             psbt.updateInput(i, {
@@ -542,14 +545,17 @@ export class LedgerKeyring {
             });
           }
         }
-
-        if (!bip32Derivation) {
+        // Check the updated PSBT state (avoid stale local references)
+        const updatedInput = psbt.data.inputs[i];
+        if (
+          !updatedInput.bip32Derivation ||
+          updatedInput.bip32Derivation.length === 0
+        ) {
           missingInputDerivations.push(i);
         }
       }
 
       // Enhance each output with bip32Derivation when it's a change/output owned by the wallet
-      const missingOutputDerivations: number[] = [];
       for (let i = 0; i < psbt.data.outputs.length; i++) {
         const dataOutput = psbt.data.outputs[i];
 
@@ -595,37 +601,30 @@ export class LedgerKeyring {
             accountNode
           );
 
-          const pubkey = derivedAccount.publicKey;
+          const rawOutPubkey = derivedAccount.publicKey;
+          const outPubkeyBuf = Buffer.isBuffer(rawOutPubkey)
+            ? rawOutPubkey
+            : Buffer.from(rawOutPubkey);
 
-          if (pubkey && Buffer.isBuffer(pubkey)) {
+          if (outPubkeyBuf && outPubkeyBuf.length === 33) {
             bip32Derivation = {
               masterFingerprint: Buffer.from(fingerprint, 'hex'),
               path: fullPath,
-              pubkey: pubkey,
+              pubkey: outPubkeyBuf,
             };
 
             psbt.updateOutput(i, {
               bip32Derivation: [bip32Derivation],
             });
           }
-          if (!bip32Derivation) {
-            missingOutputDerivations.push(i);
-          }
+          // Outputs without valid derivation are allowed (external recipients)
         }
       }
 
       // If any wallet-owned inputs/outputs are missing bip32Derivation, fail early with a clear error
-      if (
-        missingInputDerivations.length > 0 ||
-        missingOutputDerivations.length > 0
-      ) {
+      if (missingInputDerivations.length > 0) {
         const parts: string[] = [];
-        if (missingInputDerivations.length > 0) {
-          parts.push(`inputs [${missingInputDerivations.join(', ')}]`);
-        }
-        if (missingOutputDerivations.length > 0) {
-          parts.push(`outputs [${missingOutputDerivations.join(', ')}]`);
-        }
+        parts.push(`inputs [${missingInputDerivations.join(', ')}]`);
         throw new Error(
           `convertToLedgerFormat: Missing bip32Derivation for ${parts.join(
             ' and '
