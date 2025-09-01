@@ -503,7 +503,7 @@ export class LedgerKeyring {
             }
           }
         }
-
+        let bip32Derivation: any = null;
         if (pathFromInput) {
           const fullPath = pathFromInput;
           const accountPath = getAccountDerivationPath(
@@ -531,7 +531,7 @@ export class LedgerKeyring {
 
           if (pubkey && Buffer.isBuffer(pubkey)) {
             // Add the bip32Derivation that Ledger needs
-            const bip32Derivation = {
+            bip32Derivation = {
               masterFingerprint: Buffer.from(fingerprint, 'hex'),
               path: fullPath,
               pubkey: pubkey,
@@ -543,10 +543,7 @@ export class LedgerKeyring {
           }
         }
 
-        if (
-          !dataInput.bip32Derivation ||
-          dataInput.bip32Derivation.length === 0
-        ) {
+        if (!bip32Derivation) {
           missingInputDerivations.push(i);
         }
       }
@@ -574,8 +571,8 @@ export class LedgerKeyring {
             }
           }
         }
-
         if (pathFromOutput) {
+          let bip32Derivation: any = null;
           const fullPath = pathFromOutput;
           const accountPath = getAccountDerivationPath(
             currency,
@@ -601,7 +598,7 @@ export class LedgerKeyring {
           const pubkey = derivedAccount.publicKey;
 
           if (pubkey && Buffer.isBuffer(pubkey)) {
-            const bip32Derivation = {
+            bip32Derivation = {
               masterFingerprint: Buffer.from(fingerprint, 'hex'),
               path: fullPath,
               pubkey: pubkey,
@@ -611,14 +608,7 @@ export class LedgerKeyring {
               bip32Derivation: [bip32Derivation],
             });
           }
-        }
-
-        // Track outputs that declared a path but still lack derivation info
-        if (pathFromOutput) {
-          if (
-            !dataOutput.bip32Derivation ||
-            dataOutput.bip32Derivation.length === 0
-          ) {
+          if (!bip32Derivation) {
             missingOutputDerivations.push(i);
           }
         }
