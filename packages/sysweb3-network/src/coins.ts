@@ -115,7 +115,11 @@ export const coins: CoinsArray = [
     bech32Prefix: 'tb',
     blockchainLink: {
       type: 'blockbook',
-      url: ['https://tbtc1.trezor.io', 'https://tbtc2.trezor.io'],
+      url: [
+        'https://blockbook.tbtc-1.zelcore.io',
+        'https://tbtc1.trezor.io',
+        'https://tbtc2.trezor.io',
+      ],
     },
     blocktimeSeconds: 600,
     cashaddrPrefix: null,
