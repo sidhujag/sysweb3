@@ -10,7 +10,6 @@ import {
 } from '@metamask/eth-sig-util';
 import { INetwork, INetworkType } from '@sidhujag/sysweb3-network';
 import { ITxid } from '@sidhujag/sysweb3-utils';
-import { Psbt } from 'bitcoinjs-lib';
 import { CustomJsonRpcProvider } from 'providers';
 
 import { LedgerKeyring } from './ledger';
@@ -159,7 +158,7 @@ export interface ISyscoinTransactions {
   }: {
     isLedger?: boolean;
     isTrezor?: boolean;
-    psbt: Psbt;
+    psbt: any;
   }) => Promise<any>;
 }
 

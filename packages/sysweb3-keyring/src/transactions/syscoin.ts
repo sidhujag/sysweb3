@@ -138,7 +138,10 @@ export class SyscoinTransactions implements ISyscoinTransactions {
       return main.decodeRawTransaction(bitcoinTx);
     } else {
       // Handle PSBT format (existing behavior)
-      const psbtObj = PsbtUtils.fromPali(psbtOrHex);
+      const psbtObj = PsbtUtils.fromPali(
+        psbtOrHex,
+        this.getState().activeNetwork
+      );
       return main.decodeRawTransaction(psbtObj);
     }
   };
@@ -523,11 +526,11 @@ export class SyscoinTransactions implements ISyscoinTransactions {
     isTrezor = false,
     isLedger = false,
   }: {
-    psbt: Psbt;
+    psbt: any;
     isTrezor?: boolean;
     isLedger?: boolean;
   }): Promise<any> => {
-    const psbtObj = PsbtUtils.fromPali(psbt);
+    const psbtObj = PsbtUtils.fromPali(psbt, this.getState().activeNetwork);
     const signedPsbt = await this.signPSBTWithMethod(
       psbtObj,
       isTrezor,
@@ -540,6 +543,8 @@ export class SyscoinTransactions implements ISyscoinTransactions {
     if (!psbt) {
       throw new Error('Signed PSBT is required for broadcasting.');
     }
-    return await this.sendSignedTransaction(PsbtUtils.fromPali(psbt));
+    return await this.sendSignedTransaction(
+      PsbtUtils.fromPali(psbt, this.getState().activeNetwork)
+    );
   };
 }

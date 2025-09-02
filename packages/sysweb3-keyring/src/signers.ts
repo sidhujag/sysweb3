@@ -136,7 +136,7 @@ export interface SyscoinHDSigner {
     isTrezor,
     isLedger,
   }: {
-    psbt: Psbt;
+    psbt: any;
     isTrezor?: boolean;
     isLedger?: boolean;
   }) => Promise<any>;
