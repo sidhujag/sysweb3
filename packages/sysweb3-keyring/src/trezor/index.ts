@@ -645,15 +645,8 @@ export class TrezorKeyring {
         outputItem.op_return_data = Buffer.from(chunks[1]).toString('hex');
       } else {
         if (output && this.isBech32(output.address)) {
-          if (
-            scriptBuf.length === 34 &&
-            scriptBuf[0] === 0 &&
-            scriptBuf[1] === 0x20
-          ) {
-            outputItem.script_type = 'PAYTOP2SHWITNESS';
-          } else {
-            outputItem.script_type = 'PAYTOWITNESS';
-          }
+          // Any bech32 witness program (P2WPKH or P2WSH) signs as PAYTOWITNESS
+          outputItem.script_type = 'PAYTOWITNESS';
         } else {
           outputItem.script_type = this.isScriptHash(output.address, network)
             ? 'PAYTOSCRIPTHASH'
@@ -666,8 +659,7 @@ export class TrezorKeyring {
       if (
         outputItem.script_type === 'PAYTOADDRESS' ||
         outputItem.script_type === 'PAYTOSCRIPTHASH' ||
-        outputItem.script_type === 'PAYTOWITNESS' ||
-        outputItem.script_type === 'PAYTOP2SHWITNESS'
+        outputItem.script_type === 'PAYTOWITNESS'
       ) {
         if (!outputItem.address) {
           console.error(
