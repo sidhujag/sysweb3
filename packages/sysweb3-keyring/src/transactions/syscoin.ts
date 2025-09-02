@@ -1,10 +1,12 @@
 import { INetwork, getNetworkConfig } from '@sidhujag/sysweb3-network';
 import { ITxid, txUtils } from '@sidhujag/sysweb3-utils';
+import { Psbt } from 'bitcoinjs-lib';
 import * as syscoinjs from 'syscoinjs-lib';
 // import { BIP_84, ONE_HUNDRED_MILLION, SYSCOIN_BASIC_FEE } from 'utils';
 
 import { LedgerKeyring } from '../ledger';
 import { DefaultWalletPolicy } from '../ledger/bitcoin_client';
+import { PsbtV2 } from '../ledger/bitcoin_client/lib/psbtv2';
 import { SyscoinHDSigner } from '../signers';
 import { TrezorKeyring } from '../trezor';
 import {
@@ -156,9 +158,9 @@ export class SyscoinTransactions implements ISyscoinTransactions {
     psbt,
     signer,
   }: {
-    psbt: any;
+    psbt: Psbt;
     signer: any;
-  }): Promise<any> => await signer.sign(psbt);
+  }): Promise<Psbt> => await signer.sign(psbt);
 
   // Create unsigned PSBT for any transaction type
   private createUnsignedPSBT = async ({
@@ -175,7 +177,7 @@ export class SyscoinTransactions implements ISyscoinTransactions {
     token?: { guid: string; symbol?: string } | null;
     txOptions?: any;
     isMax?: boolean | false;
-  }): Promise<{ psbt: any; fee: number }> => {
+  }): Promise<{ psbt: Psbt; fee: number }> => {
     // Ensure RBF is enabled by default if not explicitly set
     const finalTxOptions = { rbf: true, ...txOptions };
     const { activeAccountId, accounts, activeAccountType } = this.getState();
@@ -281,10 +283,10 @@ export class SyscoinTransactions implements ISyscoinTransactions {
 
   // Sign PSBT with appropriate method - separated for better error handling
   private signPSBTWithMethod = async (
-    psbt: any,
+    psbt: Psbt,
     isTrezor: boolean,
     isLedger = false
-  ): Promise<any> => {
+  ): Promise<Psbt> => {
     const { activeNetwork, activeAccountId, activeAccountType, accounts } =
       this.getState();
 
@@ -348,9 +350,10 @@ export class SyscoinTransactions implements ISyscoinTransactions {
         );
       }
 
-      // Sign the enhanced PSBT with Ledger using the HMAC (silent after first approval)
+      // Convert to PsbtV2 for direct signing without intermediate base64 encode/decode
+      const psbtV2 = new PsbtV2().fromBitcoinJS(enhancedPsbt);
       const signatureEntries = await this.ledger.ledgerUtxoClient.signPsbt(
-        enhancedPsbt.toBase64(),
+        psbtV2,
         walletPolicy,
         hmac
       );
@@ -520,7 +523,7 @@ export class SyscoinTransactions implements ISyscoinTransactions {
     isTrezor = false,
     isLedger = false,
   }: {
-    psbt: any;
+    psbt: Psbt;
     isTrezor?: boolean;
     isLedger?: boolean;
   }): Promise<any> => {

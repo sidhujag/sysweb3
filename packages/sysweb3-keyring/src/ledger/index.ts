@@ -3,6 +3,7 @@
 /* eslint-disable import/order */
 import Transport from '@ledgerhq/hw-transport';
 import SysUtxoClient, { DefaultWalletPolicy } from './bitcoin_client';
+import type { Psbt } from 'bitcoinjs-lib';
 import { RECEIVING_ADDRESS_INDEX, WILL_NOT_DISPLAY } from './consts';
 import { getNetworkConfig } from '@sidhujag/sysweb3-network';
 import BIP32Factory from 'bip32';
@@ -438,12 +439,12 @@ export class LedgerKeyring {
    * Convert PSBT to Ledger format with retry logic
    */
   public async convertToLedgerFormat(
-    psbt: any,
+    psbt: Psbt,
     accountXpub: string,
     accountId: number,
     currency: string,
     slip44: number
-  ): Promise<any> {
+  ): Promise<Psbt> {
     return this.executeWithRetry(async () => {
       // Ensure Ledger is connected before attempting operations
       // This is now handled by executeWithRetry
@@ -497,8 +498,9 @@ export class LedgerKeyring {
         let pathFromInput: string | null = null;
         if (dataInput.unknownKeyVals && dataInput.unknownKeyVals.length > 0) {
           for (const kv of dataInput.unknownKeyVals) {
-            if (kv.key.equals(Buffer.from('path'))) {
-              pathFromInput = kv.value.toString();
+            const keyStr = Buffer.from(kv.key).toString();
+            if (keyStr === 'path') {
+              pathFromInput = Buffer.from(kv.value).toString();
               break;
             }
           }
@@ -571,8 +573,9 @@ export class LedgerKeyring {
         let pathFromOutput: string | null = null;
         if (dataOutput.unknownKeyVals && dataOutput.unknownKeyVals.length > 0) {
           for (const kv of dataOutput.unknownKeyVals) {
-            if (kv.key.equals(Buffer.from('path'))) {
-              pathFromOutput = kv.value.toString();
+            const keyStr = Buffer.from(kv.key).toString();
+            if (keyStr === 'path') {
+              pathFromOutput = Buffer.from(kv.value).toString();
               break;
             }
           }

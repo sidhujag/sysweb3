@@ -14,6 +14,7 @@ import TrezorConnect, {
 } from '@trezor/connect-webextension';
 import { address } from '@trezor/utxo-lib';
 import bitcoinops from 'bitcoin-ops';
+import { Psbt } from 'bitcoinjs-lib';
 import { Buffer } from 'buffer';
 import { stripHexPrefix } from 'ethereumjs-util';
 import * as syscoinjs from 'syscoinjs-lib';
@@ -384,7 +385,7 @@ export class TrezorKeyring {
    * @returns signature object
    */
 
-  public async signUtxoTransaction(utxoTransaction: any, psbt: any) {
+  public async signUtxoTransaction(utxoTransaction: any, psbt: Psbt) {
     return this.executeWithRetry(async () => {
       const { payload, success } = await TrezorConnect.signTransaction(
         utxoTransaction

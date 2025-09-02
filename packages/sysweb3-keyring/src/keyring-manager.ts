@@ -9,6 +9,7 @@ import {
   getNetworkConfig,
 } from '@sidhujag/sysweb3-network';
 import { BIP32Factory } from 'bip32';
+import { Psbt } from 'bitcoinjs-lib';
 import bs58check from 'bs58check';
 import crypto from 'crypto';
 import CryptoJS from 'crypto-js';
@@ -1537,7 +1538,7 @@ export class KeyringManager implements IKeyringManager {
           : networks.mainnet;
 
         signerForUse = {
-          sign: async (psbt: any) => {
+          sign: async (psbt: Psbt) => {
             return await (syscoinjs.utils as any).signWithWIF(
               psbt,
               decrypted,
