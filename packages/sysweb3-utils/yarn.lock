@@ -804,10 +804,10 @@
   resolved "https://registry.yarnpkg.com/@scure/base/-/base-1.2.6.tgz#ca917184b8231394dd8847509c67a0be522e59f6"
   integrity sha512-g/nm5FgUa//MCj1gV09zTJTaM6KBAHqLN907YVQqf7zC49+DcO4B1so4ZX07Ef10Twr6nuqYEH9GEggFXA4Fmg==
 
-"@sidhujag/sysweb3-network@^1.0.105":
-  version "1.0.105"
-  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-network/-/sysweb3-network-1.0.105.tgz#d76eac5ccfe789086b4de2dee8772ab56ced11e6"
-  integrity sha512-Eajo1OhtMWqy8Yu5+WJvuymT+Dk+JIVU+zkCTRa0XmnBwWGrDIYgWNS4HVDdAJBmPhqFduSt5fLFBe91NrG5Nw==
+"@sidhujag/sysweb3-network@^1.0.106":
+  version "1.0.106"
+  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-network/-/sysweb3-network-1.0.106.tgz#9dea9db4634aa9c90f3de4924275eff598b9b16b"
+  integrity sha512-ecC5zDlEhV13DRSZqwEuFuX6S2yP6BVnOYXd0Ub7NmhjNGU/fpnTWznWn6n/NnwsBBhuTV4sdAEbY9sjfdDE/g==
   dependencies:
     "@ethersproject/bytes" "^5.8.0"
     eth-chains "^1.0.0"
@@ -1641,9 +1641,9 @@ eth-object@^1.0.3:
   dependencies:
     eth-util-lite "^1.0.1"
 
-"eth-object@git+https://github.com/syscoin/eth-object.git":
+"eth-object@https://github.com/syscoin/eth-object.git":
   version "1.0.3"
-  resolved "git+https://github.com/syscoin/eth-object.git#b5ff300f57c136138b31d6e570c816a147e0f1c9"
+  resolved "https://github.com/syscoin/eth-object.git#b5ff300f57c136138b31d6e570c816a147e0f1c9"
   dependencies:
     eth-util-lite "^1.0.1"
 
