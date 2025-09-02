@@ -64,8 +64,8 @@ export class WalletPolicy {
 
     // length of descriptor template
     buf.writeVarInt(this.descriptorTemplate.length);
-    // sha256 hash of descriptor template
-    buf.writeSlice(sha256(Buffer.from(this.descriptorTemplate)));
+    // sha256 hash of descriptor template (ASCII to match device expectations)
+    buf.writeSlice(sha256(Buffer.from(this.descriptorTemplate, 'ascii')));
 
     // number of keys
     buf.writeVarInt(this.keys.length);

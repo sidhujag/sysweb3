@@ -121,9 +121,9 @@ export class AppClient {
    * @returns an object with app name, version and device status flags.
    */
   public async getAppAndVersion(): Promise<{
-    flags: number | Buffer;
     name: string;
     version: string;
+    flags: number | Buffer;
   }> {
     const r = await this.transport.send(0xb0, 0x01, 0x00, 0x00);
     let i = 0;
@@ -154,7 +154,10 @@ export class AppClient {
    * @param display `false` to silently retrieve a pubkey for a standard path, `true` to display the path on screen
    * @returns the base58-encoded serialized extended pubkey (xpub)
    */
-  async getExtendedPubkey(path: string, display = false): Promise<string> {
+  async getExtendedPubkey(
+    path: string,
+    display: boolean = false
+  ): Promise<string> {
     const pathElements = pathStringToArray(path);
     if (pathElements.length > 6) {
       throw new Error('Path too long. At most 6 levels allowed.');
@@ -203,8 +206,6 @@ export class AppClient {
     const walletId = response.subarray(0, 32);
     const walletHMAC = response.subarray(32);
 
-    // Note: Address validation removed - trusting Ledger device for address generation
-
     return [walletId, walletHMAC];
   }
 
@@ -236,7 +237,7 @@ export class AppClient {
     }
 
     const clientInterpreter = new ClientCommandInterpreter();
-    // Provide wallet policy artifacts to the interpreter
+
     clientInterpreter.addKnownWalletPolicy(walletPolicy);
 
     const addressIndexBuffer = Buffer.alloc(4);

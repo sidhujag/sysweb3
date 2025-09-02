@@ -434,13 +434,16 @@ export class PsbtV2 {
     this.setGlobalOutputCount(tx.outs.length);
 
     for (let i = 0; i < tx.ins.length; i++) {
+      // Defensive copy to ensure Buffer instance and immutability
       this.setInputPreviousTxId(i, Buffer.from(tx.ins[i].hash));
       this.setInputOutputIndex(i, tx.ins[i].index);
       this.setInputSequence(i, tx.ins[i].sequence);
     }
 
     for (let i = 0; i < tx.outs.length; i++) {
+      // Use Number for amount (tx.outs[i].value is a number in bitcoinjs Transaction)
       this.setOutputAmount(i, Number(tx.outs[i].value));
+      // Defensive copy for script buffer
       this.setOutputScript(i, Buffer.from(tx.outs[i].script));
     }
 
@@ -522,7 +525,6 @@ export class PsbtV2 {
         Buffer.from(psbtObj.txInputs[index].hash)
       );
       if (psbtObj.txInputs[index].sequence !== undefined)
-        // @ts-ignore
         this.setInputSequence(index, psbtObj.txInputs[index].sequence);
       this.setInputOutputIndex(index, psbtObj.txInputs[index].index);
       if (input.sighashType !== undefined)
@@ -540,7 +542,6 @@ export class PsbtV2 {
         this.setInputWitnessScript(index, Buffer.from(input.witnessScript));
       if (input.redeemScript)
         this.setInputRedeemScript(index, Buffer.from(input.redeemScript));
-      // @ts-ignore
       psbtObj.data.inputs[index].bip32Derivation.forEach((derivation) => {
         if (!/^m\//i.test(derivation.path))
           throw new Error(`Invalid input bip32 derivation`);

@@ -337,7 +337,8 @@ export class ClientCommandInterpreter {
   addKnownWalletPolicy(wp: WalletPolicy): void {
     this.addKnownPreimage(wp.serialize());
     this.addKnownList(wp.keys.map((k) => Buffer.from(k, 'ascii')));
-    this.addKnownPreimage(Buffer.from(wp.descriptorTemplate));
+    // Use ASCII to match policy serialization hashing and device expectations
+    this.addKnownPreimage(Buffer.from(wp.descriptorTemplate, 'ascii'));
   }
 
   execute(request: Buffer): Buffer {
