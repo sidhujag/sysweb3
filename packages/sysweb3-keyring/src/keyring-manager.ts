@@ -1556,11 +1556,15 @@ export class KeyringManager implements IKeyringManager {
     // Create syscoinjs instance with current network (no need to attach signer for signing flow)
     const network = vault.activeNetwork;
     const networkConfig = getNetworkConfig(network.slip44, network.currency);
+    const isTestnet = network.slip44 === 1;
+    const bitcoinjsNetwork = isTestnet
+      ? networkConfig?.networks?.testnet
+      : networkConfig?.networks?.mainnet;
 
     const syscoinMainSigner = new syscoinjs.SyscoinJSLib(
       null,
       network.url,
-      networkConfig?.networks?.mainnet || undefined
+      bitcoinjsNetwork
     );
 
     return {
@@ -1581,11 +1585,15 @@ export class KeyringManager implements IKeyringManager {
     const vault = this.getVault();
     const network = vault.activeNetwork;
     const networkConfig = getNetworkConfig(network.slip44, network.currency);
+    const isTestnet = network.slip44 === 1;
+    const bitcoinjsNetwork = isTestnet
+      ? networkConfig?.networks?.testnet
+      : networkConfig?.networks?.mainnet;
 
     const syscoinMainSigner = new syscoinjs.SyscoinJSLib(
       null, // No HD signer needed for read-only operations
       network.url,
-      networkConfig?.networks?.mainnet || undefined
+      bitcoinjsNetwork
     );
 
     return {
