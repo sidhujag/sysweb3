@@ -1677,23 +1677,19 @@ export class KeyringManager implements IKeyringManager {
   ) {
     const vault = this.getVault();
     const { accounts } = vault;
-    let xpub, balance;
 
     // For EVM networks, Trezor expects 'eth' regardless of the network's currency
     const trezorCoin = slip44 === 60 ? 'eth' : coin;
 
-    try {
-      const { descriptor, balance: _balance } =
-        await this.trezorSigner.getAccountInfo({
-          coin: trezorCoin,
-          slip44,
-          index,
-        });
-      xpub = descriptor;
-      balance = _balance;
-    } catch (e) {
-      throw new Error(e);
-    }
+    const { descriptor, balance: _balance } =
+      await this.trezorSigner.getAccountInfo({
+        coin: trezorCoin,
+        slip44,
+        index,
+      });
+    const xpub = descriptor;
+    const balance = _balance;
+
     let ethPubKey = '';
 
     const isEVM = isEvmCoin(coin, slip44);
@@ -1797,18 +1793,14 @@ export class KeyringManager implements IKeyringManager {
       address = ethAddress;
       xpub = publicKey;
     } else {
-      try {
-        const ledgerXpub = await this.ledgerSigner.utxo.getXpub({
-          index: index,
-          coin,
-          slip44,
-        });
-        xpub = ledgerXpub;
-        // Always use first receive address (index 0) for imported account display
-        address = await this.getAddress(xpub, false, { forceIndex0: true });
-      } catch (e) {
-        throw new Error(e);
-      }
+      const ledgerXpub = await this.ledgerSigner.utxo.getXpub({
+        index: index,
+        coin,
+        slip44,
+      });
+      xpub = ledgerXpub;
+      // Always use first receive address (index 0) for imported account display
+      address = await this.getAddress(xpub, false, { forceIndex0: true });
     }
 
     const accountAlreadyExists =

@@ -521,7 +521,7 @@
     "@ledgerhq/logs" "^6.13.0"
     rxjs "^7.8.1"
 
-"@ledgerhq/hw-transport-webhid@^6.30.4":
+"@ledgerhq/hw-transport-webhid@^6.30.5":
   version "6.30.5"
   resolved "https://registry.yarnpkg.com/@ledgerhq/hw-transport-webhid/-/hw-transport-webhid-6.30.5.tgz#9948c0376700a58d235132a78ba4d0da0c058d09"
   integrity sha512-dEUrV7afbw1HIAz4NrcstihtiVEZ7osmigjWhHR1kcBvkP9JKFUjplQkCGshfhocgTVasA8RzUF9lgTDMR6VOw==
