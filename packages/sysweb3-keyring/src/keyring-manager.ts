@@ -249,7 +249,7 @@ export class KeyringManager implements IKeyringManager {
   public isUnlocked = () =>
     !!this.sessionPassword && !this.sessionPassword.isCleared();
 
-  public lockWallet = () => {
+  public lockWallet = async () => {
     // Clear secure session data
     if (this.sessionPassword) {
       this.sessionPassword.clear();
@@ -268,16 +268,20 @@ export class KeyringManager implements IKeyringManager {
     // NOTE: We intentionally don't clear ethereumTransaction here because
     // polling needs the web3Provider even when the wallet is locked.
 
-    // Clean up hardware wallet connections
+    // Clean up hardware wallet connections (await to ensure HID is released)
     if (this.ledgerSigner) {
-      this.ledgerSigner.destroy().catch(() => {
-        // Silently handle cleanup errors to avoid exposing sensitive data
-      });
+      try {
+        await this.ledgerSigner.destroy();
+      } catch (_) {
+        // ignore
+      }
     }
     if (this.trezorSigner) {
-      this.trezorSigner.destroy().catch(() => {
-        // Silently handle cleanup errors to avoid exposing sensitive data
-      });
+      try {
+        await this.trezorSigner.destroy();
+      } catch (_) {
+        // ignore
+      }
     }
   };
 
@@ -2708,7 +2712,7 @@ export class KeyringManager implements IKeyringManager {
    * Clean up all resources
    */
   public async destroy(): Promise<void> {
-    this.lockWallet();
+    await this.lockWallet();
 
     // Clear any remaining references
     this.ethereumTransaction = {} as EthereumTransactions;

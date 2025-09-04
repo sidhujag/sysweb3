@@ -241,7 +241,7 @@ export interface IKeyringManager {
   createFirstAccount: (label?: string) => Promise<IKeyringAccountState>;
   transferSessionTo: (targetKeyring: IKeyringManager) => void;
   receiveSessionOwnership: (sessionPassword: any, sessionMnemonic: any) => void;
-  lockWallet: () => void;
+  lockWallet: () => Promise<void>;
   // NEW: Store access for stateless keyring
   setVaultStateGetter: (getter: () => any) => void;
 }
