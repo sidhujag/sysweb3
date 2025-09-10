@@ -513,9 +513,22 @@ export class LedgerKeyring {
             slip44,
             accountId
           );
-          const relativePath = fullPath
-            .replace(accountPath, '')
-            .replace(/^\//, '');
+
+          // More robust path extraction that handles the apostrophe correctly
+          let relativePath = '';
+          if (fullPath.startsWith(accountPath)) {
+            relativePath = fullPath.substring(accountPath.length);
+            if (relativePath.startsWith('/')) {
+              relativePath = relativePath.substring(1);
+            }
+          } else {
+            // If the path doesn't start with account path, try to extract the last two indices
+            const pathParts = fullPath.split('/');
+            if (pathParts.length >= 2) {
+              relativePath = pathParts.slice(-2).join('/');
+            }
+          }
+
           const derivationTokens = relativePath.split('/').filter((t) => t);
 
           const derivedAccount = derivationTokens.reduce(
@@ -535,9 +548,12 @@ export class LedgerKeyring {
             : Buffer.from(rawPubkey);
 
           if (pubkeyBuf && pubkeyBuf.length === 33) {
+            // Ensure fingerprint is properly formatted as 4-byte Buffer
+            const fingerprintBuf = Buffer.from(fingerprint, 'hex');
+
             // Add the bip32Derivation that Ledger needs
             bip32Derivation = {
-              masterFingerprint: Buffer.from(fingerprint, 'hex'),
+              masterFingerprint: fingerprintBuf,
               path: fullPath,
               pubkey: pubkeyBuf,
             };

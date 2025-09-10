@@ -434,16 +434,13 @@ export class PsbtV2 {
     this.setGlobalOutputCount(tx.outs.length);
 
     for (let i = 0; i < tx.ins.length; i++) {
-      // Defensive copy to ensure Buffer instance and immutability
       this.setInputPreviousTxId(i, Buffer.from(tx.ins[i].hash));
       this.setInputOutputIndex(i, tx.ins[i].index);
       this.setInputSequence(i, tx.ins[i].sequence);
     }
 
     for (let i = 0; i < tx.outs.length; i++) {
-      // Use Number for amount (tx.outs[i].value is a number in bitcoinjs Transaction)
       this.setOutputAmount(i, Number(tx.outs[i].value));
-      // Defensive copy for script buffer
       this.setOutputScript(i, Buffer.from(tx.outs[i].script));
     }
 
@@ -542,7 +539,9 @@ export class PsbtV2 {
         this.setInputWitnessScript(index, Buffer.from(input.witnessScript));
       if (input.redeemScript)
         this.setInputRedeemScript(index, Buffer.from(input.redeemScript));
-      psbtObj.data.inputs[index].bip32Derivation.forEach((derivation) => {
+      // @ts-ignore
+      if (psbtObj.data.inputs[index].bip32Derivation) {
+        psbtObj.data.inputs[index].bip32Derivation.forEach((derivation) => {
         if (!/^m\//i.test(derivation.path))
           throw new Error(`Invalid input bip32 derivation`);
         const pathArray = derivation.path
@@ -558,10 +557,33 @@ export class PsbtV2 {
           pathArray
         );
       });
+      }
     });
     psbtObj.txOutputs.forEach((output, index) => {
       this.setOutputAmount(index, Number(output.value));
       this.setOutputScript(index, Buffer.from(output.script));
+      // Handle output BIP32 derivations if they exist
+      if (psbtObj.data.outputs && psbtObj.data.outputs[index]) {
+        const outputData = psbtObj.data.outputs[index];
+        if (outputData.bip32Derivation && outputData.bip32Derivation.length > 0) {
+          outputData.bip32Derivation.forEach((derivation) => {
+            if (!/^m\//i.test(derivation.path))
+              throw new Error(`Invalid output bip32 derivation`);
+            const pathArray = derivation.path
+              .replace(/m\//i, '')
+              .split('/')
+              .map((level) =>
+                level.match(/['h]/i) ? parseInt(level) + 0x80000000 : Number(level)
+              );
+            this.setOutputBip32Derivation(
+              index,
+              Buffer.from(derivation.pubkey),
+              Buffer.from(derivation.masterFingerprint),
+              pathArray
+            );
+          });
+        }
+      }
     });
     return this;
   }

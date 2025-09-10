@@ -16,7 +16,7 @@ import {
 } from '../types';
 import {
   getAccountDerivationPath,
-  convertExtendedKeyVersion,
+  // convertExtendedKeyVersion,
 } from '../utils/derivation-paths';
 import { PsbtUtils } from '../utils/psbt';
 
@@ -294,7 +294,7 @@ export class SyscoinTransactions implements ISyscoinTransactions {
       this.getState();
 
     if (isLedger) {
-      // CRITICAL: Enhance PSBT with required Ledger fields
+      // CRITICAL: Use the new signPsbt method if available, otherwise fall back to the old flow
       const account = accounts[activeAccountType]?.[activeAccountId];
       if (!account) {
         throw new Error('Active account not found');
@@ -319,22 +319,10 @@ export class SyscoinTransactions implements ISyscoinTransactions {
         accountId
       );
 
-      // Convert stored/display zpub/vpub to device-friendly xpub/tpub for policy descriptor using network macros
-      const { types: deviceTypes } = getNetworkConfig(
-        activeNetwork.slip44,
-        activeNetwork.currency
-      );
-      const devicePubMagicDec =
-        activeNetwork.slip44 === 1
-          ? (deviceTypes.xPubType as any).testnet.vpub
-          : deviceTypes.xPubType.mainnet.zpub;
-      const devicePubMagicHex = Number(devicePubMagicDec)
-        .toString(16)
-        .padStart(8, '0');
-      const deviceXpub = convertExtendedKeyVersion(
-        accountXpub,
-        devicePubMagicHex
-      );
+
+      // Get the device xpub without display for policy creation
+      // The xpub should already be in the correct format from convertToLedgerFormat
+      const deviceXpub = await this.ledger.ledgerUtxoClient.getExtendedPubkey(hdPath, true)
       const xpubWithDescriptor = `[${hdPath}]${deviceXpub}`.replace(
         'm',
         fingerprint
@@ -353,8 +341,43 @@ export class SyscoinTransactions implements ISyscoinTransactions {
         );
       }
 
+      // Validate change outputs with Ledger before signing
+      // This ensures the device recognizes change addresses as belonging to the wallet
+      for (let i = 0; i < enhancedPsbt.data.outputs.length; i++) {
+        const output = enhancedPsbt.data.outputs[i];
+        // Check if this output has BIP32 derivation (indicates it's a wallet-controlled output, likely change)
+        if (output.bip32Derivation && output.bip32Derivation.length > 0) {
+          // Extract the derivation path to determine if it's a change address
+          const derivation = output.bip32Derivation[0];
+          if (derivation && derivation.path) {
+            // Parse the path to get change and address index
+            // Expected format: m/84'/57'/accountId'/change/addressIndex
+            const pathParts = derivation.path.split('/');
+            if (pathParts.length >= 5) {
+              const change = parseInt(pathParts[pathParts.length - 2]);
+              const addressIndex = parseInt(pathParts[pathParts.length - 1]);
+
+              // Validate the address with Ledger (without displaying)
+              // This ensures the device recognizes it as a valid wallet address
+              try {
+                await this.ledger.ledgerUtxoClient.getWalletAddress(
+                  walletPolicy,
+                  hmac,
+                  change,
+                  addressIndex,
+                  true // Don't display on device
+                );
+              } catch (err) {
+                console.warn(`Failed to validate output ${i} with Ledger:`, err);
+              }
+            }
+          }
+        }
+      }
+
       // Convert to PsbtV2 for direct signing without intermediate base64 encode/decode
       const psbtV2 = new PsbtV2().fromBitcoinJS(enhancedPsbt);
+
       const signatureEntries = await this.ledger.ledgerUtxoClient.signPsbt(
         psbtV2,
         walletPolicy,
