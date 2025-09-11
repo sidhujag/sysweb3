@@ -119,6 +119,12 @@ export interface IEthereumTransactions {
     signature: string,
     version: SignTypedDataVersion
   ) => string;
+  // HW-agnostic helper: verify and display UTXO address on device
+  verifyUtxoAddress: (
+    accountIndex: number,
+    currency: string,
+    slip44: number
+  ) => Promise<string | undefined>;
   setWeb3Provider: (network: INetwork) => void;
   getRecommendedGasPrice: (formatted?: boolean) => Promise<
     | string

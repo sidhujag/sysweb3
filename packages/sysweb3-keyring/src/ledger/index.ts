@@ -4,7 +4,11 @@
 import Transport from '@ledgerhq/hw-transport';
 import SysUtxoClient, { DefaultWalletPolicy } from './bitcoin_client';
 import type { Psbt } from 'bitcoinjs-lib';
-import { RECEIVING_ADDRESS_INDEX, WILL_NOT_DISPLAY } from './consts';
+import {
+  RECEIVING_ADDRESS_INDEX,
+  DESCRIPTOR,
+  WILL_NOT_DISPLAY,
+} from './consts';
 import { getNetworkConfig } from '@sidhujag/sysweb3-network';
 import BIP32Factory from 'bip32';
 import ecc from '@bitcoinerlab/secp256k1';
@@ -132,7 +136,7 @@ export class LedgerKeyring {
       );
       const walletPolicy = new DefaultWalletPolicy(
         // Ensure policy template matches BIP84 single-sig wpkh
-        'wpkh(@0/**)',
+        DESCRIPTOR,
         xpubWithDescriptor
       );
 

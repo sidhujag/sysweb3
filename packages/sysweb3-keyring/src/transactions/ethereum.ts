@@ -210,6 +210,35 @@ export class EthereumTransactions implements IEthereumTransactions {
     }
   };
 
+  // Verify a UTXO address on the connected hardware wallet (Ledger or Trezor)
+  // Routes to the appropriate device based on activeAccountType
+  verifyUtxoAddress = async (
+    accountIndex: number,
+    currency: string,
+    slip44: number
+  ): Promise<string | undefined> => {
+    const { activeAccountType } = this.getState();
+
+    switch (activeAccountType) {
+      case KeyringAccountType.Ledger:
+        return await this.ledgerSigner.verifyUtxoAddress(
+          accountIndex,
+          currency,
+          slip44
+        );
+      case KeyringAccountType.Trezor:
+        return await this.trezorSigner.verifyUtxoAddress(
+          accountIndex,
+          currency,
+          slip44
+        );
+      default:
+        throw new Error(
+          'verifyUtxoAddress is only available for hardware wallet accounts'
+        );
+    }
+  };
+
   verifyTypedSignature = (
     data: TypedDataV1 | TypedMessage<any>,
     signature: string,

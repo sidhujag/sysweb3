@@ -7,6 +7,7 @@ import * as syscoinjs from 'syscoinjs-lib';
 import { LedgerKeyring } from '../ledger';
 import { DefaultWalletPolicy } from '../ledger/bitcoin_client';
 import { PsbtV2 } from '../ledger/bitcoin_client/lib/psbtv2';
+import { DESCRIPTOR } from '../ledger/consts';
 import { SyscoinHDSigner } from '../signers';
 import { TrezorKeyring } from '../trezor';
 import {
@@ -340,7 +341,7 @@ export class SyscoinTransactions implements ISyscoinTransactions {
         fingerprint
       );
       const walletPolicy = new DefaultWalletPolicy(
-        'wpkh(@0/**)',
+        DESCRIPTOR,
         xpubWithDescriptor
       );
 

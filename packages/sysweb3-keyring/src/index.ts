@@ -1,5 +1,4 @@
 export * from './transactions';
-export * from './trezor';
 export * from './types';
 export * from './storage';
 export * from './signers';
