@@ -320,18 +320,10 @@ export class SyscoinTransactions implements ISyscoinTransactions {
         accountId
       );
 
-      // Convert stored/display zpub/vpub to device-friendly xpub/tpub for policy descriptor using network macros
-      const { types: deviceTypes } = getNetworkConfig(
-        activeNetwork.slip44,
-        activeNetwork.currency
-      );
-      const devicePubMagicDec =
-        activeNetwork.slip44 === 1
-          ? (deviceTypes.xPubType as any).testnet.vpub
-          : deviceTypes.xPubType.mainnet.zpub;
-      const devicePubMagicHex = Number(devicePubMagicDec)
-        .toString(16)
-        .padStart(8, '0');
+      // Normalize stored zpub/vpub back to device-friendly xpub/tpub for policy descriptor
+      // Ledger expects standard Bitcoin versions in descriptor; address type is in the policy template
+      const devicePubMagicHex =
+        activeNetwork.slip44 === 1 ? '043587cf' : '0488b21e';
       const deviceXpub = convertExtendedKeyVersion(
         accountXpub,
         devicePubMagicHex

@@ -1802,7 +1802,15 @@ export class KeyringManager implements IKeyringManager {
         coin,
         slip44,
       });
-      xpub = ledgerXpub;
+
+      // Convert device-returned extended key to BIP84 zpub/vpub for storage/backend usage
+      const { types } = getNetworkConfig(slip44, coin);
+      const bip84Target =
+        slip44 === 1
+          ? (types.zPubType as any).testnet.vpub
+          : types.zPubType.mainnet.zpub;
+      xpub = convertExtendedKeyVersion(ledgerXpub, bip84Target);
+
       // Always use first receive address (index 0) for imported account display
       address = await this.getAddress(xpub, false, { forceIndex0: true });
     }

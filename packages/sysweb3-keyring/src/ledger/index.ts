@@ -25,7 +25,6 @@ import {
   getAccountDerivationPath,
   getAddressDerivationPath,
   isEvmCoin,
-  convertExtendedKeyVersion,
 } from '../utils/derivation-paths';
 
 import {
@@ -120,17 +119,8 @@ export class LedgerKeyring {
       const xpub = await this.getXpub({ index, coin, slip44 });
       this.setHdPath(coin, index, slip44);
 
-      // Convert stored/display zpub/vpub to device-friendly xpub/tpub for policy registration using network macros
-      const { types: deviceTypes } = getNetworkConfig(slip44, coin);
-      const devicePubMagicDec =
-        slip44 === 1
-          ? (deviceTypes.xPubType as any).testnet.vpub
-          : deviceTypes.xPubType.mainnet.zpub;
-      const devicePubMagicHex = Number(devicePubMagicDec)
-        .toString(16)
-        .padStart(8, '0');
-      const deviceXpub = convertExtendedKeyVersion(xpub, devicePubMagicHex);
-      const xpubWithDescriptor = `[${this.hdPath}]${deviceXpub}`.replace(
+      // xpub/tpub already comes from device; no conversion needed here
+      const xpubWithDescriptor = `[${this.hdPath}]${xpub}`.replace(
         'm',
         fingerprint
       );
@@ -179,31 +169,18 @@ export class LedgerKeyring {
       this.setHdPath(coin, index, slip44);
 
       {
-        // Syscoin and general UTXO flow: try silent first, then fall back to on-device display for unusual paths
+        // Try silent first, then fall back to on-device display for unusual paths
         try {
-          const xpub = await this.ledgerUtxoClient.getExtendedPubkey(
+          return await this.ledgerUtxoClient.getExtendedPubkey(
             this.hdPath,
             WILL_NOT_DISPLAY
           );
-          // Normalize to BIP84 prefix for Blockbook using network-config magic bytes
-          const { types } = getNetworkConfig(slip44, coin);
-          const target =
-            slip44 === 1
-              ? (types.zPubType as any).testnet.vpub
-              : types.zPubType.mainnet.zpub;
-          return convertExtendedKeyVersion(xpub, target);
         } catch (err) {
           // Retry with display=true to allow unusual paths with user approval
-          const xpubWithDisplay = await this.ledgerUtxoClient.getExtendedPubkey(
+          return await this.ledgerUtxoClient.getExtendedPubkey(
             this.hdPath,
             true
           );
-          const { types } = getNetworkConfig(slip44, coin);
-          const target =
-            slip44 === 1
-              ? (types.zPubType as any).testnet.vpub
-              : types.zPubType.mainnet.zpub;
-          return convertExtendedKeyVersion(xpubWithDisplay, target);
         }
       }
     }, 'getXpub');
