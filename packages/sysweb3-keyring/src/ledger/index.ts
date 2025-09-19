@@ -2,7 +2,7 @@
 /* eslint-disable import/no-named-as-default */
 /* eslint-disable import/order */
 import Transport from '@ledgerhq/hw-transport';
-import SysUtxoClient, { DefaultWalletPolicy } from './bitcoin_client';
+import SysUtxoClient, { WalletPolicy } from './bitcoin_client';
 import type { Psbt } from 'bitcoinjs-lib';
 import {
   RECEIVING_ADDRESS_INDEX,
@@ -124,12 +124,7 @@ export class LedgerKeyring {
         'm',
         fingerprint
       );
-      const walletPolicy = new DefaultWalletPolicy(
-        // Ensure policy template matches BIP84 single-sig wpkh
-        DESCRIPTOR,
-        xpubWithDescriptor
-      );
-
+      const walletPolicy = new WalletPolicy(coin, DESCRIPTOR, [xpubWithDescriptor])
       const hmac = await this.getOrRegisterHmac(walletPolicy, fingerprint);
 
       const address = await this.ledgerUtxoClient.getWalletAddress(

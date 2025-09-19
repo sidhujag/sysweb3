@@ -5,7 +5,7 @@ import * as syscoinjs from 'syscoinjs-lib';
 // import { BIP_84, ONE_HUNDRED_MILLION, SYSCOIN_BASIC_FEE } from 'utils';
 
 import { LedgerKeyring } from '../ledger';
-import { DefaultWalletPolicy } from '../ledger/bitcoin_client';
+import { WalletPolicy } from '../ledger/bitcoin_client';
 import { PsbtV2 } from '../ledger/bitcoin_client/lib/psbtv2';
 import { DESCRIPTOR } from '../ledger/consts';
 import { SyscoinHDSigner } from '../signers';
@@ -332,10 +332,7 @@ export class SyscoinTransactions implements ISyscoinTransactions {
         'm',
         fingerprint
       );
-      const walletPolicy = new DefaultWalletPolicy(
-        DESCRIPTOR,
-        xpubWithDescriptor
-      );
+      const walletPolicy = new WalletPolicy(activeNetwork.currency.toLowerCase(), DESCRIPTOR as any, [xpubWithDescriptor])
 
       // Register lazily and retrieve HMAC for silent operations thereafter
       let hmac: Buffer | null = null;
