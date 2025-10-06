@@ -64,6 +64,16 @@ export class EthereumTransactions implements IEthereumTransactions {
     decryptedPrivateKey: string;
   };
 
+  // Allow manual override of gas parameters when automatic estimation fails
+  private gasOverrides: {
+    minGasLimit?: BigNumber;
+    minPriorityFee?: BigNumber;
+    feeMultiplier?: number;
+  } = {};
+
+  // zkSync specific settings
+  private isZkSyncNetwork: boolean = false;
+
   private getState: () => {
     accounts: {
       HDAccount: accountType;
@@ -143,6 +153,20 @@ export class EthereumTransactions implements IEthereumTransactions {
     const hasUtxoKind = (network as any).kind === INetworkType.Syscoin;
 
     return hasBlockbookUrl || hasUtxoKind;
+  }
+
+  // Helper method to detect zkSync networks
+  private detectZkSyncNetwork(network: INetwork): boolean {
+    // zkSync detection patterns:
+    // 1. Chain ID 324 for zkSync Era mainnet, 280 for zkSync Era testnet, 300 for zkSync Era Sepolia
+    // 2. URL contains 'zksync'
+    // 3. Network name contains 'zkSync'
+    const zkSyncChainIds = [324, 280, 300];
+    const isZkSyncChainId = zkSyncChainIds.includes(network.chainId);
+    const hasZkSyncUrl = network.url?.toLowerCase().includes('zksync');
+    const hasZkSyncName = network.label?.toLowerCase().includes('zksync');
+
+    return isZkSyncChainId || hasZkSyncUrl || hasZkSyncName;
   }
 
   signTypedData = async (
@@ -568,24 +592,129 @@ export class EthereumTransactions implements IEthereumTransactions {
     let maxFeePerGas = this.toBigNumber(0);
     let maxPriorityFeePerGas = this.toBigNumber(0);
 
+    // Special handling for zkSync networks
+    if (this.isZkSyncNetwork) {
+      try {
+        // zkSync uses a different fee model
+        const gasPrice = await this.web3Provider.getGasPrice();
+        // zkSync recommends using gasPrice for both maxFeePerGas and maxPriorityFeePerGas
+        // with maxPriorityFeePerGas being a small portion (operator tip)
+        maxPriorityFeePerGas = gasPrice.div(100); // 1% as operator tip
+        maxFeePerGas = gasPrice.mul(120).div(100); // 20% buffer on gas price
+
+        console.log('[zkSync] Fee data:', {
+          maxFeePerGas: maxFeePerGas.toString(),
+          maxPriorityFeePerGas: maxPriorityFeePerGas.toString()
+        });
+
+        return { maxFeePerGas, maxPriorityFeePerGas };
+      } catch (error) {
+        console.error('zkSync fee estimation failed:', error);
+        // Fallback for zkSync
+        return {
+          maxFeePerGas: BigNumber.from('250000000'), // 0.25 gwei
+          maxPriorityFeePerGas: BigNumber.from('2500000') // 0.0025 gwei
+        };
+      }
+    }
+
     try {
+      // First, try to get the current gas price as a baseline
+      const currentGasPrice = await this.web3Provider.getGasPrice();
+
       const block = await this.web3Provider.getBlock('latest');
       if (block && block.baseFeePerGas) {
         try {
+          // Some networks don't support this RPC method
           const ethMaxPriorityFee = await this.web3Provider.send(
             'eth_maxPriorityFeePerGas',
             []
           );
           maxPriorityFeePerGas = BigNumber.from(ethMaxPriorityFee);
-          maxFeePerGas = block.baseFeePerGas.mul(2).add(maxPriorityFeePerGas);
+
+          // Apply minimum priority fee override if set
+          if (this.gasOverrides.minPriorityFee && maxPriorityFeePerGas.lt(this.gasOverrides.minPriorityFee)) {
+            maxPriorityFeePerGas = this.gasOverrides.minPriorityFee;
+          }
+
+          if(maxPriorityFeePerGas.isZero()){
+            throw new Error('Max priority fee is zero');
+          }
+
+          // For networks with validation issues, use current gas price as baseline
+          // This ensures we're not setting fees that the network will reject
+          const baselineMaxFee = currentGasPrice.mul(120).div(100); // 20% above current gas price
+
+          // Calculate standard maxFeePerGas
+          const multiplier = this.gasOverrides.feeMultiplier || 250;
+          const calculatedMaxFee = block.baseFeePerGas.mul(multiplier).div(100).add(maxPriorityFeePerGas);
+
+          // Use the higher of the two to ensure transaction goes through
+          maxFeePerGas = calculatedMaxFee.gt(baselineMaxFee) ? calculatedMaxFee : baselineMaxFee;
         } catch (e) {
-          maxPriorityFeePerGas = BigNumber.from('1500000000');
-          maxFeePerGas = block.baseFeePerGas.mul(2).add(maxPriorityFeePerGas);
+          // Use a more aggressive fallback strategy with higher priority fees
+          // Check if we can get fee history for better estimation
+          try {
+            const feeHistory = await this.web3Provider.send('eth_feeHistory', [
+              '0x5', // Last 5 blocks
+              'latest',
+              [25, 50, 75] // Percentiles for priority fees
+            ]);
+
+            if (feeHistory && feeHistory.reward && feeHistory.reward.length > 0) {
+              // Use median of the 50th percentile from recent blocks
+              const recentFees = feeHistory.reward
+                .map((r: any[]) => r[1]) // Get 50th percentile
+                .filter((f: any) => f && f !== '0x0')
+                .map((f: any) => BigNumber.from(f));
+
+              if (recentFees.length > 0) {
+                // Use the median value with a 50% buffer for better reliability
+                const sortedFees = recentFees.sort((a, b) =>
+                  a.sub(b).isNegative() ? -1 : 1
+                );
+                const medianFee = sortedFees[Math.floor(sortedFees.length / 2)];
+                maxPriorityFeePerGas = medianFee.mul(150).div(100); // Add 50% buffer
+              } else {
+                // Fallback with higher default (5 gwei for better validation)
+                maxPriorityFeePerGas = BigNumber.from('5000000000');
+              }
+            } else {
+              // Fallback with higher default (5 gwei for better validation)
+              maxPriorityFeePerGas = BigNumber.from('5000000000');
+            }
+          } catch (feeHistoryError) {
+            // If fee history fails, use current gas price as reference
+            console.warn('Fee history not available, using gas price based estimation');
+            // Use 10% of current gas price as priority fee
+            const currentGasPrice = await this.web3Provider.getGasPrice();
+            maxPriorityFeePerGas = currentGasPrice.mul(10).div(100);
+
+            // Ensure minimum of 1 gwei
+            const minPriority = BigNumber.from('1000000000');
+            if (maxPriorityFeePerGas.lt(minPriority)) {
+              maxPriorityFeePerGas = minPriority;
+            }
+          }
+
+          // Calculate maxFeePerGas based on current network conditions
+          const currentGasPrice = await this.web3Provider.getGasPrice();
+          const baselineMaxFee = currentGasPrice.mul(120).div(100);
+          const calculatedMaxFee = block.baseFeePerGas.mul(250).div(100).add(maxPriorityFeePerGas);
+          maxFeePerGas = calculatedMaxFee.gt(baselineMaxFee) ? calculatedMaxFee : baselineMaxFee;
         }
+
+        // Ensure maxFeePerGas is at least 20% higher than maxPriorityFeePerGas
+        const minMaxFee = maxPriorityFeePerGas.mul(120).div(100);
+        if (maxFeePerGas.lt(minMaxFee)) {
+          maxFeePerGas = minMaxFee;
+        }
+
         return { maxFeePerGas, maxPriorityFeePerGas };
       } else if (block && !block.baseFeePerGas) {
-        console.error('Chain doesnt support EIP1559');
-        return { maxFeePerGas, maxPriorityFeePerGas };
+        // For non-EIP1559 chains, return zeros to indicate legacy transaction should be used
+        console.log('Chain does not support EIP1559, use legacy transactions');
+        return { maxFeePerGas: BigNumber.from(0), maxPriorityFeePerGas: BigNumber.from(0) };
       } else if (!block) throw new Error('Block not found');
 
       return { maxFeePerGas, maxPriorityFeePerGas };
@@ -963,6 +1092,73 @@ export class EthereumTransactions implements IEthereumTransactions {
     const { activeAccountType, activeAccountId, accounts, activeNetwork } =
       this.getState();
     const activeAccount = accounts[activeAccountType][activeAccountId];
+
+    // zkSync specific handling
+    if (this.isZkSyncNetwork) {
+      // zkSync uses EIP-712 transactions but we can still use EIP-1559 format
+      // Ensure proper gas configuration for zkSync
+      if (!params.gasLimit || BigNumber.from(params.gasLimit).lt(BigNumber.from('500000'))) {
+        // zkSync typically needs higher gas limits
+        params.gasLimit = BigNumber.from('1000000'); // 1M gas default for zkSync
+        console.log('[zkSync] Setting gas limit to 1M');
+      }
+
+      // Ensure we're using EIP-1559 for zkSync (not legacy)
+      if (isLegacy || params.gasPrice) {
+        console.log('[zkSync] Converting to EIP-1559 format');
+        isLegacy = false;
+
+        // Convert legacy to EIP-1559 for zkSync
+        const gasPrice = params.gasPrice ? BigNumber.from(params.gasPrice) : await this.web3Provider.getGasPrice();
+        params.maxFeePerGas = gasPrice.mul(120).div(100); // 20% buffer
+        params.maxPriorityFeePerGas = gasPrice.div(100); // 1% operator tip for zkSync
+        delete params.gasPrice;
+      }
+
+      // Ensure proper fee structure for zkSync
+      if (params.maxFeePerGas && params.maxPriorityFeePerGas) {
+        const maxFee = BigNumber.from(params.maxFeePerGas);
+        const priorityFee = BigNumber.from(params.maxPriorityFeePerGas);
+
+        // zkSync requires maxPriorityFeePerGas to be much lower than maxFeePerGas
+        // Typically 1% or less of the maxFeePerGas
+        if (priorityFee.gt(maxFee.div(50))) {
+          params.maxPriorityFeePerGas = maxFee.div(100); // Set to 1% of maxFeePerGas
+          console.log('[zkSync] Adjusted priority fee to 1% of max fee');
+        }
+      }
+    }
+
+    // Check if we should force legacy transactions for non-zkSync networks
+    // Some networks have issues with EIP-1559 validation
+    if (!this.isZkSyncNetwork && !isLegacy && params.maxFeePerGas && params.maxPriorityFeePerGas) {
+      const maxFee = BigNumber.from(params.maxFeePerGas);
+      const priorityFee = BigNumber.from(params.maxPriorityFeePerGas);
+
+      // If fees are zero or network doesn't support EIP-1559, use legacy
+      if (maxFee.isZero() || priorityFee.isZero()) {
+        console.log('Switching to legacy transaction due to zero fees');
+        isLegacy = true;
+
+        // Convert to legacy by using gasPrice
+        const gasPrice = await this.web3Provider.getGasPrice();
+        params.gasPrice = gasPrice.mul(110).div(100); // 10% buffer
+        // @ts-ignore
+        delete params.maxFeePerGas;
+
+        // @ts-ignore
+        delete params.maxPriorityFeePerGas;
+      }
+    }
+
+    // Ensure minimum gas limit for validation
+    if (params.gasLimit) {
+      const minGasLimit = this.gasOverrides.minGasLimit || BigNumber.from('65000');
+      const currentGasLimit = BigNumber.from(params.gasLimit);
+      if (currentGasLimit.lt(minGasLimit)) {
+        params.gasLimit = minGasLimit;
+      }
+    }
 
     const sendEVMLedgerTransaction = async () => {
       const transactionNonce = await this.getRecommendedNonce(
@@ -2434,10 +2630,77 @@ export class EthereumTransactions implements IEthereumTransactions {
   };
 
   getTxGasLimit = async (tx: SimpleTransactionRequest) => {
+    // Special handling for zkSync
+    if (this.isZkSyncNetwork) {
+      try {
+        // zkSync requires special gas estimation
+        // Use zks_estimateFee for more accurate estimation
+        try {
+          const zkEstimate = await this.web3Provider.send('zks_estimateFee', [{
+            from: tx.from,
+            to: tx.to,
+            data: tx.data || '0x',
+            value: tx.value ? `0x${BigNumber.from(tx.value).toHexString().slice(2)}` : '0x0'
+          }]);
+
+          if (zkEstimate && zkEstimate.gas_limit) {
+            const gasLimit = BigNumber.from(zkEstimate.gas_limit);
+            // Add 50% buffer for zkSync validation
+            const withBuffer = gasLimit.mul(150).div(100);
+            console.log('[zkSync] Gas limit estimated:', withBuffer.toString());
+            return withBuffer;
+          }
+        } catch (zkError) {
+          console.log('zks_estimateFee not available, using standard estimation');
+        }
+
+        // Fallback to standard estimation with higher buffer for zkSync
+        const estimated = await this.web3Provider.estimateGas(tx);
+        // zkSync needs more buffer for validation
+        const withBuffer = estimated.mul(200).div(100); // 100% buffer
+        console.log('[zkSync] Standard gas limit with buffer:', withBuffer.toString());
+        return withBuffer;
+      } catch (error) {
+        console.warn('zkSync gas estimation failed, using high default');
+        // zkSync typically needs more gas
+        return BigNumber.from('1000000'); // 1M gas for zkSync
+      }
+    }
+
     try {
-      return this.web3Provider.estimateGas(tx);
+      // First attempt: standard estimation
+      const estimated = await this.web3Provider.estimateGas(tx);
+
+      // Apply override if set
+      if (this.gasOverrides.minGasLimit && estimated.lt(this.gasOverrides.minGasLimit)) {
+        return this.gasOverrides.minGasLimit;
+      }
+
+      // Add 20% buffer to the estimated gas
+      const withBuffer = estimated.mul(120).div(100);
+
+      // Ensure minimum of 65k for validation
+      const minGas = BigNumber.from('65000');
+      return withBuffer.gt(minGas) ? withBuffer : minGas;
     } catch (error) {
-      throw error;
+      console.warn('Gas estimation failed:', error);
+
+      // Try a simpler estimation for basic transfers
+      try {
+        const simpleEstimate = await this.web3Provider.estimateGas({
+          to: tx.to,
+          from: tx.from,
+          value: tx.value || '0x0'
+        });
+
+        const withBuffer = simpleEstimate.mul(150).div(100); // 50% buffer for failed estimations
+        const minGas = this.gasOverrides.minGasLimit || BigNumber.from('100000');
+        return withBuffer.gt(minGas) ? withBuffer : minGas;
+      } catch (secondError) {
+        // Ultimate fallback
+        console.warn('Simple estimation also failed, using default', secondError);
+        return this.gasOverrides.minGasLimit || BigNumber.from('100000');
+      }
     }
   };
 
@@ -2486,6 +2749,12 @@ export class EthereumTransactions implements IEthereumTransactions {
     this.abortController.abort();
     this.abortController = new AbortController();
 
+    // Detect if this is a zkSync network
+    this.isZkSyncNetwork = this.detectZkSyncNetwork(network);
+    if (this.isZkSyncNetwork) {
+      console.log('[EthereumTransactions] Detected zkSync network, using zkSync-specific handling');
+    }
+
     // Check if network is a UTXO network to avoid creating web3 providers for blockbook URLs
     const isUtxoNetwork = this.isUtxoNetwork(network);
 
@@ -2516,4 +2785,69 @@ export class EthereumTransactions implements IEthereumTransactions {
 
     return account;
   };
+
+  // Method to configure gas overrides for networks with validation issues
+  public setGasOverrides(overrides: {
+    minGasLimit?: string | BigNumber;
+    minPriorityFee?: string | BigNumber;
+    feeMultiplier?: number;
+  }) {
+    this.gasOverrides = {
+      minGasLimit: overrides.minGasLimit ? BigNumber.from(overrides.minGasLimit) : undefined,
+      minPriorityFee: overrides.minPriorityFee ? BigNumber.from(overrides.minPriorityFee) : undefined,
+      feeMultiplier: overrides.feeMultiplier
+    };
+  }
+
+  // Get the current gas overrides
+  public getGasOverrides() {
+    return this.gasOverrides;
+  }
+
+  // Method to get safe fee data that works around network-specific validation issues
+  public getSafeFeeData = async (forceLegacy: boolean = false) => {
+    if (forceLegacy) {
+      // For legacy transactions, just return gas price
+      const gasPrice = await this.web3Provider.getGasPrice();
+      const bufferedGasPrice = gasPrice.mul(110).div(100); // 10% buffer
+      return {
+        gasPrice: bufferedGasPrice,
+        maxFeePerGas: undefined,
+        maxPriorityFeePerGas: undefined
+      };
+    }
+
+    try {
+      // Try EIP-1559 fees first
+      const feeData = await this.getFeeDataWithDynamicMaxPriorityFeePerGas();
+
+      // If fees are zero or too low, fallback to legacy
+      if (!feeData.maxFeePerGas || feeData.maxFeePerGas.isZero() ||
+          !feeData.maxPriorityFeePerGas || feeData.maxPriorityFeePerGas.isZero()) {
+        console.log('EIP-1559 fees invalid, falling back to legacy gas price');
+        const gasPrice = await this.web3Provider.getGasPrice();
+        const bufferedGasPrice = gasPrice.mul(110).div(100);
+        return {
+          gasPrice: bufferedGasPrice,
+          maxFeePerGas: undefined,
+          maxPriorityFeePerGas: undefined
+        };
+      }
+
+      return {
+        gasPrice: undefined,
+        maxFeePerGas: feeData.maxFeePerGas,
+        maxPriorityFeePerGas: feeData.maxPriorityFeePerGas
+      };
+    } catch (error) {
+      console.warn('Failed to get EIP-1559 fees, using legacy:', error);
+      const gasPrice = await this.web3Provider.getGasPrice();
+      const bufferedGasPrice = gasPrice.mul(110).div(100);
+      return {
+        gasPrice: bufferedGasPrice,
+        maxFeePerGas: undefined,
+        maxPriorityFeePerGas: undefined
+      };
+    }
+  }
 }
