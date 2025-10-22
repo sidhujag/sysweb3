@@ -44,8 +44,14 @@ export class LedgerKeyring {
   // In-memory cache of registered wallet policy HMACs
   private walletHmacCache: Map<string, Buffer> = new Map();
 
-  constructor() {
-    this.hardwareWalletManager = new HardwareWalletManager();
+  /**
+   * @param sharedHardwareWalletManager Optional shared HardwareWalletManager instance.
+   *                                     If provided, this will be used instead of creating
+   *                                     a new instance. This allows multiple KeyringManagers
+   *                                     to share the same Ledger connection.
+   */
+  constructor(sharedHardwareWalletManager?: HardwareWalletManager) {
+    this.hardwareWalletManager = sharedHardwareWalletManager || new HardwareWalletManager();
 
     // Set up event listeners
     this.hardwareWalletManager.on('connected', ({ type }) => {

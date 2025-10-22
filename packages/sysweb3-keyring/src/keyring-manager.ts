@@ -32,6 +32,8 @@ import { getSyscoinSigners, SyscoinHDSigner } from './signers';
 import { getDecryptedVault, setEncryptedVault } from './storage';
 import { EthereumTransactions, SyscoinTransactions } from './transactions';
 import { TrezorKeyring } from './trezor';
+import { HardwareWalletManagerSingleton } from './hardware-wallet-manager-singleton';
+import { HardwareWalletManager } from './hardware-wallet-manager';
 import {
   IKeyringAccountState,
   ISyscoinTransactions,
@@ -161,7 +163,13 @@ export class KeyringManager implements IKeyringManager {
   private sessionPassword: SecureBuffer | null = null;
   private sessionMnemonic: SecureBuffer | null = null; // can be a mnemonic or a zprv, can be changed to a zprv when using an imported wallet
 
-  constructor() {
+  /**
+   * @param sharedHardwareWalletManager Optional shared HardwareWalletManager instance.
+   *                                     If not provided, the singleton instance will be used.
+   *                                     This allows multiple KeyringManagers to share the same
+   *                                     hardware wallet connections, preventing "device already open" errors.
+   */
+  constructor(sharedHardwareWalletManager?: HardwareWalletManager) {
     this.storage = sysweb3.sysweb3Di.getStateStorageDb();
     // Don't initialize secure buffers in constructor - they're created on unlock
     this.storage.set('utf8Error', {
@@ -175,8 +183,12 @@ export class KeyringManager implements IKeyringManager {
     // sessionMnemonic is initialized as null - created on unlock
     this.initialTrezorAccountState = initialActiveTrezorAccountState;
     this.initialLedgerAccountState = initialActiveLedgerAccountState;
+
+    // Use provided shared manager or get singleton instance
+    const hardwareManager = sharedHardwareWalletManager || HardwareWalletManagerSingleton.getInstance();
+
     this.trezorSigner = new TrezorKeyring();
-    this.ledgerSigner = new LedgerKeyring();
+    this.ledgerSigner = new LedgerKeyring(hardwareManager);
 
     // this.syscoinTransaction = SyscoinTransactions();
     this.syscoinTransaction = new SyscoinTransactions(
