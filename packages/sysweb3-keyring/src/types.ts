@@ -185,6 +185,7 @@ export interface IKeyringManager {
   ) => Promise<{
     canLogin: boolean;
     needsAccountCreation?: boolean;
+    needsXprvMigration?: boolean;
   }>;
   isUnlocked: () => boolean;
   logout: () => void;
@@ -250,6 +251,11 @@ export interface IKeyringManager {
   lockWallet: () => Promise<void>;
   // NEW: Store access for stateless keyring
   setVaultStateGetter: (getter: () => any) => void;
+  // Migration helpers for PBKDF2 encryption upgrade
+  isInMigrationState: () => boolean;
+  decryptXprvWithFallback: (encryptedXprv: string) => string;
+  migrateXprv: (encryptedXprv: string) => string;
+  clearLegacySession: () => void;
 }
 
 export enum KeyringAccountType {
