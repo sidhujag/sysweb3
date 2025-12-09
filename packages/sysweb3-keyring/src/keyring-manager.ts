@@ -126,7 +126,7 @@ export class KeyringManager implements IKeyringManager {
   private getVault = () => {
     if (!this.getVaultState) {
       throw new Error(
-        'Vault state getter not configured. Call setVaultStateGetter() first.'
+        'Vault state getter not configured. Call setVaultStateGetter() first.',
       );
     }
 
@@ -135,19 +135,19 @@ export class KeyringManager implements IKeyringManager {
     // DEFENSIVE CHECK: Ensure vault state is properly structured
     if (!vault) {
       throw new Error(
-        'Vault state is undefined. Ensure Redux store is properly initialized with vault state.'
+        'Vault state is undefined. Ensure Redux store is properly initialized with vault state.',
       );
     }
 
     if (!vault.activeNetwork) {
       throw new Error(
-        'Vault state is missing activeNetwork. Ensure vault state is properly initialized before keyring operations.'
+        'Vault state is missing activeNetwork. Ensure vault state is properly initialized before keyring operations.',
       );
     }
 
     if (!vault.activeAccount) {
       throw new Error(
-        'Vault state is missing activeAccount. Ensure vault state is properly initialized before keyring operations.'
+        'Vault state is missing activeAccount. Ensure vault state is properly initialized before keyring operations.',
       );
     }
 
@@ -201,14 +201,14 @@ export class KeyringManager implements IKeyringManager {
       this.getAccountsState,
       this.getAddress,
       this.ledgerSigner,
-      this.trezorSigner
+      this.trezorSigner,
     );
     this.ethereumTransaction = new EthereumTransactions(
       this.getNetwork,
       this.getDecryptedPrivateKey,
       this.getAccountsState,
       this.ledgerSigner,
-      this.trezorSigner
+      this.trezorSigner,
     );
   }
 
@@ -216,7 +216,7 @@ export class KeyringManager implements IKeyringManager {
   public static async createInitialized(
     seed: string,
     password: string,
-    vaultStateGetter: () => any
+    vaultStateGetter: () => any,
   ): Promise<KeyringManager> {
     const keyringManager = new KeyringManager();
 
@@ -236,7 +236,7 @@ export class KeyringManager implements IKeyringManager {
   public async initialize(
     seed: string,
     password: string,
-    network?: INetwork
+    network?: INetwork,
   ): Promise<IKeyringAccountState> {
     // Set the network if provided (this is crucial for proper address derivation)
     if (network) {
@@ -322,7 +322,7 @@ export class KeyringManager implements IKeyringManager {
 
     targetKeyringImpl.receiveSessionOwnership(
       this.sessionPassword,
-      this.sessionMnemonic
+      this.sessionMnemonic,
     );
 
     // Null out our references (do NOT clear buffers - target owns them now)
@@ -333,7 +333,7 @@ export class KeyringManager implements IKeyringManager {
   // Private method for zero-copy transfer - takes ownership of buffers
   public receiveSessionOwnership = (
     sessionPassword: SecureBuffer,
-    sessionMnemonic: SecureBuffer
+    sessionMnemonic: SecureBuffer,
   ): void => {
     // Clear any existing data first
     if (this.sessionPassword) {
@@ -350,7 +350,7 @@ export class KeyringManager implements IKeyringManager {
   };
 
   public addNewAccount = async (
-    label?: string
+    label?: string,
   ): Promise<IKeyringAccountState> => {
     // Check if wallet is unlocked
     if (!this.isUnlocked()) {
@@ -380,11 +380,22 @@ export class KeyringManager implements IKeyringManager {
           canLogin: false,
         };
       }
-      // FIRST: Validate password against stored hash
-      const { hash, salt } = vaultKeys;
-      const saltedHashPassword = this.encryptSHA512(password, salt);
 
-      if (saltedHashPassword !== hash) {
+      const { hash, salt } = vaultKeys;
+      let passwordValid = false;
+
+      // FIRST: Validate password against stored hash based on vault version
+      if (vaultKeys.version >= 3) {
+        // Version 3+: Use PBKDF2-based auth hash (secure)
+        const derivedAuthHash = this.deriveAuthHash(password, salt);
+        passwordValid = derivedAuthHash === hash;
+      } else {
+        // Version 1-2: Use legacy HMAC-SHA512 hash
+        const saltedHashPassword = this.encryptSHA512(password, salt);
+        passwordValid = saltedHashPassword === hash;
+      }
+
+      if (!passwordValid) {
         // Password is wrong - return immediately
         return {
           canLogin: false,
@@ -395,15 +406,15 @@ export class KeyringManager implements IKeyringManager {
       let encryptionKey: string;
       let needsXprvMigration = false;
 
-      if (!vaultKeys.encryptionSalt || vaultKeys.version !== 2) {
+      if (!vaultKeys.encryptionSalt || vaultKeys.version < 2) {
         // Legacy vault format (v1) - needs migration to PBKDF2-based encryption
         console.log(
-          '[KeyringManager] Detected legacy vault format (v1), migrating to PBKDF2-based encryption...'
+          '[KeyringManager] Detected legacy vault format (v1), migrating to v3 (PBKDF2-based encryption + auth)...',
         );
 
         // Store the old hash-based key temporarily for decrypting existing xprv values
-        // This allows the caller to re-encrypt accounts with the new key
-        this.legacySessionPassword = new SecureBuffer(saltedHashPassword);
+        const oldHashKey = this.encryptSHA512(password, salt);
+        this.legacySessionPassword = new SecureBuffer(oldHashKey);
 
         // Generate new encryption salt for PBKDF2
         const encryptionSalt = crypto.randomBytes(32).toString('hex');
@@ -411,12 +422,15 @@ export class KeyringManager implements IKeyringManager {
         // Derive new encryption key using PBKDF2 (NEVER stored)
         encryptionKey = this.deriveEncryptionKey(password, encryptionSalt);
 
-        // Update vault-keys with new encryption salt
+        // Derive new auth hash using PBKDF2 (stored for verification)
+        const newAuthHash = this.deriveAuthHash(password, salt);
+
+        // Update vault-keys with new encryption salt and PBKDF2 auth hash
         const updatedVaultKeys = {
-          hash: vaultKeys.hash,
+          hash: newAuthHash, // Replace weak hash with PBKDF2-derived hash
           salt: vaultKeys.salt,
           encryptionSalt,
-          version: 2,
+          version: 3, // v3 = PBKDF2-based encryption AND auth hash
         };
         await this.storage.set('vault-keys', updatedVaultKeys);
 
@@ -424,27 +438,54 @@ export class KeyringManager implements IKeyringManager {
         needsXprvMigration = true;
 
         console.log(
-          '[KeyringManager] Vault migrated to v2 (PBKDF2-based encryption)'
+          '[KeyringManager] Vault migrated to v3 (PBKDF2-based encryption + auth hash)',
         );
-      } else {
-        // New vault format (v2) - derive encryption key from existing salt
+      } else if (vaultKeys.version === 2) {
+        // Version 2: Has PBKDF2 encryption but weak auth hash - upgrade to v3
+        console.log(
+          '[KeyringManager] Detected v2 vault format, upgrading auth hash to PBKDF2...',
+        );
+
+        // Derive encryption key from existing salt
         encryptionKey = this.deriveEncryptionKey(
           password,
-          vaultKeys.encryptionSalt
+          vaultKeys.encryptionSalt,
+        );
+
+        // Derive new auth hash using PBKDF2
+        const newAuthHash = this.deriveAuthHash(password, salt);
+
+        // Update vault-keys with new PBKDF2 auth hash
+        const updatedVaultKeys = {
+          hash: newAuthHash, // Replace weak hash with PBKDF2-derived hash
+          salt: vaultKeys.salt,
+          encryptionSalt: vaultKeys.encryptionSalt,
+          version: 3, // v3 = PBKDF2-based auth hash
+        };
+        await this.storage.set('vault-keys', updatedVaultKeys);
+
+        console.log(
+          '[KeyringManager] Vault upgraded to v3 (PBKDF2-based auth hash)',
+        );
+      } else {
+        // Version 3+: Already using PBKDF2 for both encryption and auth
+        encryptionKey = this.deriveEncryptionKey(
+          password,
+          vaultKeys.encryptionSalt,
         );
       }
 
       // Handle migration from old vault format with currentSessionSalt
       if (vaultKeys.currentSessionSalt) {
         console.log(
-          '[KeyringManager] Detected old vault format, handling session migration...'
+          '[KeyringManager] Detected old vault format, handling session migration...',
         );
 
         // The old format used currentSessionSalt for session data encryption
         // We need to use it temporarily to decrypt the mnemonic correctly
         const oldSessionPassword = this.encryptSHA512(
           password,
-          vaultKeys.currentSessionSalt
+          vaultKeys.currentSessionSalt,
         );
 
         // Get the vault and check if mnemonic needs migration
@@ -463,17 +504,17 @@ export class KeyringManager implements IKeyringManager {
               // Try to decrypt with raw password first (as vault stores it)
               decryptedMnemonic = CryptoJS.AES.decrypt(
                 mnemonic,
-                password
+                password,
               ).toString(CryptoJS.enc.Utf8);
             } catch (e) {
               console.warn(
-                '[KeyringManager] Failed to decrypt mnemonic with password, trying old session password'
+                '[KeyringManager] Failed to decrypt mnemonic with password, trying old session password',
               );
               // If that fails, try with old session password
               try {
                 decryptedMnemonic = CryptoJS.AES.decrypt(
                   mnemonic,
-                  oldSessionPassword
+                  oldSessionPassword,
                 ).toString(CryptoJS.enc.Utf8);
               } catch (e2) {
                 // If both fail, assume it's already decrypted
@@ -515,7 +556,7 @@ export class KeyringManager implements IKeyringManager {
 
         if (!accountExists) {
           console.log(
-            `[KeyringManager] Active account ${accountType}:${accountId} not found in accounts map. This may indicate a migration from old vault format.`
+            `[KeyringManager] Active account ${accountType}:${accountId} not found in accounts map. This may indicate a migration from old vault format.`,
           );
           // Signal that accounts need to be created after migration
           return {
@@ -526,7 +567,7 @@ export class KeyringManager implements IKeyringManager {
         }
 
         console.log(
-          `[KeyringManager] Active account ${vault.activeAccount.id} available after unlock`
+          `[KeyringManager] Active account ${vault.activeAccount.id} available after unlock`,
         );
       }
 
@@ -572,7 +613,7 @@ export class KeyringManager implements IKeyringManager {
 
   public getPubkey = async (
     id: number,
-    isChangeAddress: boolean
+    isChangeAddress: boolean,
   ): Promise<string> => {
     const vault = this.getVault();
     const { accounts, activeAccount } = vault;
@@ -584,7 +625,7 @@ export class KeyringManager implements IKeyringManager {
     // Guard: single-address imported are watch-only
     if (isImported && xpub === address) {
       throw new Error(
-        'Public key not available for single-address imported accounts'
+        'Public key not available for single-address imported accounts',
       );
     }
     // Guard: descriptor/xpub watch-only (no xprv and not hardware)
@@ -596,7 +637,7 @@ export class KeyringManager implements IKeyringManager {
 
   public getBip32Path = async (
     id: number,
-    isChangeAddress: boolean
+    isChangeAddress: boolean,
   ): Promise<string> => {
     const vault = this.getVault();
     const { accounts, activeAccount } = vault;
@@ -608,7 +649,7 @@ export class KeyringManager implements IKeyringManager {
     // Guard: single-address imported are watch-only
     if (isImported && xpub === address) {
       throw new Error(
-        'BIP32 path not available for single-address imported accounts'
+        'BIP32 path not available for single-address imported accounts',
       );
     }
     // Guard: descriptor/xpub watch-only (no xprv and not hardware)
@@ -635,7 +676,7 @@ export class KeyringManager implements IKeyringManager {
 
   public getAccountById = (
     id: number,
-    accountType: KeyringAccountType
+    accountType: KeyringAccountType,
   ): Omit<IKeyringAccountState, 'xprv'> => {
     const vault = this.getVault();
     const accounts = vault.accounts[accountType];
@@ -652,7 +693,7 @@ export class KeyringManager implements IKeyringManager {
   public getPrivateKeyByAccountId = async (
     id: number,
     accountType: KeyringAccountType,
-    pwd: string
+    pwd: string,
   ): Promise<string> => {
     try {
       // Validate password using vault salt (same pattern as getSeed)
@@ -666,9 +707,8 @@ export class KeyringManager implements IKeyringManager {
         throw new Error('Vault keys not found');
       }
 
-      // Validate password against stored auth hash
-      const genPwd = this.encryptSHA512(pwd, vaultKeys.salt);
-      if (vaultKeys.hash !== genPwd) {
+      // Validate password against stored auth hash (version-aware)
+      if (!this.validatePassword(pwd, vaultKeys)) {
         throw new Error('Invalid password');
       }
 
@@ -680,12 +720,12 @@ export class KeyringManager implements IKeyringManager {
 
       // Decrypt the stored private key using fallback method for migration support
       const decryptedPrivateKey = this.decryptXprvWithFallback(
-        (account as IKeyringAccountState).xprv
+        (account as IKeyringAccountState).xprv,
       );
 
       if (!decryptedPrivateKey) {
         throw new Error(
-          'Failed to decrypt private key. Invalid password or corrupted data.'
+          'Failed to decrypt private key. Invalid password or corrupted data.',
         );
       }
 
@@ -710,7 +750,7 @@ export class KeyringManager implements IKeyringManager {
     return {
       activeAccount: omit(
         accounts[activeAccountType][activeAccountId] as IKeyringAccountState,
-        'xprv'
+        'xprv',
       ),
       activeAccountType,
     };
@@ -735,7 +775,7 @@ export class KeyringManager implements IKeyringManager {
     return this.withSecureData((sessionPwd) => {
       return CryptoJS.AES.encrypt(
         this.getSysActivePrivateKey(hd),
-        sessionPwd
+        sessionPwd,
       ).toString();
     });
   };
@@ -751,9 +791,8 @@ export class KeyringManager implements IKeyringManager {
       throw new Error('Vault keys not found');
     }
 
-    // Validate password against stored auth hash
-    const genPwd = this.encryptSHA512(pwd, vaultKeys.salt);
-    if (vaultKeys.hash !== genPwd) {
+    // Validate password against stored auth hash (version-aware)
+    if (!this.validatePassword(pwd, vaultKeys)) {
       throw new Error('Invalid password');
     }
     let { mnemonic } = await getDecryptedVault(pwd);
@@ -770,20 +809,20 @@ export class KeyringManager implements IKeyringManager {
     if (!isLikelyPlainMnemonic) {
       try {
         mnemonic = CryptoJS.AES.decrypt(mnemonic, pwd).toString(
-          CryptoJS.enc.Utf8
+          CryptoJS.enc.Utf8,
         );
       } catch (decryptError) {
         // If decryption fails, assume mnemonic is already decrypted
         console.warn(
           'Mnemonic decryption failed in getSeed, using as-is:',
-          decryptError.message
+          decryptError.message,
         );
       }
     }
 
     if (!mnemonic) {
       throw new Error(
-        'Failed to decrypt mnemonic or mnemonic is empty after decryption'
+        'Failed to decrypt mnemonic or mnemonic is empty after decryption',
       );
     }
 
@@ -791,7 +830,7 @@ export class KeyringManager implements IKeyringManager {
   };
 
   public setSignerNetwork = async (
-    network: INetwork
+    network: INetwork,
   ): Promise<{
     activeChain?: INetworkType;
     success: boolean;
@@ -828,8 +867,8 @@ export class KeyringManager implements IKeyringManager {
       if (currentSlip44 !== newSlip44) {
         throw new Error(
           `Cannot switch between different UTXO networks within the same keyring. ` +
-            `Current network uses slip44=${currentSlip44}, target network uses slip44=${newSlip44}. ` +
-            `Each UTXO network requires a separate KeyringManager instance.`
+          `Current network uses slip44=${currentSlip44}, target network uses slip44=${newSlip44}. ` +
+          `Each UTXO network requires a separate KeyringManager instance.`,
         );
       }
     }
@@ -848,7 +887,7 @@ export class KeyringManager implements IKeyringManager {
 
         if (!accounts[accountId] || !accounts[accountId].xpub) {
           throw new Error(
-            `Active account ${accountType}:${accountId} does not exist. Create accounts using addNewAccount() or initializeWalletSecurely() first.`
+            `Active account ${accountType}:${accountId} does not exist. Create accounts using addNewAccount() or initializeWalletSecurely() first.`,
           );
         }
 
@@ -862,7 +901,7 @@ export class KeyringManager implements IKeyringManager {
 
         if (!accounts[accountId] || !accounts[accountId].xpub) {
           throw new Error(
-            `Active account ${accountType}:${accountId} does not exist. Create accounts using addNewAccount() or initializeWalletSecurely() first.`
+            `Active account ${accountType}:${accountId} does not exist. Create accounts using addNewAccount() or initializeWalletSecurely() first.`,
           );
         }
 
@@ -895,9 +934,8 @@ export class KeyringManager implements IKeyringManager {
       throw new Error('Unlock wallet first');
     }
 
-    // Validate password against stored auth hash
-    const genPwd = this.encryptSHA512(pwd, vaultKeys.salt);
-    if (vaultKeys.hash !== genPwd) {
+    // Validate password against stored auth hash (version-aware)
+    if (!this.validatePassword(pwd, vaultKeys)) {
       throw new Error('Invalid password');
     }
 
@@ -914,7 +952,7 @@ export class KeyringManager implements IKeyringManager {
     const zprvPrefixes = ['zprv', 'tprv', 'vprv', 'xprv'];
     if (zprvPrefixes.some((prefix) => mnemonicOrPrivKey.startsWith(prefix))) {
       throw new Error(
-        'Syscoin extended private keys (zprv/tprv) should be imported using importAccount, not importWeb3Account'
+        'Syscoin extended private keys (zprv/tprv) should be imported using importAccount, not importWeb3Account',
       );
     }
 
@@ -959,7 +997,7 @@ export class KeyringManager implements IKeyringManager {
     }
 
     const utxOAccounts = mapValues(vault.accounts.HDAccount, (value) =>
-      omit(value, 'xprv')
+      omit(value, 'xprv'),
     );
 
     return {
@@ -982,13 +1020,13 @@ export class KeyringManager implements IKeyringManager {
 
     // Use getNextAccountId to filter out placeholder accounts
     const nextIndex = this.getNextAccountId(
-      vault.accounts[KeyringAccountType.Trezor]
+      vault.accounts[KeyringAccountType.Trezor],
     );
 
     const importedAccount = await this._createTrezorAccount(
       currency,
       vault.activeNetwork.slip44,
-      nextIndex
+      nextIndex,
     );
     importedAccount.label = label ? label : `Trezor ${importedAccount.id + 1}`;
 
@@ -1008,13 +1046,13 @@ export class KeyringManager implements IKeyringManager {
 
       // Use getNextAccountId to filter out placeholder accounts
       const nextIndex = this.getNextAccountId(
-        vault.accounts[KeyringAccountType.Ledger]
+        vault.accounts[KeyringAccountType.Ledger],
       );
 
       const importedAccount = await this._createLedgerAccount(
         currency,
         vault.activeNetwork.slip44,
-        nextIndex
+        nextIndex,
       );
       importedAccount.label = label
         ? label
@@ -1046,7 +1084,7 @@ export class KeyringManager implements IKeyringManager {
   // Helper to get current account data from backend
   private fetchCurrentAccountData = async (
     xpub: string,
-    isChangeAddress: boolean
+    isChangeAddress: boolean,
   ) => {
     const vault = this.getVault();
     const { activeNetwork } = vault;
@@ -1060,7 +1098,7 @@ export class KeyringManager implements IKeyringManager {
       xpub,
       options,
       true,
-      undefined
+      undefined,
     );
 
     const { receivingIndex, changeIndex } =
@@ -1069,7 +1107,7 @@ export class KeyringManager implements IKeyringManager {
     // Get network configuration for BIP84 using network-provided pub type macros
     const networkConfig = getNetworkConfig(
       activeNetwork.slip44,
-      activeNetwork.currency
+      activeNetwork.currency,
     );
 
     const pubTypes = networkConfig?.types?.zPubType;
@@ -1092,11 +1130,11 @@ export class KeyringManager implements IKeyringManager {
   public getAddress = async (
     xpub: string,
     isChangeAddress: boolean,
-    options?: { forceIndex0?: boolean }
+    options?: { forceIndex0?: boolean },
   ) => {
     const { currentAccount, addressIndex } = await this.fetchCurrentAccountData(
       xpub,
-      isChangeAddress
+      isChangeAddress,
     );
 
     const effectiveIndex = options?.forceIndex0 ? 0 : addressIndex;
@@ -1104,7 +1142,7 @@ export class KeyringManager implements IKeyringManager {
     const address = currentAccount.getAddress(
       effectiveIndex,
       isChangeAddress,
-      84
+      84,
     ) as string;
 
     return address;
@@ -1112,11 +1150,11 @@ export class KeyringManager implements IKeyringManager {
 
   public getCurrentAddressPubkey = async (
     xpub: string,
-    isChangeAddress: boolean
+    isChangeAddress: boolean,
   ): Promise<string> => {
     const { currentAccount, addressIndex } = await this.fetchCurrentAccountData(
       xpub,
-      isChangeAddress
+      isChangeAddress,
     );
 
     // BIP84 returns the public key as a hex string directly
@@ -1125,14 +1163,14 @@ export class KeyringManager implements IKeyringManager {
 
   public getCurrentAddressBip32Path = async (
     xpub: string,
-    isChangeAddress: boolean
+    isChangeAddress: boolean,
   ): Promise<string> => {
     const vault = this.getVault();
     const { activeAccount, activeNetwork } = vault;
 
     const { addressIndex } = await this.fetchCurrentAccountData(
       xpub,
-      isChangeAddress
+      isChangeAddress,
     );
 
     // Use the utility function to generate the proper derivation path
@@ -1142,7 +1180,7 @@ export class KeyringManager implements IKeyringManager {
       activeNetwork.slip44,
       activeAccount.id,
       isChangeAddress,
-      addressIndex
+      addressIndex,
     );
 
     return path;
@@ -1155,7 +1193,7 @@ export class KeyringManager implements IKeyringManager {
   public async importAccount(
     privKey: string,
     label?: string,
-    options?: { utxoAddressType?: 'p2wpkh' | 'p2pkh' | 'p2tr' }
+    options?: { utxoAddressType?: 'p2wpkh' | 'p2pkh' | 'p2tr' },
   ) {
     // Check if wallet is unlocked
     if (!this.isUnlocked()) {
@@ -1165,7 +1203,7 @@ export class KeyringManager implements IKeyringManager {
     const importedAccount = await this._getPrivateKeyAccountInfos(
       privKey,
       label,
-      options
+      options,
     );
 
     // NOTE: Account creation should be dispatched to Redux store, not updated here
@@ -1197,7 +1235,7 @@ export class KeyringManager implements IKeyringManager {
       try {
         const { types } = getNetworkConfig(
           activeNetwork.slip44,
-          activeNetwork.currency || 'Syscoin'
+          activeNetwork.currency || 'Syscoin',
         );
         const target =
           activeNetwork.slip44 === 1
@@ -1215,10 +1253,10 @@ export class KeyringManager implements IKeyringManager {
 
     // Validate duplicates
     const existsInImported = Object.values(
-      accounts[KeyringAccountType.Imported] as IKeyringAccountState[]
+      accounts[KeyringAccountType.Imported] as IKeyringAccountState[],
     ).some((a) => a.address === addressToStore);
     const existsInHD = Object.values(
-      accounts[KeyringAccountType.HDAccount] as IKeyringAccountState[]
+      accounts[KeyringAccountType.HDAccount] as IKeyringAccountState[],
     ).some((a) => a.address === addressToStore);
     if (existsInImported || existsInHD) {
       throw new Error('Account already exists on your Wallet.');
@@ -1317,7 +1355,7 @@ export class KeyringManager implements IKeyringManager {
         const validBip84Prefixes = ['zprv', 'vprv']; // zprv for mainnet, vprv for testnet
         if (!validBip84Prefixes.includes(prefix)) {
           throw new Error(
-            `Invalid key prefix '${prefix}'. Only BIP84 keys (zprv/vprv) are supported for UTXO imports. BIP44 keys (xprv/tprv) are not supported.`
+            `Invalid key prefix '${prefix}'. Only BIP84 keys (zprv/vprv) are supported for UTXO imports. BIP44 keys (xprv/tprv) are not supported.`,
           );
         }
       } else {
@@ -1335,7 +1373,7 @@ export class KeyringManager implements IKeyringManager {
       // Get network configuration for the target network
       const { networks, types } = getNetworkConfig(
         networkToValidateAgainst.slip44,
-        networkToValidateAgainst.currency || 'Bitcoin'
+        networkToValidateAgainst.currency || 'Bitcoin',
       );
 
       // For BIP84 (zprv/zpub), we need to use the correct magic bytes from zPubType
@@ -1349,14 +1387,14 @@ export class KeyringManager implements IKeyringManager {
       if (keyIsTestnet && !targetIsTestnet) {
         throw new Error(
           `Extended private key is not compatible with ${networkToValidateAgainst.label}. ` +
-            `This appears to be a testnet key (${prefix}) but the target network is mainnet.`
+          `This appears to be a testnet key (${prefix}) but the target network is mainnet.`,
         );
       }
 
       if (!keyIsTestnet && targetIsTestnet) {
         throw new Error(
           `Extended private key is not compatible with ${networkToValidateAgainst.label}. ` +
-            `This appears to be a mainnet key (${prefix}) but the target network is testnet.`
+          `This appears to be a mainnet key (${prefix}) but the target network is testnet.`,
         );
       }
 
@@ -1379,8 +1417,8 @@ export class KeyringManager implements IKeyringManager {
       if (!expectedPrefixes.includes(prefix)) {
         throw new Error(
           `Invalid extended private key prefix: ${prefix}. Expected one of: ${expectedPrefixes.join(
-            ', '
-          )}`
+            ', ',
+          )}`,
         );
       }
 
@@ -1390,7 +1428,7 @@ export class KeyringManager implements IKeyringManager {
         node = bip32.fromBase58(zprv, network);
       } catch (e) {
         throw new Error(
-          `Extended private key is not compatible with ${networkToValidateAgainst.label}. Please use a key generated for this specific network.`
+          `Extended private key is not compatible with ${networkToValidateAgainst.label}. Please use a key generated for this specific network.`,
         );
       }
 
@@ -1425,7 +1463,7 @@ export class KeyringManager implements IKeyringManager {
       // Get bitcoinjs network for the target network (Syscoin/BTC etc.)
       const { networks } = getNetworkConfig(
         networkToValidateAgainst.slip44,
-        networkToValidateAgainst.currency || 'Bitcoin'
+        networkToValidateAgainst.currency || 'Bitcoin',
       );
 
       const isTestnet = networkToValidateAgainst.slip44 === 1;
@@ -1434,7 +1472,7 @@ export class KeyringManager implements IKeyringManager {
       // Try to parse the WIF for the given network
       const keyPair = (syscoinjs.utils as any).bitcoinjs.ECPair.fromWIF(
         wif,
-        bitcoinNetwork
+        bitcoinNetwork,
       );
       if (!keyPair || !keyPair.privateKey)
         throw new Error('Invalid WIF private key');
@@ -1475,7 +1513,7 @@ export class KeyringManager implements IKeyringManager {
    * PRIVATE METHODS
    */
 
-  // ===================================== AUXILIARY METHOD - FOR TRANSACTIONS CLASSES ===================================== //
+    // ===================================== AUXILIARY METHOD - FOR TRANSACTIONS CLASSES ===================================== //
   private getDecryptedPrivateKey = (): {
     address: string;
     decryptedPrivateKey: string;
@@ -1496,7 +1534,7 @@ export class KeyringManager implements IKeyringManager {
       const activeAccountData = accounts[activeAccountType][activeAccountId];
       if (!activeAccountData) {
         throw new Error(
-          `Active account (${activeAccountType}:${activeAccountId}) not found. Account switching may be in progress.`
+          `Active account (${activeAccountType}:${activeAccountId}) not found. Account switching may be in progress.`,
         );
       }
 
@@ -1511,7 +1549,7 @@ export class KeyringManager implements IKeyringManager {
 
       if (!xprv) {
         throw new Error(
-          `Private key not found for account ${activeAccountType}:${activeAccountId}. Account may not be fully initialized.`
+          `Private key not found for account ${activeAccountType}:${activeAccountId}. Account may not be fully initialized.`,
         );
       }
 
@@ -1521,13 +1559,13 @@ export class KeyringManager implements IKeyringManager {
         decryptedPrivateKey = this.decryptXprvWithFallback(xprv);
       } catch (decryptError) {
         throw new Error(
-          `Failed to decrypt private key for account ${activeAccountType}:${activeAccountId}. The wallet may be locked or corrupted.`
+          `Failed to decrypt private key for account ${activeAccountType}:${activeAccountId}. The wallet may be locked or corrupted.`,
         );
       }
 
       if (!decryptedPrivateKey) {
         throw new Error(
-          `Decrypted private key is empty for account ${activeAccountType}:${activeAccountId}. Invalid password or corrupted data.`
+          `Decrypted private key is empty for account ${activeAccountType}:${activeAccountId}. Invalid password or corrupted data.`,
         );
       }
 
@@ -1538,12 +1576,12 @@ export class KeyringManager implements IKeyringManager {
           const derivedWallet = new Wallet(decryptedPrivateKey);
           if (derivedWallet.address.toLowerCase() !== address.toLowerCase()) {
             throw new Error(
-              `Address mismatch for account ${activeAccountType}:${activeAccountId}. Expected ${address} but derived ${derivedWallet.address}. Account switching may be in progress.`
+              `Address mismatch for account ${activeAccountType}:${activeAccountId}. Expected ${address} but derived ${derivedWallet.address}. Account switching may be in progress.`,
             );
           }
         } catch (ethersError) {
           throw new Error(
-            `Failed to validate EVM address for account ${activeAccountType}:${activeAccountId}: ${ethersError.message}`
+            `Failed to validate EVM address for account ${activeAccountType}:${activeAccountId}: ${ethersError.message}`,
           );
         }
       }
@@ -1608,14 +1646,14 @@ export class KeyringManager implements IKeyringManager {
             return await (syscoinjs.utils as any).signWithWIF(
               psbt,
               decrypted,
-              bitcoinjsNetwork
+              bitcoinjsNetwork,
             );
           },
         };
       }
     } else {
       throw new Error(
-        `Unsupported account type for UTXO signing: ${accountType}`
+        `Unsupported account type for UTXO signing: ${accountType}`,
       );
     }
 
@@ -1630,7 +1668,7 @@ export class KeyringManager implements IKeyringManager {
     const syscoinMainSigner = new syscoinjs.SyscoinJSLib(
       null,
       network.url,
-      bitcoinjsNetwork
+      bitcoinjsNetwork,
     );
 
     return {
@@ -1659,7 +1697,7 @@ export class KeyringManager implements IKeyringManager {
     const syscoinMainSigner = new syscoinjs.SyscoinJSLib(
       null, // No HD signer needed for read-only operations
       network.url,
-      bitcoinjsNetwork
+      bitcoinjsNetwork,
     );
 
     return {
@@ -1716,6 +1754,53 @@ export class KeyringManager implements IKeyringManager {
     return key.toString();
   };
 
+  /**
+   * Derives a secure authentication hash from password using PBKDF2.
+   * This replaces the weak HMAC-SHA512 single-pass hash for vault version 3+.
+   * The resulting hash is stored in vault-keys for password verification.
+   *
+   * Uses 120,000 iterations (slightly more than encryption key derivation)
+   * to ensure password verification is also computationally expensive for attackers.
+   *
+   * @param password - The user's password
+   * @param salt - A unique salt for authentication (stored in vault-keys)
+   * @returns A derived hash suitable for password verification
+   */
+  private deriveAuthHash = (password: string, salt: string): string => {
+    // PBKDF2 with SHA-512, 120,000 iterations, 512-bit output
+    // Slightly more iterations than encryption key to add extra protection
+    // for the stored authentication hash
+    const hash = CryptoJS.PBKDF2(password, CryptoJS.enc.Hex.parse(salt), {
+      keySize: 512 / 32, // 512 bits = 16 words
+      iterations: 120000,
+      hasher: CryptoJS.algo.SHA512,
+    });
+    return hash.toString();
+  };
+
+  /**
+   * Validates a password against the stored auth hash.
+   * Uses the appropriate hashing method based on vault version.
+   *
+   * @param password - The password to validate
+   * @param vaultKeys - The vault keys containing hash, salt, and version
+   * @returns true if password is valid, false otherwise
+   */
+  private validatePassword = (
+    password: string,
+    vaultKeys: { hash: string; salt: string; version?: number },
+  ): boolean => {
+    if (vaultKeys?.version && vaultKeys.version >= 3) {
+      // Version 3+: Use PBKDF2-based auth hash (secure)
+      const derivedAuthHash = this.deriveAuthHash(password, vaultKeys.salt);
+      return derivedAuthHash === vaultKeys.hash;
+    } else {
+      // Version 1-2: Use legacy HMAC-SHA512 hash
+      const saltedHashPassword = this.encryptSHA512(password, vaultKeys.salt);
+      return saltedHashPassword === vaultKeys.hash;
+    }
+  };
+
   private getSysActivePrivateKey = (hd: SyscoinHDSigner) => {
     if (hd === null) throw new Error('No HD Signer');
 
@@ -1730,11 +1815,11 @@ export class KeyringManager implements IKeyringManager {
   };
 
   private getInitialAccountData = ({
-    label,
-    signer,
-    sysAccount,
-    xprv,
-  }: {
+                                     label,
+                                     signer,
+                                     sysAccount,
+                                     xprv,
+                                   }: {
     label?: string;
     signer: any;
     sysAccount: ISysAccount;
@@ -1758,7 +1843,7 @@ export class KeyringManager implements IKeyringManager {
     coin: string,
     slip44: number,
     index: number,
-    label?: string
+    label?: string,
   ) {
     const vault = this.getVault();
     const { accounts } = vault;
@@ -1800,23 +1885,23 @@ export class KeyringManager implements IKeyringManager {
 
     const accountAlreadyExists =
       Object.values(
-        accounts[KeyringAccountType.Ledger] as IKeyringAccountState[]
+        accounts[KeyringAccountType.Ledger] as IKeyringAccountState[],
       ).some((account) => account.address === address) ||
       Object.values(
-        accounts[KeyringAccountType.Trezor] as IKeyringAccountState[]
+        accounts[KeyringAccountType.Trezor] as IKeyringAccountState[],
       ).some((account) => account.address === address) ||
       Object.values(
-        accounts[KeyringAccountType.HDAccount] as IKeyringAccountState[]
+        accounts[KeyringAccountType.HDAccount] as IKeyringAccountState[],
       ).some((account) => account.address === address) ||
       Object.values(
-        accounts[KeyringAccountType.Imported] as IKeyringAccountState[]
+        accounts[KeyringAccountType.Imported] as IKeyringAccountState[],
       ).some((account) => account.address === address);
 
     if (accountAlreadyExists)
       throw new Error('Account already exists on your Wallet.');
     if (!xpub || !address)
       throw new Error(
-        'Something wrong happened. Please, try again or report it'
+        'Something wrong happened. Please, try again or report it',
       );
 
     // Use getNextAccountId to properly handle placeholder accounts
@@ -1864,7 +1949,7 @@ export class KeyringManager implements IKeyringManager {
     coin: string,
     slip44: number,
     index: number,
-    label?: string
+    label?: string,
   ) {
     const vault = this.getVault();
     const { accounts } = vault;
@@ -1898,23 +1983,23 @@ export class KeyringManager implements IKeyringManager {
 
     const accountAlreadyExists =
       Object.values(
-        accounts[KeyringAccountType.Ledger] as IKeyringAccountState[]
+        accounts[KeyringAccountType.Ledger] as IKeyringAccountState[],
       ).some((account) => account.address === address) ||
       Object.values(
-        accounts[KeyringAccountType.Trezor] as IKeyringAccountState[]
+        accounts[KeyringAccountType.Trezor] as IKeyringAccountState[],
       ).some((account) => account.address === address) ||
       Object.values(
-        accounts[KeyringAccountType.HDAccount] as IKeyringAccountState[]
+        accounts[KeyringAccountType.HDAccount] as IKeyringAccountState[],
       ).some((account) => account.address === address) ||
       Object.values(
-        accounts[KeyringAccountType.Imported] as IKeyringAccountState[]
+        accounts[KeyringAccountType.Imported] as IKeyringAccountState[],
       ).some((account) => account.address === address);
 
     if (accountAlreadyExists)
       throw new Error('Account already exists on your Wallet.');
     if (!xpub || !address)
       throw new Error(
-        'Something wrong happened. Please, try again or report it'
+        'Something wrong happened. Please, try again or report it',
       );
 
     // Use getNextAccountId to properly handle placeholder accounts
@@ -1940,8 +2025,8 @@ export class KeyringManager implements IKeyringManager {
   }
 
   private getFormattedBackendAccount = async ({
-    signer,
-  }: {
+                                                signer,
+                                              }: {
     signer: SyscoinHDSigner;
   }): Promise<ISysAccount> => {
     // MUCH SIMPLER: Just use the signer directly - no BIP84 needed!
@@ -1954,7 +2039,7 @@ export class KeyringManager implements IKeyringManager {
       xpub,
     };
   };
-  private setLatestIndexesFromXPubTokens = function (tokens) {
+  private setLatestIndexesFromXPubTokens = function(tokens) {
     let changeIndexInternal = -1,
       receivingIndexInternal = -1;
     if (tokens) {
@@ -2052,7 +2137,7 @@ export class KeyringManager implements IKeyringManager {
 
       const newAccount = await this.setDerivedWeb3Accounts(
         nextId,
-        label || defaultLabel
+        label || defaultLabel,
       );
 
       return newAccount;
@@ -2104,7 +2189,7 @@ export class KeyringManager implements IKeyringManager {
 
   private setDerivedWeb3Accounts = async (
     id: number,
-    label: string
+    label: string,
   ): Promise<IKeyringAccountState> => {
     try {
       // For account creation, derive from mnemonic (since account doesn't exist yet)
@@ -2121,7 +2206,7 @@ export class KeyringManager implements IKeyringManager {
         xprv: this.withSecureData((sessionPwd) => {
           return CryptoJS.AES.encrypt(
             derivedAccount.privateKey,
-            sessionPwd
+            sessionPwd,
           ).toString();
         }),
         isImported: false,
@@ -2159,7 +2244,7 @@ export class KeyringManager implements IKeyringManager {
       {
         mnemonic: '',
       },
-      pwd
+      pwd,
     );
 
     // Remove vault-keys from storage so no vault exists at all
@@ -2177,7 +2262,7 @@ export class KeyringManager implements IKeyringManager {
    */
   private async recreateSessionFromVault(
     password: string,
-    encryptionKey: string
+    encryptionKey: string,
   ): Promise<void> {
     try {
       const { mnemonic } = await getDecryptedVault(password);
@@ -2192,7 +2277,7 @@ export class KeyringManager implements IKeyringManager {
       // Encrypt the mnemonic with the derived key for session use
       const encryptedMnemonic = CryptoJS.AES.encrypt(
         mnemonic,
-        encryptionKey
+        encryptionKey,
       ).toString();
       this.sessionMnemonic = new SecureBuffer(encryptedMnemonic);
       console.log('[KeyringManager] Session data recreated from vault');
@@ -2205,7 +2290,7 @@ export class KeyringManager implements IKeyringManager {
   private async _getPrivateKeyAccountInfos(
     privKey: string,
     label?: string,
-    options?: { utxoAddressType?: 'p2wpkh' | 'p2pkh' | 'p2tr' }
+    options?: { utxoAddressType?: 'p2wpkh' | 'p2pkh' | 'p2tr' },
   ) {
     const vault = this.getVault();
     const { accounts } = vault;
@@ -2231,7 +2316,7 @@ export class KeyringManager implements IKeyringManager {
       // This is a valid UTXO extended private key
       if (isEvmNetwork) {
         throw new Error(
-          'Cannot import UTXO private key on EVM network. Please switch to a UTXO network (Bitcoin/Syscoin) first.'
+          'Cannot import UTXO private key on EVM network. Please switch to a UTXO network (Bitcoin/Syscoin) first.',
         );
       }
       const { node, network } = zprvValidation;
@@ -2293,7 +2378,7 @@ export class KeyringManager implements IKeyringManager {
           // Create address from WIF and treat as single-address imported account
           const { networks } = getNetworkConfig(
             networkToUse.slip44,
-            networkToUse.currency || 'Bitcoin'
+            networkToUse.currency || 'Bitcoin',
           );
           const isTestnet = networkToUse.slip44 === 1;
           const bitcoinNetwork = isTestnet
@@ -2302,7 +2387,7 @@ export class KeyringManager implements IKeyringManager {
 
           const keyPair = (syscoinjs.utils as any).bitcoinjs.ECPair.fromWIF(
             privKey,
-            bitcoinNetwork
+            bitcoinNetwork,
           );
           // Choose address type based on options or default behavior
           let addrObj;
@@ -2398,12 +2483,12 @@ export class KeyringManager implements IKeyringManager {
         // Don't try to import it as an EVM key
         if (isEvmNetwork) {
           throw new Error(
-            'Cannot import UTXO private key on EVM network. Please switch to a UTXO network (Bitcoin/Syscoin) first.'
+            'Cannot import UTXO private key on EVM network. Please switch to a UTXO network (Bitcoin/Syscoin) first.',
           );
         }
         // For UTXO networks, throw the original validation error
         throw new Error(
-          zprvValidation.message || 'Invalid extended private key'
+          zprvValidation.message || 'Invalid extended private key',
         );
       }
 
@@ -2411,7 +2496,7 @@ export class KeyringManager implements IKeyringManager {
       // But first check if we're on an EVM network
       if (!isEvmNetwork && !handledAsUtxo) {
         throw new Error(
-          'Cannot import EVM private key on UTXO network. Please switch to an EVM network first.'
+          'Cannot import EVM private key on UTXO network. Please switch to an EVM network first.',
         );
       }
 
@@ -2425,7 +2510,7 @@ export class KeyringManager implements IKeyringManager {
           !/^[0-9a-fA-F]{64}$/.test(privKey)
         ) {
           throw new Error(
-            'Invalid private key format. Expected 32-byte hex string or extended private key.'
+            'Invalid private key format. Expected 32-byte hex string or extended private key.',
           );
         }
 
@@ -2438,7 +2523,7 @@ export class KeyringManager implements IKeyringManager {
 
     if (!importedAccountValue) {
       throw new Error(
-        'Invalid private key format. Expected WIF, extended private key, or 32-byte hex.'
+        'Invalid private key format. Expected WIF, extended private key, or 32-byte hex.',
       );
     }
 
@@ -2448,15 +2533,15 @@ export class KeyringManager implements IKeyringManager {
     const accountAlreadyExists =
       (accounts[KeyringAccountType.Imported] &&
         Object.values(
-          accounts[KeyringAccountType.Imported] as IKeyringAccountState[]
+          accounts[KeyringAccountType.Imported] as IKeyringAccountState[],
         ).some((account) => account.address === address)) ||
       Object.values(
-        accounts[KeyringAccountType.HDAccount] as IKeyringAccountState[]
+        accounts[KeyringAccountType.HDAccount] as IKeyringAccountState[],
       ).some((account) => account.address === address); //Find a way to verify if private Key is not par of seed wallet derivation path
 
     if (accountAlreadyExists)
       throw new Error(
-        'Account already exists, try again with another Private Key.'
+        'Account already exists, try again with another Private Key.',
       );
 
     const id = this.getNextAccountId(accounts[KeyringAccountType.Imported]);
@@ -2493,7 +2578,7 @@ export class KeyringManager implements IKeyringManager {
     const mnemonic = this.withSecureData((sessionPwd, sessionMnemonic) => {
       const decrypted = CryptoJS.AES.decrypt(
         sessionMnemonic,
-        sessionPwd
+        sessionPwd,
       ).toString(CryptoJS.enc.Utf8);
 
       if (!decrypted) {
@@ -2525,7 +2610,7 @@ export class KeyringManager implements IKeyringManager {
    */
   private createFreshUTXOSigner(
     mnemonicOrZprv: string,
-    accountId: number
+    accountId: number,
   ): SyscoinHDSigner {
     // Create signer using network config directly (no RPC call)
     const rpcConfig = this.createNetworkRpcConfig();
@@ -2547,7 +2632,7 @@ export class KeyringManager implements IKeyringManager {
     // Verify the correct account is active
     if (hd.Signer.accountIndex !== accountId) {
       throw new Error(
-        `Account index mismatch: expected ${accountId}, got ${hd.Signer.accountIndex}`
+        `Account index mismatch: expected ${accountId}, got ${hd.Signer.accountIndex}`,
       );
     }
 
@@ -2569,10 +2654,11 @@ export class KeyringManager implements IKeyringManager {
     const zprvPrefixes = ['zprv', 'tprv', 'vprv', 'xprv'];
     return zprvPrefixes.some((prefix) => key.startsWith(prefix));
   }
+
   // NEW: Separate session initialization from account creation
   public initializeSession = async (
     seedPhrase: string,
-    password: string
+    password: string,
   ): Promise<void> => {
     // Validate inputs first
     if (!BIP84.validateMnemonic(seedPhrase)) {
@@ -2595,30 +2681,32 @@ export class KeyringManager implements IKeyringManager {
         vaultKeys.encryptionSalt || crypto.randomBytes(32).toString('hex');
     }
 
-    // Auth hash for password verification (this can be stored)
-    const sessionPasswordSaltedHash = this.encryptSHA512(password, salt);
+    // Auth hash for password verification using PBKDF2 (secure, can be stored)
+    // Uses 120,000 iterations to make brute-force attacks computationally expensive
+    const sessionPasswordPbkdf2Hash = this.deriveAuthHash(password, salt);
 
     // Derive encryption key using PBKDF2 - this is NEVER stored
     const derivedEncryptionKey = this.deriveEncryptionKey(
       password,
-      encryptionSalt
+      encryptionSalt,
     );
 
     if (!foundVaultKeys) {
       // Store vault-keys using the storage abstraction
       // Note: encryptionSalt is stored but the derived key is NEVER stored
       await this.storage.set('vault-keys', {
-        hash: sessionPasswordSaltedHash,
+        hash: sessionPasswordPbkdf2Hash, // v3: PBKDF2-based auth hash
         salt,
         encryptionSalt,
-        version: 2, // v2 = PBKDF2-based encryption
+        version: 3, // v3 = PBKDF2-based encryption AND auth hash
       });
-    } else if (!vaultKeys.encryptionSalt) {
-      // Existing vault without encryptionSalt - add it (migration scenario)
+    } else if (vaultKeys.version < 3) {
+      // Existing vault with older version - upgrade to v3 with PBKDF2 auth hash
       await this.storage.set('vault-keys', {
         ...vaultKeys,
-        encryptionSalt,
-        version: 2,
+        hash: sessionPasswordPbkdf2Hash, // Upgrade to PBKDF2-based auth hash
+        encryptionSalt: vaultKeys.encryptionSalt || encryptionSalt,
+        version: 3,
       });
     }
 
@@ -2631,9 +2719,9 @@ export class KeyringManager implements IKeyringManager {
           const currentMnemonic = this.withSecureData(
             (sessionPwd, sessionMnemonic) => {
               return CryptoJS.AES.decrypt(sessionMnemonic, sessionPwd).toString(
-                CryptoJS.enc.Utf8
+                CryptoJS.enc.Utf8,
               );
-            }
+            },
           );
 
           if (currentMnemonic === seedPhrase) {
@@ -2647,7 +2735,7 @@ export class KeyringManager implements IKeyringManager {
 
       // Different password or mnemonic - this is not a simple re-initialization
       throw new Error(
-        'Wallet already initialized with different parameters. Create a new keyring instance for different parameters.'
+        'Wallet already initialized with different parameters. Create a new keyring instance for different parameters.',
       );
     }
 
@@ -2656,7 +2744,7 @@ export class KeyringManager implements IKeyringManager {
       {
         mnemonic: seedPhrase, // Store plain mnemonic - setEncryptedVault will encrypt the entire vault
       },
-      password
+      password,
     );
 
     // Use PBKDF2-derived key for session encryption
@@ -2665,11 +2753,11 @@ export class KeyringManager implements IKeyringManager {
 
   // NEW: Create first account without signer setup
   public createFirstAccount = async (
-    label?: string
+    label?: string,
   ): Promise<IKeyringAccountState> => {
     if (!this.sessionPassword || !this.sessionMnemonic) {
       throw new Error(
-        'Session must be initialized first. Call initializeSession.'
+        'Session must be initialized first. Call initializeSession.',
       );
     }
 
@@ -2707,12 +2795,13 @@ export class KeyringManager implements IKeyringManager {
 
   public initializeWalletSecurely = async (
     seedPhrase: string,
-    password: string
+    password: string,
   ): Promise<IKeyringAccountState> => {
     // Use new separated approach
     await this.initializeSession(seedPhrase, password);
     return await this.createFirstAccount();
   };
+
   // Helper methods for secure buffer operations
   private getSessionPasswordString(): string {
     if (!this.sessionPassword || this.sessionPassword.isCleared()) {
@@ -2734,7 +2823,7 @@ export class KeyringManager implements IKeyringManager {
 
   // Secure method to perform cryptographic operations without exposing strings
   private withSecureData<T>(
-    operation: (password: string, mnemonic: string) => T
+    operation: (password: string, mnemonic: string) => T,
   ): T {
     if (!this.sessionPassword || !this.sessionMnemonic) {
       throw new Error('Session data not available');
@@ -2743,7 +2832,7 @@ export class KeyringManager implements IKeyringManager {
     // Perform operation with minimal exposure
     const result = operation(
       this.getSessionPasswordString(),
-      this.getSessionMnemonicString()
+      this.getSessionMnemonicString(),
     );
 
     // Clear any temporary variables if needed
@@ -2787,7 +2876,7 @@ export class KeyringManager implements IKeyringManager {
     try {
       const decrypted = CryptoJS.AES.decrypt(
         encryptedXprv,
-        this.getSessionPasswordString()
+        this.getSessionPasswordString(),
       ).toString(CryptoJS.enc.Utf8);
 
       if (decrypted && decrypted.length > 0) {
@@ -2803,18 +2892,18 @@ export class KeyringManager implements IKeyringManager {
       try {
         const decrypted = CryptoJS.AES.decrypt(
           encryptedXprv,
-          legacyKey
+          legacyKey,
         ).toString(CryptoJS.enc.Utf8);
 
         if (decrypted && decrypted.length > 0) {
           console.log(
-            '[KeyringManager] Decrypted xprv using legacy key (migration needed)'
+            '[KeyringManager] Decrypted xprv using legacy key (migration needed)',
           );
           return decrypted;
         }
       } catch (e) {
         throw new Error(
-          'Failed to decrypt xprv with both new and legacy keys'
+          'Failed to decrypt xprv with both new and legacy keys',
         );
       }
     }
@@ -2836,7 +2925,7 @@ export class KeyringManager implements IKeyringManager {
     // Re-encrypt with new PBKDF2-derived key
     const reEncrypted = CryptoJS.AES.encrypt(
       decryptedXprv,
-      this.getSessionPasswordString()
+      this.getSessionPasswordString(),
     ).toString();
 
     return reEncrypted;
@@ -2856,7 +2945,7 @@ export class KeyringManager implements IKeyringManager {
 
   private generateNetworkAwareLabel(
     accountId: number,
-    network: INetwork
+    network: INetwork,
   ): string {
     // Generate concise network-specific labels using actual network config
     const { label, chainId, kind, currency } = network;
