@@ -163,6 +163,10 @@ export class KeyringManager implements IKeyringManager {
   private sessionPassword: SecureBuffer | null = null;
   private sessionMnemonic: SecureBuffer | null = null; // can be a mnemonic or a zprv, can be changed to a zprv when using an imported wallet
 
+  // Legacy session password for migration support - holds the old hash-based key
+  // during migration from vault format v1 to v2. Cleared after migration completes.
+  private legacySessionPassword: SecureBuffer | null = null;
+
   /**
    * @param sharedHardwareWalletManager Optional shared HardwareWalletManager instance.
    *                                     If not provided, the singleton instance will be used.
@@ -271,6 +275,11 @@ export class KeyringManager implements IKeyringManager {
       this.sessionMnemonic.clear();
       this.sessionMnemonic = null;
     }
+    // Clear legacy session password if present (migration cleanup)
+    if (this.legacySessionPassword) {
+      this.legacySessionPassword.clear();
+      this.legacySessionPassword = null;
+    }
 
     // Clear transaction handlers that may hold HD signers
     if (this.syscoinTransaction) {
@@ -361,6 +370,7 @@ export class KeyringManager implements IKeyringManager {
   public async unlock(password: string): Promise<{
     canLogin: boolean;
     needsAccountCreation?: boolean;
+    needsXprvMigration?: boolean;
   }> {
     try {
       const vaultKeys = await this.storage.get('vault-keys');
@@ -380,6 +390,50 @@ export class KeyringManager implements IKeyringManager {
           canLogin: false,
         };
       }
+
+      // Determine encryption key based on vault version
+      let encryptionKey: string;
+      let needsXprvMigration = false;
+
+      if (!vaultKeys.encryptionSalt || vaultKeys.version !== 2) {
+        // Legacy vault format (v1) - needs migration to PBKDF2-based encryption
+        console.log(
+          '[KeyringManager] Detected legacy vault format (v1), migrating to PBKDF2-based encryption...'
+        );
+
+        // Store the old hash-based key temporarily for decrypting existing xprv values
+        // This allows the caller to re-encrypt accounts with the new key
+        this.legacySessionPassword = new SecureBuffer(saltedHashPassword);
+
+        // Generate new encryption salt for PBKDF2
+        const encryptionSalt = crypto.randomBytes(32).toString('hex');
+
+        // Derive new encryption key using PBKDF2 (NEVER stored)
+        encryptionKey = this.deriveEncryptionKey(password, encryptionSalt);
+
+        // Update vault-keys with new encryption salt
+        const updatedVaultKeys = {
+          hash: vaultKeys.hash,
+          salt: vaultKeys.salt,
+          encryptionSalt,
+          version: 2,
+        };
+        await this.storage.set('vault-keys', updatedVaultKeys);
+
+        // Signal that existing xprv values need to be re-encrypted
+        needsXprvMigration = true;
+
+        console.log(
+          '[KeyringManager] Vault migrated to v2 (PBKDF2-based encryption)'
+        );
+      } else {
+        // New vault format (v2) - derive encryption key from existing salt
+        encryptionKey = this.deriveEncryptionKey(
+          password,
+          vaultKeys.encryptionSalt
+        );
+      }
+
       // Handle migration from old vault format with currentSessionSalt
       if (vaultKeys.currentSessionSalt) {
         console.log(
@@ -433,10 +487,13 @@ export class KeyringManager implements IKeyringManager {
           console.log('[KeyringManager] Vault mnemonic format normalized');
         }
 
-        // Remove currentSessionSalt from vault-keys
+        // Remove currentSessionSalt from vault-keys (keep other fields)
+        const currentVaultKeys = await this.storage.get('vault-keys');
         const migratedVaultKeys = {
-          hash: vaultKeys.hash,
-          salt: vaultKeys.salt,
+          hash: currentVaultKeys.hash,
+          salt: currentVaultKeys.salt,
+          encryptionSalt: currentVaultKeys.encryptionSalt,
+          version: currentVaultKeys.version,
         };
         await this.storage.set('vault-keys', migratedVaultKeys);
         console.log('[KeyringManager] Old vault format migration completed');
@@ -444,7 +501,7 @@ export class KeyringManager implements IKeyringManager {
 
       // If session data missing or corrupted, recreate from vault
       if (!this.sessionMnemonic) {
-        await this.recreateSessionFromVault(password, saltedHashPassword);
+        await this.recreateSessionFromVault(password, encryptionKey);
       }
 
       // NOTE: Active account management is now handled by vault state/Redux
@@ -464,6 +521,7 @@ export class KeyringManager implements IKeyringManager {
           return {
             canLogin: true,
             needsAccountCreation: true,
+            needsXprvMigration,
           };
         }
 
@@ -474,6 +532,7 @@ export class KeyringManager implements IKeyringManager {
 
       return {
         canLogin: true,
+        needsXprvMigration,
       };
     } catch (error) {
       console.log('ERROR unlock', {
@@ -601,14 +660,15 @@ export class KeyringManager implements IKeyringManager {
         throw new Error('Unlock wallet first');
       }
 
-      // Get vault salt for password validation
+      // Get vault keys for password validation
       const vaultKeys = await this.storage.get('vault-keys');
       if (!vaultKeys || !vaultKeys.salt) {
         throw new Error('Vault keys not found');
       }
 
+      // Validate password against stored auth hash
       const genPwd = this.encryptSHA512(pwd, vaultKeys.salt);
-      if (this.getSessionPasswordString() !== genPwd) {
+      if (vaultKeys.hash !== genPwd) {
         throw new Error('Invalid password');
       }
 
@@ -618,21 +678,16 @@ export class KeyringManager implements IKeyringManager {
         throw new Error('Account not found');
       }
 
-      // Decrypt the stored private key using secure method
-      const decryptedPrivateKey = this.withSecureData((sessionPwd) => {
-        const decrypted = CryptoJS.AES.decrypt(
-          (account as IKeyringAccountState).xprv,
-          sessionPwd
-        ).toString(CryptoJS.enc.Utf8);
+      // Decrypt the stored private key using fallback method for migration support
+      const decryptedPrivateKey = this.decryptXprvWithFallback(
+        (account as IKeyringAccountState).xprv
+      );
 
-        if (!decrypted) {
-          throw new Error(
-            'Failed to decrypt private key. Invalid password or corrupted data.'
-          );
-        }
-
-        return decrypted;
-      });
+      if (!decryptedPrivateKey) {
+        throw new Error(
+          'Failed to decrypt private key. Invalid password or corrupted data.'
+        );
+      }
 
       // NOTE: Returning decrypted private key as string is necessary for compatibility
       // Callers should handle this sensitive data carefully
@@ -690,14 +745,15 @@ export class KeyringManager implements IKeyringManager {
       throw new Error('Unlock wallet first');
     }
 
-    // Get vault salt for password validation (consistent with getPrivateKeyByAccountId)
+    // Get vault keys for password validation
     const vaultKeys = await this.storage.get('vault-keys');
     if (!vaultKeys || !vaultKeys.salt) {
       throw new Error('Vault keys not found');
     }
 
+    // Validate password against stored auth hash
     const genPwd = this.encryptSHA512(pwd, vaultKeys.salt);
-    if (this.getSessionPasswordString() !== genPwd) {
+    if (vaultKeys.hash !== genPwd) {
       throw new Error('Invalid password');
     }
     let { mnemonic } = await getDecryptedVault(pwd);
@@ -835,10 +891,13 @@ export class KeyringManager implements IKeyringManager {
     if (!vaultKeys || !vaultKeys.salt) {
       throw new Error('Vault keys not found');
     }
-    const genPwd = this.encryptSHA512(pwd, vaultKeys.salt);
     if (!this.sessionPassword) {
       throw new Error('Unlock wallet first');
-    } else if (this.getSessionPasswordString() !== genPwd) {
+    }
+
+    // Validate password against stored auth hash
+    const genPwd = this.encryptSHA512(pwd, vaultKeys.salt);
+    if (vaultKeys.hash !== genPwd) {
       throw new Error('Invalid password');
     }
 
@@ -1458,11 +1517,8 @@ export class KeyringManager implements IKeyringManager {
 
       let decryptedPrivateKey: string;
       try {
-        decryptedPrivateKey = this.withSecureData((sessionPwd) => {
-          return CryptoJS.AES.decrypt(xprv, sessionPwd).toString(
-            CryptoJS.enc.Utf8
-          );
-        });
+        // Use fallback decryption for migration support
+        decryptedPrivateKey = this.decryptXprvWithFallback(xprv);
       } catch (decryptError) {
         throw new Error(
           `Failed to decrypt private key for account ${activeAccountType}:${activeAccountId}. The wallet may be locked or corrupted.`
@@ -1532,15 +1588,9 @@ export class KeyringManager implements IKeyringManager {
     if (accountType === KeyringAccountType.HDAccount) {
       signerForUse = this.createOnDemandUTXOSigner(accountId);
     } else if (accountType === KeyringAccountType.Imported) {
-      // Decrypt stored key material
-      const decrypted = this.withSecureData((sessionPwd) => {
-        const account = vault.accounts[KeyringAccountType.Imported][accountId];
-        const res = CryptoJS.AES.decrypt(account.xprv, sessionPwd).toString(
-          CryptoJS.enc.Utf8
-        );
-        if (!res) throw new Error('Failed to decrypt imported account key');
-        return res;
-      });
+      // Decrypt stored key material using fallback for migration support
+      const account = vault.accounts[KeyringAccountType.Imported][accountId];
+      const decrypted = this.decryptXprvWithFallback(account.xprv);
 
       if (this.isZprv(decrypted)) {
         signerForUse = this.createFreshUTXOSigner(decrypted, accountId);
@@ -1646,6 +1696,25 @@ export class KeyringManager implements IKeyringManager {
    */
   private encryptSHA512 = (password: string, salt: string) =>
     crypto.createHmac('sha512', salt).update(password).digest('hex');
+
+  /**
+   * Derives a secure encryption key from password using PBKDF2.
+   * This key is NEVER stored - only computed when needed and kept in memory.
+   *
+   * @param password - The user's password
+   * @param salt - A unique salt for key derivation (different from auth salt)
+   * @returns A derived key suitable for AES encryption
+   */
+  private deriveEncryptionKey = (password: string, salt: string): string => {
+    // PBKDF2 with SHA-512, 100,000 iterations, 256-bit output
+    // This makes brute-force attacks computationally expensive
+    const key = CryptoJS.PBKDF2(password, CryptoJS.enc.Hex.parse(salt), {
+      keySize: 256 / 32, // 256 bits = 8 words (32 bits per word in CryptoJS)
+      iterations: 100000,
+      hasher: CryptoJS.algo.SHA512,
+    });
+    return key.toString();
+  };
 
   private getSysActivePrivateKey = (hd: SyscoinHDSigner) => {
     if (hd === null) throw new Error('No HD Signer');
@@ -2100,9 +2169,15 @@ export class KeyringManager implements IKeyringManager {
     this.logout();
   };
 
+  /**
+   * Recreates session data from the encrypted vault.
+   *
+   * @param password - The raw user password (used to decrypt the vault)
+   * @param encryptionKey - The PBKDF2-derived encryption key (NEVER stored, used for session encryption)
+   */
   private async recreateSessionFromVault(
     password: string,
-    saltedHashPassword: string
+    encryptionKey: string
   ): Promise<void> {
     try {
       const { mnemonic } = await getDecryptedVault(password);
@@ -2111,13 +2186,13 @@ export class KeyringManager implements IKeyringManager {
         throw new Error('Mnemonic not found in vault');
       }
 
-      // Encrypt session data with sessionPassword hash for consistency
-      // This allows keyring manager to decrypt with this.sessionPassword
-      this.sessionPassword = new SecureBuffer(saltedHashPassword);
-      // Encrypt the mnemonic with session password for consistency with the rest of the code
+      // Store the PBKDF2-derived encryption key (not the hash!)
+      // This key is never stored persistently - only in memory during session
+      this.sessionPassword = new SecureBuffer(encryptionKey);
+      // Encrypt the mnemonic with the derived key for session use
       const encryptedMnemonic = CryptoJS.AES.encrypt(
         mnemonic,
-        saltedHashPassword
+        encryptionKey
       ).toString();
       this.sessionMnemonic = new SecureBuffer(encryptedMnemonic);
       console.log('[KeyringManager] Session data recreated from vault');
@@ -2506,26 +2581,51 @@ export class KeyringManager implements IKeyringManager {
 
     let foundVaultKeys = true;
     let salt = '';
+    let encryptionSalt = '';
     const vaultKeys = await this.storage.get('vault-keys');
     if (!vaultKeys || !vaultKeys.salt) {
       foundVaultKeys = false;
       salt = crypto.randomBytes(16).toString('hex');
+      // Generate separate salt for encryption key derivation (NEVER used for auth)
+      encryptionSalt = crypto.randomBytes(32).toString('hex');
     } else {
       salt = vaultKeys.salt;
+      // Use existing encryptionSalt or generate new one for migration
+      encryptionSalt =
+        vaultKeys.encryptionSalt || crypto.randomBytes(32).toString('hex');
     }
 
+    // Auth hash for password verification (this can be stored)
     const sessionPasswordSaltedHash = this.encryptSHA512(password, salt);
+
+    // Derive encryption key using PBKDF2 - this is NEVER stored
+    const derivedEncryptionKey = this.deriveEncryptionKey(
+      password,
+      encryptionSalt
+    );
+
     if (!foundVaultKeys) {
       // Store vault-keys using the storage abstraction
+      // Note: encryptionSalt is stored but the derived key is NEVER stored
       await this.storage.set('vault-keys', {
         hash: sessionPasswordSaltedHash,
         salt,
+        encryptionSalt,
+        version: 2, // v2 = PBKDF2-based encryption
+      });
+    } else if (!vaultKeys.encryptionSalt) {
+      // Existing vault without encryptionSalt - add it (migration scenario)
+      await this.storage.set('vault-keys', {
+        ...vaultKeys,
+        encryptionSalt,
+        version: 2,
       });
     }
 
     // Check if already initialized with the same password (idempotent behavior)
     if (this.sessionPassword) {
-      if (sessionPasswordSaltedHash === this.getSessionPasswordString()) {
+      // Compare derived keys for idempotency check
+      if (derivedEncryptionKey === this.getSessionPasswordString()) {
         // Same password - check if it's the same mnemonic to ensure full idempotency
         try {
           const currentMnemonic = this.withSecureData(
@@ -2559,7 +2659,8 @@ export class KeyringManager implements IKeyringManager {
       password
     );
 
-    await this.recreateSessionFromVault(password, sessionPasswordSaltedHash);
+    // Use PBKDF2-derived key for session encryption
+    await this.recreateSessionFromVault(password, derivedEncryptionKey);
   };
 
   // NEW: Create first account without signer setup
@@ -2647,6 +2748,110 @@ export class KeyringManager implements IKeyringManager {
 
     // Clear any temporary variables if needed
     return result;
+  }
+
+  /**
+   * Gets the legacy session password (hash-based key) for migration purposes.
+   * Only available during v1->v2 migration.
+   */
+  private getLegacySessionPasswordString(): string | null {
+    if (!this.legacySessionPassword || this.legacySessionPassword.isCleared()) {
+      return null;
+    }
+    return this.legacySessionPassword.toString();
+  }
+
+  /**
+   * Checks if we're currently in a migration state with legacy keys available.
+   */
+  public isInMigrationState(): boolean {
+    return (
+      this.legacySessionPassword !== null &&
+      !this.legacySessionPassword.isCleared()
+    );
+  }
+
+  /**
+   * Decrypts an xprv value, trying the new PBKDF2-derived key first,
+   * then falling back to the legacy hash-based key during migration.
+   *
+   * @param encryptedXprv - The encrypted xprv string
+   * @returns The decrypted xprv string
+   */
+  public decryptXprvWithFallback(encryptedXprv: string): string {
+    if (!this.sessionPassword) {
+      throw new Error('Session not available');
+    }
+
+    // Try new PBKDF2-derived key first
+    try {
+      const decrypted = CryptoJS.AES.decrypt(
+        encryptedXprv,
+        this.getSessionPasswordString()
+      ).toString(CryptoJS.enc.Utf8);
+
+      if (decrypted && decrypted.length > 0) {
+        return decrypted;
+      }
+    } catch (e) {
+      // Fall through to try legacy key
+    }
+
+    // If new key failed and we have legacy key, try that
+    const legacyKey = this.getLegacySessionPasswordString();
+    if (legacyKey) {
+      try {
+        const decrypted = CryptoJS.AES.decrypt(
+          encryptedXprv,
+          legacyKey
+        ).toString(CryptoJS.enc.Utf8);
+
+        if (decrypted && decrypted.length > 0) {
+          console.log(
+            '[KeyringManager] Decrypted xprv using legacy key (migration needed)'
+          );
+          return decrypted;
+        }
+      } catch (e) {
+        throw new Error(
+          'Failed to decrypt xprv with both new and legacy keys'
+        );
+      }
+    }
+
+    throw new Error('Failed to decrypt xprv - invalid key or corrupted data');
+  }
+
+  /**
+   * Migrates an encrypted xprv from the legacy format to the new PBKDF2-based format.
+   * Call this for each account's xprv after unlock when needsXprvMigration is true.
+   *
+   * @param encryptedXprv - The xprv encrypted with the old hash-based key
+   * @returns The xprv encrypted with the new PBKDF2-derived key
+   */
+  public migrateXprv(encryptedXprv: string): string {
+    // Decrypt with fallback (will use legacy key if needed)
+    const decryptedXprv = this.decryptXprvWithFallback(encryptedXprv);
+
+    // Re-encrypt with new PBKDF2-derived key
+    const reEncrypted = CryptoJS.AES.encrypt(
+      decryptedXprv,
+      this.getSessionPasswordString()
+    ).toString();
+
+    return reEncrypted;
+  }
+
+  /**
+   * Clears the legacy session password after migration is complete.
+   * Call this after all accounts have been migrated.
+   */
+  public clearLegacySession(): void {
+    if (this.legacySessionPassword) {
+      this.legacySessionPassword.clear();
+      this.legacySessionPassword = null;
+      console.log('[KeyringManager] Legacy session cleared after migration');
+    }
   }
 
   private generateNetworkAwareLabel(
