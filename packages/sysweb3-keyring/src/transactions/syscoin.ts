@@ -293,7 +293,7 @@ export class SyscoinTransactions implements ISyscoinTransactions {
   ): Promise<Psbt> => {
     const { activeNetwork, activeAccountId, activeAccountType, accounts } =
       this.getState();
-    console.log(psbt)
+
     if (isLedger) {
       // CRITICAL: Enhance PSBT with required Ledger fields
       const account = accounts[activeAccountType]?.[activeAccountId];
@@ -304,91 +304,58 @@ export class SyscoinTransactions implements ISyscoinTransactions {
       const accountId = account.id;
       
       // Enrich PSBT with nonWitnessUtxo for Ledger compatibility
-      console.log('[Ledger] Enriching PSBT with nonWitnessUtxo...');
       const { getRawTransaction } = this.txUtilsFunctions();
       const blockbookUrl = activeNetwork.url;
       
-      // Get all previous transaction IDs from PSBT inputs
+      // Fetch and add nonWitnessUtxo for all inputs
       const txFetchPromises = psbt.data.inputs.map(async (_input, index) => {
         try {
-          // Extract the transaction to access input details
           const tx = psbt.txInputs[index];
-          
-          // Convert transaction hash buffer to hex string (reverse for display)
           const prevTxId = Buffer.from(tx.hash).reverse().toString('hex');
-          console.log(`[Ledger] Input ${index}: Fetching raw tx for prevTxId = ${prevTxId}`);
-          console.log(`[Ledger] Input ${index}: Using blockbookUrl = ${blockbookUrl}`);
           
-          // Fetch the raw transaction hex (blockbookUrl first, then txid)
+          // Fetch the raw transaction
           const rawTxResponse = await getRawTransaction(blockbookUrl, prevTxId);
-          console.log(`[Ledger] Input ${index}: Received response, type: ${typeof rawTxResponse}`);
-          console.log(`[Ledger] Input ${index}: Response:`, rawTxResponse);
           
-          // Handle different response types (might be string or object with 'hex' property)
+          // Handle different response formats (string, object with 'hex', or object with 'result')
           let rawTxHex: string;
           if (typeof rawTxResponse === 'string') {
             rawTxHex = rawTxResponse;
-            console.log(`[Ledger] Input ${index}: Response is string`);
           } else if (rawTxResponse && typeof rawTxResponse === 'object' && 'hex' in rawTxResponse) {
             rawTxHex = (rawTxResponse as any).hex;
-            console.log(`[Ledger] Input ${index}: Extracted hex from response.hex`);
           } else if (rawTxResponse && typeof rawTxResponse === 'object' && 'result' in rawTxResponse) {
             rawTxHex = (rawTxResponse as any).result;
-            console.log(`[Ledger] Input ${index}: Extracted hex from response.result`);
           } else {
             throw new Error(`Unexpected response format: ${JSON.stringify(rawTxResponse)}`);
           }
           
           if (!rawTxHex || typeof rawTxHex !== 'string') {
-            throw new Error(`Invalid raw transaction hex: ${rawTxHex}`);
+            throw new Error(`Invalid raw transaction hex received`);
           }
           
-          console.log(`[Ledger] Input ${index}: Raw tx hex length: ${rawTxHex.length} chars (${rawTxHex.length / 2} bytes)`);
-          console.log(`[Ledger] Input ${index}: Raw tx hex preview: ${rawTxHex.substring(0, 100)}...`);
-          
-          // Convert hex string to Buffer for PSBT
+          // Convert hex to Buffer and add to PSBT
           const nonWitnessUtxo = Buffer.from(rawTxHex, 'hex');
           if (nonWitnessUtxo.length === 0) {
             throw new Error('Converted buffer is empty');
           }
-          console.log(`[Ledger] Input ${index}: Converted to Buffer: ${nonWitnessUtxo.length} bytes`);
           
-          // Add nonWitnessUtxo to the PSBT input
           psbt.updateInput(index, { nonWitnessUtxo });
-          console.log(`[Ledger] Input ${index}: ✓ Successfully added nonWitnessUtxo to PSBT`);
-          
           return { index, success: true };
         } catch (error) {
-          console.error(`[Ledger] Failed to fetch raw tx for input ${index}:`, error);
+          console.error(`[Ledger] Failed to enrich input ${index}:`, error);
           return { index, success: false, error };
         }
       });
       
-      // Wait for all transactions to be fetched
+      // Wait for all inputs to be enriched
       const results = await Promise.all(txFetchPromises);
-      const successCount = results.filter(r => r.success).length;
-      console.log(`[Ledger] Enrichment complete: ${successCount}/${results.length} inputs enriched`);
+      const failedInputs = results.filter(r => !r.success);
       
-      // Debug: Check if nonWitnessUtxo is present after enrichment
-      console.log('[Ledger] === PSBT State After Enrichment ===');
-      psbt.data.inputs.forEach((input, i) => {
-        console.log(`[Ledger] Input ${i}:`, {
-          hasWitnessUtxo: !!input.witnessUtxo,
-          hasNonWitnessUtxo: !!input.nonWitnessUtxo,
-          witnessUtxoValue: input.witnessUtxo?.value || 'N/A',
-          nonWitnessUtxoLength: input.nonWitnessUtxo?.length || 0
-        });
-      });
-      
-      // Output the enriched PSBT in copyable format
-      console.log('[Ledger] ENRICHED_PSBT_JSON:', JSON.stringify(psbt, (_key, value) => {
-        if (typeof value === 'bigint') return value.toString();
-        if (value && value.type === 'Buffer') return { type: 'Buffer', data: value.data };
-        if (value instanceof Uint8Array || (value && value.constructor && value.constructor.name === 'Uint8Array')) {
-          return Array.from(value);
-        }
-        return value;
-      }));
+      if (failedInputs.length > 0) {
+        throw new Error(
+          `Failed to enrich ${failedInputs.length} of ${results.length} inputs with nonWitnessUtxo. ` +
+          `Ledger devices require this data for signing.`
+        );
+      }
       
       const enhancedPsbt = await this.ledger.convertToLedgerFormat(
         psbt,
