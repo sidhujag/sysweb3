@@ -22,6 +22,8 @@ import * as BIP84 from 'syscoinjs-lib/bip84-replacement';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const bjs: any = (syscoinjs.utils as any).bitcoinjs;
 
+import { HardwareWalletManager } from './hardware-wallet-manager';
+import { HardwareWalletManagerSingleton } from './hardware-wallet-manager-singleton';
 import {
   initialActiveImportedAccountState,
   initialActiveLedgerAccountState,
@@ -32,8 +34,6 @@ import { getSyscoinSigners, SyscoinHDSigner } from './signers';
 import { getDecryptedVault, setEncryptedVault } from './storage';
 import { EthereumTransactions, SyscoinTransactions } from './transactions';
 import { TrezorKeyring } from './trezor';
-import { HardwareWalletManagerSingleton } from './hardware-wallet-manager-singleton';
-import { HardwareWalletManager } from './hardware-wallet-manager';
 import {
   IKeyringAccountState,
   ISyscoinTransactions,
@@ -185,7 +185,9 @@ export class KeyringManager implements IKeyringManager {
     this.initialLedgerAccountState = initialActiveLedgerAccountState;
 
     // Use provided shared manager or get singleton instance
-    const hardwareManager = sharedHardwareWalletManager || HardwareWalletManagerSingleton.getInstance();
+    const hardwareManager =
+      sharedHardwareWalletManager ||
+      HardwareWalletManagerSingleton.getInstance();
 
     this.trezorSigner = new TrezorKeyring();
     this.ledgerSigner = new LedgerKeyring(hardwareManager);
@@ -370,16 +372,20 @@ export class KeyringManager implements IKeyringManager {
           canLogin: false,
         };
       }
-      // FIRST: Validate password against stored hash
+      // FIRST: Validate password against stored verifier (NOT the session encryption key)
       const { hash, salt } = vaultKeys;
-      const saltedHashPassword = this.encryptSHA512(password, salt);
+      const authHash = await this.encryptSHA512AuthAsync(password, salt);
 
-      if (saltedHashPassword !== hash) {
+      if (authHash !== hash) {
         // Password is wrong - return immediately
         return {
           canLogin: false,
         };
       }
+
+      // Derive session encryption key (in-memory only) used to encrypt/decrypt xprv fields
+      // IMPORTANT: This MUST NOT be the same value as the stored verifier above.
+      const sessionPasswordKey = await this.encryptSHA512Async(password, salt);
       // Handle migration from old vault format with currentSessionSalt
       if (vaultKeys.currentSessionSalt) {
         console.log(
@@ -444,7 +450,7 @@ export class KeyringManager implements IKeyringManager {
 
       // If session data missing or corrupted, recreate from vault
       if (!this.sessionMnemonic) {
-        await this.recreateSessionFromVault(password, saltedHashPassword);
+        await this.recreateSessionFromVault(password, sessionPasswordKey);
       }
 
       // NOTE: Active account management is now handled by vault state/Redux
@@ -607,7 +613,7 @@ export class KeyringManager implements IKeyringManager {
         throw new Error('Vault keys not found');
       }
 
-      const genPwd = this.encryptSHA512(pwd, vaultKeys.salt);
+      const genPwd = await this.encryptSHA512Async(pwd, vaultKeys.salt);
       if (this.getSessionPasswordString() !== genPwd) {
         throw new Error('Invalid password');
       }
@@ -696,7 +702,7 @@ export class KeyringManager implements IKeyringManager {
       throw new Error('Vault keys not found');
     }
 
-    const genPwd = this.encryptSHA512(pwd, vaultKeys.salt);
+    const genPwd = await this.encryptSHA512Async(pwd, vaultKeys.salt);
     if (this.getSessionPasswordString() !== genPwd) {
       throw new Error('Invalid password');
     }
@@ -835,7 +841,7 @@ export class KeyringManager implements IKeyringManager {
     if (!vaultKeys || !vaultKeys.salt) {
       throw new Error('Vault keys not found');
     }
-    const genPwd = this.encryptSHA512(pwd, vaultKeys.salt);
+    const genPwd = await this.encryptSHA512Async(pwd, vaultKeys.salt);
     if (!this.sessionPassword) {
       throw new Error('Unlock wallet first');
     } else if (this.getSessionPasswordString() !== genPwd) {
@@ -1642,10 +1648,156 @@ export class KeyringManager implements IKeyringManager {
    *
    * @param password
    * @param salt
-   * @returns hash: string
+   * @returns derived key: hex string
    */
-  private encryptSHA512 = (password: string, salt: string) =>
-    crypto.createHmac('sha512', salt).update(password).digest('hex');
+  private encryptSHA512 = (password: string, salt: string): string => {
+    // Session/encryption key derivation (used to encrypt/decrypt xprv in-memory and persisted state).
+    // PBKDF2 with SHA-512, 20,000 iterations (prod default), 256-bit output.
+    // NOTE: Tests override iterations to keep CI fast.
+    const isTestEnv =
+      typeof process !== 'undefined' && process?.env?.NODE_ENV === 'test';
+    const iterations =
+      Number.parseInt(process?.env?.SYSWEB3_PBKDF2_ENC_ITERS || '', 10) ||
+      (isTestEnv ? 1_000 : 20_000);
+    const key = CryptoJS.PBKDF2(password, CryptoJS.enc.Hex.parse(salt), {
+      keySize: 256 / 32, // 256 bits
+      iterations,
+      hasher: CryptoJS.algo.SHA512,
+    });
+    return key.toString();
+  };
+
+  /**
+   * Stored password verifier derivation (persisted as vault-keys.hash).
+   * MUST NOT be usable as the xprv encryption key.
+   */
+  private encryptSHA512Auth = (password: string, salt: string): string => {
+    // PBKDF2 with SHA-512, 24,000 iterations (prod default), 512-bit output
+    // NOTE: Tests override iterations to keep CI fast.
+    const isTestEnv =
+      typeof process !== 'undefined' && process?.env?.NODE_ENV === 'test';
+    const iterations =
+      Number.parseInt(process?.env?.SYSWEB3_PBKDF2_AUTH_ITERS || '', 10) ||
+      (isTestEnv ? 1_200 : 24_000);
+    const hash = CryptoJS.PBKDF2(password, CryptoJS.enc.Hex.parse(salt), {
+      keySize: 512 / 32, // 512 bits
+      iterations,
+      hasher: CryptoJS.algo.SHA512,
+    });
+    return hash.toString();
+  };
+
+  private hasWebCrypto = (): boolean => {
+    // MV3 service worker & extension pages: globalThis.crypto.subtle exists.
+    // Jest tests mock global.crypto without subtle -> fallback to CryptoJS.
+    return !!(globalThis as any)?.crypto?.subtle;
+  };
+
+  private hexToBytes = (hex: string): Uint8Array => {
+    const clean = (hex || '').trim();
+    if (!/^[0-9a-fA-F]*$/.test(clean) || clean.length % 2 !== 0) {
+      throw new Error('Invalid hex string');
+    }
+    const out = new Uint8Array(clean.length / 2);
+    for (let i = 0; i < out.length; i++) {
+      out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+    }
+    return out;
+  };
+
+  private bytesToHex = (bytes: ArrayBuffer): string => {
+    const u8 = new Uint8Array(bytes);
+    let hex = '';
+    for (let i = 0; i < u8.length; i++) {
+      hex += u8[i].toString(16).padStart(2, '0');
+    }
+    return hex;
+  };
+
+  private getEncIterations = (): number => {
+    const isTestEnv =
+      typeof process !== 'undefined' && process?.env?.NODE_ENV === 'test';
+    return (
+      Number.parseInt(process?.env?.SYSWEB3_PBKDF2_ENC_ITERS || '', 10) ||
+      (isTestEnv ? 1_000 : 100_000)
+    );
+  };
+
+  private getAuthIterations = (): number => {
+    const isTestEnv =
+      typeof process !== 'undefined' && process?.env?.NODE_ENV === 'test';
+    return (
+      Number.parseInt(process?.env?.SYSWEB3_PBKDF2_AUTH_ITERS || '', 10) ||
+      (isTestEnv ? 1_200 : 120_000)
+    );
+  };
+
+  private async pbkdf2WebCryptoHex(params: {
+    password: string;
+    saltHex: string;
+    iterations: number;
+    lengthBytes: number;
+    hash: 'SHA-256' | 'SHA-512';
+  }): Promise<string> {
+    const subtle = (globalThis as any).crypto.subtle as SubtleCrypto;
+    const enc = new TextEncoder();
+    const passBytes = enc.encode(params.password);
+    const saltBytes = this.hexToBytes(params.saltHex);
+
+    const keyMaterial = await subtle.importKey(
+      'raw',
+      passBytes as unknown as BufferSource,
+      { name: 'PBKDF2' },
+      false,
+      ['deriveBits']
+    );
+
+    const bits = await subtle.deriveBits(
+      {
+        name: 'PBKDF2',
+        salt: saltBytes as unknown as BufferSource,
+        iterations: params.iterations,
+        hash: params.hash,
+      },
+      keyMaterial,
+      params.lengthBytes * 8
+    );
+
+    return this.bytesToHex(bits);
+  }
+
+  private async encryptSHA512Async(
+    password: string,
+    salt: string
+  ): Promise<string> {
+    if (this.hasWebCrypto()) {
+      // Match CryptoJS PBKDF2 output format: hex string
+      return await this.pbkdf2WebCryptoHex({
+        password,
+        saltHex: salt,
+        iterations: this.getEncIterations(),
+        lengthBytes: 32, // 256-bit
+        hash: 'SHA-512',
+      });
+    }
+    return this.encryptSHA512(password, salt);
+  }
+
+  private async encryptSHA512AuthAsync(
+    password: string,
+    salt: string
+  ): Promise<string> {
+    if (this.hasWebCrypto()) {
+      return await this.pbkdf2WebCryptoHex({
+        password,
+        saltHex: salt,
+        iterations: this.getAuthIterations(),
+        lengthBytes: 64, // 512-bit
+        hash: 'SHA-512',
+      });
+    }
+    return this.encryptSHA512Auth(password, salt);
+  }
 
   private getSysActivePrivateKey = (hd: SyscoinHDSigner) => {
     if (hd === null) throw new Error('No HD Signer');
@@ -2514,11 +2666,17 @@ export class KeyringManager implements IKeyringManager {
       salt = vaultKeys.salt;
     }
 
-    const sessionPasswordSaltedHash = this.encryptSHA512(password, salt);
+    // Store ONLY the auth verifier on disk (vault-keys.hash).
+    // The session encryption key (encryptSHA512) must remain in memory only.
+    const sessionPasswordSaltedHash = await this.encryptSHA512Async(
+      password,
+      salt
+    );
+    const authHash = await this.encryptSHA512AuthAsync(password, salt);
     if (!foundVaultKeys) {
       // Store vault-keys using the storage abstraction
       await this.storage.set('vault-keys', {
-        hash: sessionPasswordSaltedHash,
+        hash: authHash,
         salt,
       });
     }

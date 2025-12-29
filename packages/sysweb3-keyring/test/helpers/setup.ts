@@ -1,9 +1,14 @@
 // Test setup file
 import { INetworkType } from '@sidhujag/sysweb3-network';
-import { randomBytes, createHmac } from 'crypto';
-import { TextEncoder, TextDecoder } from 'util';
+import { randomBytes } from 'crypto';
+import CryptoJS from 'crypto-js';
 
 import { KeyringAccountType } from '../../src';
+
+const getTestIters = (envKey: string, fallback: number) => {
+  const parsed = Number.parseInt(process?.env?.[envKey] || '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
 
 // Extend global type to include setupTestVault and mockVaultState utilities
 declare global {
@@ -16,10 +21,6 @@ declare global {
   }): any;
   const mockVaultState: any;
 }
-
-// Polyfill for TextEncoder/TextDecoder in Node.js environment
-global.TextEncoder = TextEncoder;
-global.TextDecoder = TextDecoder as any;
 
 // Polyfill crypto.getRandomValues for Node.js
 global.crypto = {
@@ -406,13 +407,21 @@ global.setupTestVault = async (password = 'Asdqwe123!') => {
   const { sysweb3Di } = jest.requireMock('@sidhujag/sysweb3-core');
   const storage = sysweb3Di.getStateStorageDb();
 
+  // Match keyring-manager.ts defaults under NODE_ENV=test
+  const authIters = getTestIters('SYSWEB3_PBKDF2_AUTH_ITERS', 1_200);
+
+  const deriveAuthHash = (pwd: string, saltHex: string) =>
+    CryptoJS.PBKDF2(pwd, CryptoJS.enc.Hex.parse(saltHex), {
+      keySize: 512 / 32,
+      iterations: authIters,
+      hasher: CryptoJS.algo.SHA512,
+    }).toString();
+
   // Check if vault-keys already exist - if so, don't recreate them (idempotent)
   const existingVaultKeys = await storage.get('vault-keys');
   if (existingVaultKeys && existingVaultKeys.salt && existingVaultKeys.hash) {
     // Vault already set up, verify password matches
-    const expectedHash = createHmac('sha512', existingVaultKeys.salt)
-      .update(password)
-      .digest('hex');
+    const expectedHash = deriveAuthHash(password, existingVaultKeys.salt);
     if (expectedHash === existingVaultKeys.hash) {
       // Same password, vault is already correctly set up
       return;
@@ -421,7 +430,6 @@ global.setupTestVault = async (password = 'Asdqwe123!') => {
   }
 
   // Create a vault with plain mnemonic (it will be encrypted by storage)
-  const CryptoJS = jest.requireActual('crypto-js');
   const mnemonic =
     'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 
@@ -435,8 +443,8 @@ global.setupTestVault = async (password = 'Asdqwe123!') => {
   await storage.set('vault', encryptedVault);
 
   // Use CONSISTENT salts for testing (not random) to prevent password validation mismatches
-  const salt = 'test-salt-12345678901234567890123456789012'; // Fixed 32-char salt
-  const hash = createHmac('sha512', salt).update(password).digest('hex');
+  const salt = '0123456789abcdef0123456789abcdef'; // 16-byte hex salt
+  const hash = deriveAuthHash(password, salt);
 
   await storage.set('vault-keys', {
     hash,
@@ -445,7 +453,12 @@ global.setupTestVault = async (password = 'Asdqwe123!') => {
 };
 
 // Create mock vault state utility function
-global.createMockVaultState = (options = {}) => {
+global.createMockVaultState = (options: {
+  activeAccountId?: number;
+  activeAccountType?: KeyringAccountType;
+  networkType?: INetworkType;
+  chainId?: number;
+}): any => {
   const {
     activeAccountId = 0,
     activeAccountType = KeyringAccountType.HDAccount,
@@ -480,13 +493,16 @@ global.createMockVaultState = (options = {}) => {
     xpub = derivedAccount.publicKey;
 
     // Encrypt the private key like the real vault does
-    const CryptoJS = jest.requireActual('crypto-js');
-    const crypto = jest.requireActual('crypto');
-    const salt = 'test-salt-12345678901234567890123456789012';
-    const sessionPassword = crypto
-      .createHmac('sha512', salt)
-      .update(testPassword)
-      .digest('hex');
+    const salt = '0123456789abcdef0123456789abcdef';
+    const sessionPassword = CryptoJS.PBKDF2(
+      testPassword,
+      CryptoJS.enc.Hex.parse(salt),
+      {
+        keySize: 256 / 32,
+        iterations: getTestIters('SYSWEB3_PBKDF2_ENC_ITERS', 1_000),
+        hasher: CryptoJS.algo.SHA512,
+      }
+    ).toString();
     xprv = CryptoJS.AES.encrypt(
       derivedAccount.privateKey,
       sessionPassword
@@ -497,8 +513,7 @@ global.createMockVaultState = (options = {}) => {
     const { getNetworkConfig } = jest.requireActual(
       '@sidhujag/sysweb3-network'
     );
-    const CryptoJS = jest.requireActual('crypto-js');
-    const crypto = jest.requireActual('crypto');
+    // CryptoJS is already imported at top
 
     try {
       // Determine slip44 and coin name based on chainId
@@ -556,11 +571,16 @@ global.createMockVaultState = (options = {}) => {
     }
 
     // Encrypt a mock private key
-    const salt = 'test-salt-12345678901234567890123456789012';
-    const sessionPassword = crypto
-      .createHmac('sha512', salt)
-      .update(testPassword)
-      .digest('hex');
+    const salt = '0123456789abcdef0123456789abcdef';
+    const sessionPassword = CryptoJS.PBKDF2(
+      testPassword,
+      CryptoJS.enc.Hex.parse(salt),
+      {
+        keySize: 256 / 32,
+        iterations: getTestIters('SYSWEB3_PBKDF2_ENC_ITERS', 1_000),
+        hasher: CryptoJS.algo.SHA512,
+      }
+    ).toString();
     const mockPrivateKey =
       'L1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef';
     xprv = CryptoJS.AES.encrypt(mockPrivateKey, sessionPassword).toString();
