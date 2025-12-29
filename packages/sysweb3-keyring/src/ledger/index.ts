@@ -51,7 +51,8 @@ export class LedgerKeyring {
    *                                     to share the same Ledger connection.
    */
   constructor(sharedHardwareWalletManager?: HardwareWalletManager) {
-    this.hardwareWalletManager = sharedHardwareWalletManager || new HardwareWalletManager();
+    this.hardwareWalletManager =
+      sharedHardwareWalletManager || new HardwareWalletManager();
 
     // Set up event listeners
     this.hardwareWalletManager.on('connected', ({ type }) => {
@@ -130,7 +131,9 @@ export class LedgerKeyring {
         'm',
         fingerprint
       );
-      const walletPolicy = new WalletPolicy(coin, DESCRIPTOR, [xpubWithDescriptor])
+      const walletPolicy = new WalletPolicy(coin, DESCRIPTOR, [
+        xpubWithDescriptor,
+      ]);
       const hmac = await this.getOrRegisterHmac(walletPolicy, fingerprint);
 
       const address = await this.ledgerUtxoClient.getWalletAddress(
@@ -357,10 +360,13 @@ export class LedgerKeyring {
   // Build a stable cache key for a policy bound to the device and derivation path
   private buildWalletCacheKey(
     fingerprint: string,
-    descriptorTemplate: string,
-    hdPath: string
+    walletPolicy: WalletPolicy
   ): string {
-    return `${fingerprint}|${descriptorTemplate}|${hdPath}`;
+    // Wallet HMACs are bound to a specific wallet policy id.
+    // The id commits to: version, wallet name, descriptor template hash, and the merkle root of keys.
+    // Therefore, caching by (fingerprint + walletId) avoids collisions across different networks
+    // that may share the same derivation path (e.g., multiple slip44=1 testnets).
+    return `${fingerprint}|${walletPolicy.getId().toString('hex')}`;
   }
 
   // Lazily register the wallet policy and cache HMAC in memory only
@@ -368,11 +374,7 @@ export class LedgerKeyring {
     walletPolicy: any,
     fingerprint: string
   ): Promise<Buffer | null> {
-    const cacheKey = this.buildWalletCacheKey(
-      fingerprint,
-      walletPolicy.descriptorTemplate,
-      this.hdPath
-    );
+    const cacheKey = this.buildWalletCacheKey(fingerprint, walletPolicy);
 
     const cached = this.walletHmacCache.get(cacheKey);
     if (cached) return cached;
