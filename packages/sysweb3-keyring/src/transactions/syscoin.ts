@@ -5,7 +5,7 @@ import * as syscoinjs from 'syscoinjs-lib';
 // import { BIP_84, ONE_HUNDRED_MILLION, SYSCOIN_BASIC_FEE } from 'utils';
 
 import { LedgerKeyring } from '../ledger';
-import { WalletPolicy } from '../ledger/bitcoin_client';
+import { DefaultWalletPolicy, WalletPolicy } from '../ledger/bitcoin_client';
 import { PsbtV2 } from '../ledger/bitcoin_client/lib/psbtv2';
 import { DESCRIPTOR } from '../ledger/consts';
 import { SyscoinHDSigner } from '../signers';
@@ -307,64 +307,78 @@ export class SyscoinTransactions implements ISyscoinTransactions {
       const { getRawTransaction } = this.txUtilsFunctions();
       const blockbookUrl = activeNetwork.url;
 
-      // Fetch and add nonWitnessUtxo for all inputs
-      const txFetchPromises = psbt.data.inputs.map(async (_input, index) => {
-        try {
-          const tx = psbt.txInputs[index];
-          const prevTxId = Buffer.from(tx.hash).reverse().toString('hex');
+      // Some unit tests mock PSBTs without bitcoinjs-lib internals (data/txInputs).
+      // Only attempt enrichment when the PSBT looks like a real bitcoinjs-lib Psbt.
+      const psbtAny: any = psbt as any;
+      const inputMetas: any[] | undefined = psbtAny?.data?.inputs;
+      const txInputs: any[] | undefined = psbtAny?.txInputs;
+      if (
+        Array.isArray(inputMetas) &&
+        Array.isArray(txInputs) &&
+        txInputs.length > 0
+      ) {
+        // Fetch and add nonWitnessUtxo for all inputs
+        const txFetchPromises = txInputs.map(async (_txInput, index) => {
+          try {
+            const tx = txInputs[index];
+            const prevTxId = Buffer.from(tx.hash).reverse().toString('hex');
 
-          // Fetch the raw transaction
-          const rawTxResponse = await getRawTransaction(blockbookUrl, prevTxId);
-
-          // Handle different response formats (string, object with 'hex', or object with 'result')
-          let rawTxHex: string;
-          if (typeof rawTxResponse === 'string') {
-            rawTxHex = rawTxResponse;
-          } else if (
-            rawTxResponse &&
-            typeof rawTxResponse === 'object' &&
-            'hex' in rawTxResponse
-          ) {
-            rawTxHex = (rawTxResponse as any).hex;
-          } else if (
-            rawTxResponse &&
-            typeof rawTxResponse === 'object' &&
-            'result' in rawTxResponse
-          ) {
-            rawTxHex = (rawTxResponse as any).result;
-          } else {
-            throw new Error(
-              `Unexpected response format: ${JSON.stringify(rawTxResponse)}`
+            // Fetch the raw transaction
+            const rawTxResponse = await getRawTransaction(
+              blockbookUrl,
+              prevTxId
             );
-          }
 
-          if (!rawTxHex || typeof rawTxHex !== 'string') {
-            throw new Error(`Invalid raw transaction hex received`);
-          }
+            // Handle different response formats (string, object with 'hex', or object with 'result')
+            let rawTxHex: string;
+            if (typeof rawTxResponse === 'string') {
+              rawTxHex = rawTxResponse;
+            } else if (
+              rawTxResponse &&
+              typeof rawTxResponse === 'object' &&
+              'hex' in rawTxResponse
+            ) {
+              rawTxHex = (rawTxResponse as any).hex;
+            } else if (
+              rawTxResponse &&
+              typeof rawTxResponse === 'object' &&
+              'result' in rawTxResponse
+            ) {
+              rawTxHex = (rawTxResponse as any).result;
+            } else {
+              throw new Error(
+                `Unexpected response format: ${JSON.stringify(rawTxResponse)}`
+              );
+            }
 
-          // Convert hex to Buffer and add to PSBT
-          const nonWitnessUtxo = Buffer.from(rawTxHex, 'hex');
-          if (nonWitnessUtxo.length === 0) {
-            throw new Error('Converted buffer is empty');
-          }
+            if (!rawTxHex || typeof rawTxHex !== 'string') {
+              throw new Error(`Invalid raw transaction hex received`);
+            }
 
-          psbt.updateInput(index, { nonWitnessUtxo });
-          return { index, success: true };
-        } catch (error) {
-          console.error(`[Ledger] Failed to enrich input ${index}:`, error);
-          return { index, success: false, error };
+            // Convert hex to Buffer and add to PSBT
+            const nonWitnessUtxo = Buffer.from(rawTxHex, 'hex');
+            if (nonWitnessUtxo.length === 0) {
+              throw new Error('Converted buffer is empty');
+            }
+
+            psbt.updateInput(index, { nonWitnessUtxo });
+            return { index, success: true };
+          } catch (error) {
+            console.error(`[Ledger] Failed to enrich input ${index}:`, error);
+            return { index, success: false, error };
+          }
+        });
+
+        // Wait for all inputs to be enriched
+        const results = await Promise.all(txFetchPromises);
+        const failedInputs = results.filter((r) => !r.success);
+
+        if (failedInputs.length > 0) {
+          throw new Error(
+            `Failed to enrich ${failedInputs.length} of ${results.length} inputs with nonWitnessUtxo. ` +
+              `Ledger devices require this data for signing.`
+          );
         }
-      });
-
-      // Wait for all inputs to be enriched
-      const results = await Promise.all(txFetchPromises);
-      const failedInputs = results.filter((r) => !r.success);
-
-      if (failedInputs.length > 0) {
-        throw new Error(
-          `Failed to enrich ${failedInputs.length} of ${results.length} inputs with nonWitnessUtxo. ` +
-            `Ledger devices require this data for signing.`
-        );
       }
 
       const enhancedPsbt = await this.ledger.convertToLedgerFormat(
@@ -397,19 +411,37 @@ export class SyscoinTransactions implements ISyscoinTransactions {
         'm',
         fingerprint
       );
-      const walletPolicy = new WalletPolicy(
-        activeNetwork.currency.toLowerCase(),
-        DESCRIPTOR as any,
-        [xpubWithDescriptor]
-      );
+      // Use DefaultWalletPolicy for standard single-sig templates (no registration / no HMAC required).
+      // This avoids device rejections (0x6a80) if policy registration fails and we would otherwise
+      // proceed with an invalid/zero HMAC.
+      const isDefaultTemplate = DESCRIPTOR === 'wpkh(@0/**)';
+      const walletPolicy: any = isDefaultTemplate
+        ? new DefaultWalletPolicy(DESCRIPTOR as any, xpubWithDescriptor)
+        : new WalletPolicy(
+            activeNetwork.currency.toLowerCase(),
+            DESCRIPTOR as any,
+            [xpubWithDescriptor]
+          );
 
-      // Register lazily and retrieve HMAC for silent operations thereafter
+      // For default wallet policies, HMAC must be null. For non-default policies, require registration.
       let hmac: Buffer | null = null;
-      if (typeof (this.ledger as any).getOrRegisterHmac === 'function') {
-        hmac = await (this.ledger as any).getOrRegisterHmac(
+      if (!isDefaultTemplate) {
+        const getOrRegisterHmac: any = (this.ledger as any)?.getOrRegisterHmac;
+        if (typeof getOrRegisterHmac !== 'function') {
+          throw new Error(
+            'Ledger: Wallet policy registration is unavailable in this environment.'
+          );
+        }
+        hmac = await getOrRegisterHmac.call(
+          this.ledger,
           walletPolicy,
           fingerprint
         );
+        if (!hmac) {
+          throw new Error(
+            'Ledger: Failed to register wallet policy (missing HMAC). Ensure the Bitcoin app is open and approve wallet registration.'
+          );
+        }
       }
 
       // Convert to PsbtV2 for direct signing without intermediate base64 encode/decode
