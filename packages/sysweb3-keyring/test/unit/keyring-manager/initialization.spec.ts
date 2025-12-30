@@ -460,11 +460,8 @@ describe('KeyringManager Initialization', () => {
       // Verify vault-keys were actually created by checking storage
       const vaultKeys = await keyringStorage.get('vault-keys');
       expect(vaultKeys).toBeDefined();
-      expect(vaultKeys.hash).toBeDefined();
       expect(vaultKeys.salt).toBeDefined();
-      expect(typeof vaultKeys.hash).toBe('string');
       expect(typeof vaultKeys.salt).toBe('string');
-      expect(vaultKeys.hash.length).toBeGreaterThan(0);
       expect(vaultKeys.salt.length).toBeGreaterThan(0);
 
       // Verify keyring is now unlocked and functional

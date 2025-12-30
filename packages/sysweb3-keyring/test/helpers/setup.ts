@@ -4,6 +4,7 @@ import { randomBytes } from 'crypto';
 import CryptoJS from 'crypto-js';
 
 import { KeyringAccountType } from '../../src';
+import { getDecryptedVault, setEncryptedVault } from '../../src/storage';
 
 const getTestIters = (envKey: string, fallback: number) => {
   const parsed = Number.parseInt(process?.env?.[envKey] || '', 10);
@@ -408,57 +409,51 @@ global.setupTestVault = async (password = 'Asdqwe123!') => {
   const storage = sysweb3Di.getStateStorageDb();
 
   // Match keyring-manager.ts defaults under NODE_ENV=test
-  const authIters = getTestIters('SYSWEB3_PBKDF2_AUTH_ITERS', 1_200);
+  const encIters = getTestIters('SYSWEB3_PBKDF2_ENC_ITERS', 1_000);
 
-  const deriveAuthHash = (pwd: string, saltHex: string) =>
+  const deriveSessionKey = (pwd: string, saltHex: string) =>
     CryptoJS.PBKDF2(pwd, CryptoJS.enc.Hex.parse(saltHex), {
-      keySize: 512 / 32,
-      iterations: authIters,
+      keySize: 256 / 32,
+      iterations: encIters,
       hasher: CryptoJS.algo.SHA512,
     }).toString();
 
   // Check if vault-keys already exist - if so, don't recreate them (idempotent)
   const existingVaultKeys = await storage.get('vault-keys');
-  if (existingVaultKeys && existingVaultKeys.salt && existingVaultKeys.hash) {
-    // Vault already set up, verify password matches
-    const expectedHash = deriveAuthHash(password, existingVaultKeys.salt);
-    if (expectedHash === existingVaultKeys.hash) {
-      // Same password, vault is already correctly set up
+  if (existingVaultKeys && existingVaultKeys.salt) {
+    // Vault already set up, verify password by attempting decrypt with derived session key (v4)
+    const sessionKey = deriveSessionKey(password, existingVaultKeys.salt);
+    try {
+      await getDecryptedVault(sessionKey);
       return;
+    } catch {
+      // Wrong password or stale vault -> recreate below
     }
-    // Different password - need to recreate
   }
 
   // Create a vault with plain mnemonic (it will be encrypted by storage)
   const mnemonic =
     'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 
-  // Vault should contain plain mnemonic - the storage layer handles encryption
-  const vault = { mnemonic: mnemonic };
-  const encryptedVault = CryptoJS.AES.encrypt(
-    JSON.stringify(vault),
-    password
-  ).toString();
-
-  await storage.set('vault', encryptedVault);
-
   // Use CONSISTENT salts for testing (not random) to prevent password validation mismatches
   const salt = '0123456789abcdef0123456789abcdef'; // 16-byte hex salt
-  const hash = deriveAuthHash(password, salt);
+  const sessionKey = deriveSessionKey(password, salt);
 
-  await storage.set('vault-keys', {
-    hash,
-    salt,
-  });
+  // Vault should contain plain mnemonic - the storage layer handles encryption (v4 uses derived session key)
+  await setEncryptedVault({ mnemonic }, sessionKey);
+
+  await storage.set('vault-keys', { salt });
 };
 
 // Create mock vault state utility function
-global.createMockVaultState = (options: {
-  activeAccountId?: number;
-  activeAccountType?: KeyringAccountType;
-  networkType?: INetworkType;
-  chainId?: number;
-}): any => {
+global.createMockVaultState = (
+  options: {
+    activeAccountId?: number;
+    activeAccountType?: KeyringAccountType;
+    networkType?: INetworkType;
+    chainId?: number;
+  } = {}
+): any => {
   const {
     activeAccountId = 0,
     activeAccountType = KeyringAccountType.HDAccount,

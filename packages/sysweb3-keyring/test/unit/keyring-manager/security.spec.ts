@@ -291,7 +291,6 @@ describe('KeyringManager - Security', () => {
       const vaultKeys = await mockStorage.get('vault-keys');
       if (vaultKeys) {
         expect(vaultKeys.salt).toBeDefined();
-        expect(vaultKeys.hash).toBeDefined();
         expect(vaultKeys.salt.length).toBeGreaterThan(0);
       }
     });

@@ -372,16 +372,9 @@ export class KeyringManager implements IKeyringManager {
           canLogin: false,
         };
       }
-      // FIRST: Validate password against stored verifier (NOT the session encryption key)
-      const { hash, salt } = vaultKeys;
-      const authHash = await this.encryptSHA512AuthAsync(password, salt);
-
-      if (authHash !== hash) {
-        // Password is wrong - return immediately
-        return {
-          canLogin: false,
-        };
-      }
+      // v4: Validate password by deriving the session key once and decrypting the vault with it.
+      // This avoids an extra KDF pass just for a stored verifier.
+      const { salt } = vaultKeys;
 
       // Derive session encryption key (in-memory only) used to encrypt/decrypt xprv fields
       // IMPORTANT: This MUST NOT be the same value as the stored verifier above.
@@ -399,7 +392,7 @@ export class KeyringManager implements IKeyringManager {
           vaultKeys.currentSessionSalt
         );
 
-        // Get the vault and check if mnemonic needs migration
+        // Get the vault (v3 vault is encrypted with raw password)
         const { mnemonic } = await getDecryptedVault(password);
 
         if (mnemonic) {
@@ -435,22 +428,46 @@ export class KeyringManager implements IKeyringManager {
           }
 
           // Re-save the vault with properly formatted mnemonic (single encryption)
-          await setEncryptedVault({ mnemonic: decryptedMnemonic }, password);
+          // v4 vault is encrypted with the derived session password key (PBKDF2 output)
+          await setEncryptedVault(
+            { mnemonic: decryptedMnemonic },
+            sessionPasswordKey
+          );
           console.log('[KeyringManager] Vault mnemonic format normalized');
         }
 
-        // Remove currentSessionSalt from vault-keys
+        // Remove currentSessionSalt from vault-keys (v4 keeps only the salt on disk)
         const migratedVaultKeys = {
-          hash: vaultKeys.hash,
           salt: vaultKeys.salt,
         };
         await this.storage.set('vault-keys', migratedVaultKeys);
         console.log('[KeyringManager] Old vault format migration completed');
       }
 
+      // v4 vault is encrypted with the derived session password key (PBKDF2 output).
+      // If the password is wrong, this will throw and we return canLogin:false below.
+      await getDecryptedVault(sessionPasswordKey);
+
       // If session data missing or corrupted, recreate from vault
       if (!this.sessionMnemonic) {
-        await this.recreateSessionFromVault(password, sessionPasswordKey);
+        await this.recreateSessionFromVault(sessionPasswordKey);
+      }
+
+      // Re-initialize syscoin transaction handler if it was cleared on lock.
+      // `lockWallet()` intentionally replaces it with a plain object to drop signer references,
+      // so we must restore the real class instance on unlock.
+      if (
+        !this.syscoinTransaction ||
+        typeof (this.syscoinTransaction as any).getRecommendedFee !== 'function'
+      ) {
+        this.syscoinTransaction = new SyscoinTransactions(
+          this.getSigner,
+          this.getReadOnlySigner,
+          this.getAccountsState,
+          this.getAddress,
+          this.ledgerSigner,
+          this.trezorSigner
+        );
       }
 
       // NOTE: Active account management is now handled by vault state/Redux
@@ -706,7 +723,8 @@ export class KeyringManager implements IKeyringManager {
     if (this.getSessionPasswordString() !== genPwd) {
       throw new Error('Invalid password');
     }
-    let { mnemonic } = await getDecryptedVault(pwd);
+    // v4 vault is encrypted with the derived session password key (PBKDF2 output)
+    let { mnemonic } = await getDecryptedVault(genPwd);
 
     if (!mnemonic) {
       throw new Error('Mnemonic not found in vault or is empty');
@@ -848,7 +866,7 @@ export class KeyringManager implements IKeyringManager {
       throw new Error('Invalid password');
     }
 
-    await this.clearTemporaryLocalKeys(pwd);
+    await this.clearTemporaryLocalKeys();
   };
 
   public importWeb3Account = (mnemonicOrPrivKey: string) => {
@@ -1504,14 +1522,18 @@ export class KeyringManager implements IKeyringManager {
       };
     } catch (error) {
       const vaultForLogging = this.getVault();
-      console.error('ERROR getDecryptedPrivateKey', {
-        error: error.message,
-        activeChain: this.getActiveChain(),
-        vault: {
-          activeAccountId: vaultForLogging?.activeAccount?.id,
-          activeAccountType: vaultForLogging?.activeAccount?.type,
-        },
-      });
+      const isTestEnv =
+        typeof process !== 'undefined' && process?.env?.NODE_ENV === 'test';
+      if (!isTestEnv) {
+        console.error('ERROR getDecryptedPrivateKey', {
+          error: error.message,
+          activeChain: this.getActiveChain(),
+          vault: {
+            activeAccountId: vaultForLogging?.activeAccount?.id,
+            activeAccountType: vaultForLogging?.activeAccount?.type,
+          },
+        });
+      }
       this.validateAndHandleErrorByMessage(error.message);
       throw error;
     }
@@ -1667,26 +1689,6 @@ export class KeyringManager implements IKeyringManager {
     return key.toString();
   };
 
-  /**
-   * Stored password verifier derivation (persisted as vault-keys.hash).
-   * MUST NOT be usable as the xprv encryption key.
-   */
-  private encryptSHA512Auth = (password: string, salt: string): string => {
-    // PBKDF2 with SHA-512, 24,000 iterations (prod default), 512-bit output
-    // NOTE: Tests override iterations to keep CI fast.
-    const isTestEnv =
-      typeof process !== 'undefined' && process?.env?.NODE_ENV === 'test';
-    const iterations =
-      Number.parseInt(process?.env?.SYSWEB3_PBKDF2_AUTH_ITERS || '', 10) ||
-      (isTestEnv ? 1_200 : 24_000);
-    const hash = CryptoJS.PBKDF2(password, CryptoJS.enc.Hex.parse(salt), {
-      keySize: 512 / 32, // 512 bits
-      iterations,
-      hasher: CryptoJS.algo.SHA512,
-    });
-    return hash.toString();
-  };
-
   private hasWebCrypto = (): boolean => {
     // MV3 service worker & extension pages: globalThis.crypto.subtle exists.
     // Jest tests mock global.crypto without subtle -> fallback to CryptoJS.
@@ -1720,15 +1722,6 @@ export class KeyringManager implements IKeyringManager {
     return (
       Number.parseInt(process?.env?.SYSWEB3_PBKDF2_ENC_ITERS || '', 10) ||
       (isTestEnv ? 1_000 : 100_000)
-    );
-  };
-
-  private getAuthIterations = (): number => {
-    const isTestEnv =
-      typeof process !== 'undefined' && process?.env?.NODE_ENV === 'test';
-    return (
-      Number.parseInt(process?.env?.SYSWEB3_PBKDF2_AUTH_ITERS || '', 10) ||
-      (isTestEnv ? 1_200 : 120_000)
     );
   };
 
@@ -1780,23 +1773,8 @@ export class KeyringManager implements IKeyringManager {
         hash: 'SHA-512',
       });
     }
-    return this.encryptSHA512(password, salt);
-  }
 
-  private async encryptSHA512AuthAsync(
-    password: string,
-    salt: string
-  ): Promise<string> {
-    if (this.hasWebCrypto()) {
-      return await this.pbkdf2WebCryptoHex({
-        password,
-        saltHex: salt,
-        iterations: this.getAuthIterations(),
-        lengthBytes: 64, // 512-bit
-        hash: 'SHA-512',
-      });
-    }
-    return this.encryptSHA512Auth(password, salt);
+    return this.encryptSHA512(password, salt);
   }
 
   private getSysActivePrivateKey = (hd: SyscoinHDSigner) => {
@@ -2236,14 +2214,10 @@ export class KeyringManager implements IKeyringManager {
     }
   };
 
-  private clearTemporaryLocalKeys = async (pwd: string) => {
-    // Clear the vault completely (set empty mnemonic)
-    await setEncryptedVault(
-      {
-        mnemonic: '',
-      },
-      pwd
-    );
+  private clearTemporaryLocalKeys = async () => {
+    // Clear the vault completely.
+    // For v4, the vault is encrypted with a derived key, so the safest wipe is to delete the stored blob.
+    await this.storage.deleteItem('vault');
 
     // Remove vault-keys from storage so no vault exists at all
     await this.storage.deleteItem('vault-keys');
@@ -2253,11 +2227,12 @@ export class KeyringManager implements IKeyringManager {
   };
 
   private async recreateSessionFromVault(
-    password: string,
     saltedHashPassword: string
   ): Promise<void> {
     try {
-      const { mnemonic } = await getDecryptedVault(password);
+      // v4 vault is encrypted with the derived session password key (PBKDF2 output)
+      // `saltedHashPassword` is the derived session password key passed by caller.
+      const { mnemonic } = await getDecryptedVault(saltedHashPassword);
 
       if (!mnemonic) {
         throw new Error('Mnemonic not found in vault');
@@ -2666,17 +2641,15 @@ export class KeyringManager implements IKeyringManager {
       salt = vaultKeys.salt;
     }
 
-    // Store ONLY the auth verifier on disk (vault-keys.hash).
-    // The session encryption key (encryptSHA512) must remain in memory only.
+    // v4 stores only the salt on disk (vault-keys.salt).
+    // The derived session encryption key must remain in memory only.
     const sessionPasswordSaltedHash = await this.encryptSHA512Async(
       password,
       salt
     );
-    const authHash = await this.encryptSHA512AuthAsync(password, salt);
     if (!foundVaultKeys) {
       // Store vault-keys using the storage abstraction
       await this.storage.set('vault-keys', {
-        hash: authHash,
         salt,
       });
     }
@@ -2714,10 +2687,11 @@ export class KeyringManager implements IKeyringManager {
       {
         mnemonic: seedPhrase, // Store plain mnemonic - setEncryptedVault will encrypt the entire vault
       },
-      password
+      // v4 vault is encrypted with the derived session password key (PBKDF2 output)
+      sessionPasswordSaltedHash
     );
 
-    await this.recreateSessionFromVault(password, sessionPasswordSaltedHash);
+    await this.recreateSessionFromVault(sessionPasswordSaltedHash);
   };
 
   // NEW: Create first account without signer setup

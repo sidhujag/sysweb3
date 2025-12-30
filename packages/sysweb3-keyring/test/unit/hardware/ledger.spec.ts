@@ -365,7 +365,10 @@ describe('Ledger Hardware Wallet', () => {
         makeRequest: jest.fn(),
         getAppAndVersion: jest.fn(),
         getExtendedPubkey: jest.fn(),
-        registerWallet: jest.fn(),
+        // Return a deterministic HMAC so getOrRegisterHmac() can cache it
+        registerWallet: jest
+          .fn()
+          .mockResolvedValue([Buffer.alloc(32, 1), Buffer.alloc(32, 2)]),
         getWalletAddress: jest.fn(),
         signMessage: jest.fn(),
       } as any;
