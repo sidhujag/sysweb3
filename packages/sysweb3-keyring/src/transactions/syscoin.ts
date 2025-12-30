@@ -302,6 +302,61 @@ export class SyscoinTransactions implements ISyscoinTransactions {
       }
       const accountXpub = account.xpub;
       const accountId = account.id;
+      
+      // Enrich PSBT with nonWitnessUtxo for Ledger compatibility
+      const { getRawTransaction } = this.txUtilsFunctions();
+      const blockbookUrl = activeNetwork.url;
+      
+      // Fetch and add nonWitnessUtxo for all inputs
+      const txFetchPromises = psbt.data.inputs.map(async (_input, index) => {
+        try {
+          const tx = psbt.txInputs[index];
+          const prevTxId = Buffer.from(tx.hash).reverse().toString('hex');
+          
+          // Fetch the raw transaction
+          const rawTxResponse = await getRawTransaction(blockbookUrl, prevTxId);
+          
+          // Handle different response formats (string, object with 'hex', or object with 'result')
+          let rawTxHex: string;
+          if (typeof rawTxResponse === 'string') {
+            rawTxHex = rawTxResponse;
+          } else if (rawTxResponse && typeof rawTxResponse === 'object' && 'hex' in rawTxResponse) {
+            rawTxHex = (rawTxResponse as any).hex;
+          } else if (rawTxResponse && typeof rawTxResponse === 'object' && 'result' in rawTxResponse) {
+            rawTxHex = (rawTxResponse as any).result;
+          } else {
+            throw new Error(`Unexpected response format: ${JSON.stringify(rawTxResponse)}`);
+          }
+          
+          if (!rawTxHex || typeof rawTxHex !== 'string') {
+            throw new Error(`Invalid raw transaction hex received`);
+          }
+          
+          // Convert hex to Buffer and add to PSBT
+          const nonWitnessUtxo = Buffer.from(rawTxHex, 'hex');
+          if (nonWitnessUtxo.length === 0) {
+            throw new Error('Converted buffer is empty');
+          }
+          
+          psbt.updateInput(index, { nonWitnessUtxo });
+          return { index, success: true };
+        } catch (error) {
+          console.error(`[Ledger] Failed to enrich input ${index}:`, error);
+          return { index, success: false, error };
+        }
+      });
+      
+      // Wait for all inputs to be enriched
+      const results = await Promise.all(txFetchPromises);
+      const failedInputs = results.filter(r => !r.success);
+      
+      if (failedInputs.length > 0) {
+        throw new Error(
+          `Failed to enrich ${failedInputs.length} of ${results.length} inputs with nonWitnessUtxo. ` +
+          `Ledger devices require this data for signing.`
+        );
+      }
+      
       const enhancedPsbt = await this.ledger.convertToLedgerFormat(
         psbt,
         accountXpub,
