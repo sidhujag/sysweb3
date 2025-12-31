@@ -27,13 +27,6 @@ export type SimpleTransactionRequest = {
   gasLimit?: BigNumberish;
   gasPrice?: BigNumberish;
 
-  /**
-   * Indicates this tx should send "max" native value (balance minus gas).
-   * Only applies to simple native transfers (no calldata); when true, the
-   * keyring will recompute `value` at send-time using live balance + final gas params.
-   */
-  isMaxSend?: boolean;
-
   maxFeePerGas: BigNumberish;
   maxPriorityFeePerGas: BigNumberish;
 
