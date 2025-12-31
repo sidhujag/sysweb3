@@ -822,15 +822,18 @@ export class KeyringManager implements IKeyringManager {
 
         // No additional setup needed - on-demand signers will be created when needed
       } else if (network.kind === INetworkType.Ethereum) {
-        // For EVM networks: validate that active account exists
+        // For EVM networks: we primarily need a correct provider for the active network.
+        // Active account validation can be temporarily inconsistent during network switching
+        // (e.g., placeholder activeAccount like Trezor:0 before accounts hydrate), and provider
+        // setup does not depend on it. So treat missing active account as a warning, not a hard error.
         const accountId = vault.activeAccount.id || 0;
         const accountType =
           vault.activeAccount.type || KeyringAccountType.HDAccount;
         const accounts = vault.accounts[accountType];
 
-        if (!accounts[accountId] || !accounts[accountId].xpub) {
-          throw new Error(
-            `Active account ${accountType}:${accountId} does not exist. Create accounts using addNewAccount() or initializeWalletSecurely() first.`
+        if (!accounts?.[accountId]) {
+          console.warn(
+            `[KeyringManager] Active account ${accountType}:${accountId} not found while setting EVM network; continuing to set provider`
           );
         }
 
