@@ -55,6 +55,7 @@ import {
 
 export class EthereumTransactions implements IEthereumTransactions {
   private _web3Provider: CustomJsonRpcProvider;
+  private _web3ProviderKey?: string;
   public trezorSigner: TrezorKeyring;
   public ledgerSigner: LedgerKeyring;
   private getNetwork: () => INetwork;
@@ -126,19 +127,29 @@ export class EthereumTransactions implements IEthereumTransactions {
 
   // Helper method to ensure providers are initialized when first needed
   private ensureProvidersInitialized() {
-    if (!this._web3Provider) {
-      // Providers not initialized yet, initialize them now
-      try {
-        const currentNetwork = this.getNetwork();
+    // Keep provider in sync with current network selection.
+    // Hardware-wallet signing (e.g., Trezor) commits to a chainId; if the provider points at a different
+    // RPC/network than `activeNetwork`, nodes will reject broadcasts with chain-id mismatch errors.
+    try {
+      const currentNetwork = this.getNetwork();
+      const currentUrl = currentNetwork?.url;
+      const currentKey = `${currentNetwork?.chainId ?? 'unknown'}|${
+        currentUrl ?? ''
+      }`;
+      const needsInit =
+        !this._web3Provider ||
+        !this._web3ProviderKey ||
+        (currentUrl && this._web3ProviderKey !== currentKey);
+      if (needsInit) {
         this.setWeb3Provider(currentNetwork);
-      } catch (error) {
-        // If vault state not available yet, providers will be initialized later
-        // when setWeb3Provider is called explicitly
-        console.log(
-          '[EthereumTransactions] Deferring provider initialization:',
-          error.message
-        );
       }
+    } catch (error: any) {
+      // If vault state not available yet, providers will be initialized later
+      // when setWeb3Provider is called explicitly
+      console.log(
+        '[EthereumTransactions] Deferring provider initialization:',
+        error?.message || error
+      );
     }
   }
 
@@ -562,6 +573,26 @@ export class EthereumTransactions implements IEthereumTransactions {
   toBigNumber = (aBigNumberish: string | number) =>
     BigNumber.from(String(aBigNumberish));
 
+  private toHex0x = (value: any, fieldName: string): string => {
+    if (value === undefined || value === null) return '0x0';
+    if (typeof value === 'string') {
+      const v = value.trim();
+      if (v === '') return '0x0';
+      if (v.startsWith('0x')) return v;
+      return BigNumber.from(v).toHexString();
+    }
+    if (typeof value === 'number') return BigNumber.from(value).toHexString();
+    if (BigNumber.isBigNumber(value)) return value.toHexString();
+    const maybeHex = (value as any)?._hex ?? (value as any)?.hex ?? value;
+    try {
+      return BigNumber.from(maybeHex).toHexString();
+    } catch (_e) {
+      throw new Error(
+        `Invalid numeric field "${fieldName}" for EVM tx: ${String(value)}`
+      );
+    }
+  };
+
   getData = ({
     contractAddress,
     receivingAddress,
@@ -604,7 +635,7 @@ export class EthereumTransactions implements IEthereumTransactions {
 
         console.log('[zkSync] Fee data:', {
           maxFeePerGas: maxFeePerGas.toString(),
-          maxPriorityFeePerGas: maxPriorityFeePerGas.toString()
+          maxPriorityFeePerGas: maxPriorityFeePerGas.toString(),
         });
 
         return { maxFeePerGas, maxPriorityFeePerGas };
@@ -613,7 +644,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         // Fallback for zkSync
         return {
           maxFeePerGas: BigNumber.from('250000000'), // 0.25 gwei
-          maxPriorityFeePerGas: BigNumber.from('2500000') // 0.0025 gwei
+          maxPriorityFeePerGas: BigNumber.from('2500000'), // 0.0025 gwei
         };
       }
     }
@@ -633,11 +664,14 @@ export class EthereumTransactions implements IEthereumTransactions {
           maxPriorityFeePerGas = BigNumber.from(ethMaxPriorityFee);
 
           // Apply minimum priority fee override if set
-          if (this.gasOverrides.minPriorityFee && maxPriorityFeePerGas.lt(this.gasOverrides.minPriorityFee)) {
+          if (
+            this.gasOverrides.minPriorityFee &&
+            maxPriorityFeePerGas.lt(this.gasOverrides.minPriorityFee)
+          ) {
             maxPriorityFeePerGas = this.gasOverrides.minPriorityFee;
           }
 
-          if(maxPriorityFeePerGas.isZero()){
+          if (maxPriorityFeePerGas.isZero()) {
             throw new Error('Max priority fee is zero');
           }
 
@@ -647,10 +681,15 @@ export class EthereumTransactions implements IEthereumTransactions {
 
           // Calculate standard maxFeePerGas
           const multiplier = this.gasOverrides.feeMultiplier || 250;
-          const calculatedMaxFee = block.baseFeePerGas.mul(multiplier).div(100).add(maxPriorityFeePerGas);
+          const calculatedMaxFee = block.baseFeePerGas
+            .mul(multiplier)
+            .div(100)
+            .add(maxPriorityFeePerGas);
 
           // Use the higher of the two to ensure transaction goes through
-          maxFeePerGas = calculatedMaxFee.gt(baselineMaxFee) ? calculatedMaxFee : baselineMaxFee;
+          maxFeePerGas = calculatedMaxFee.gt(baselineMaxFee)
+            ? calculatedMaxFee
+            : baselineMaxFee;
         } catch (e) {
           // Use a more aggressive fallback strategy with higher priority fees
           // Check if we can get fee history for better estimation
@@ -658,10 +697,14 @@ export class EthereumTransactions implements IEthereumTransactions {
             const feeHistory = await this.web3Provider.send('eth_feeHistory', [
               '0x5', // Last 5 blocks
               'latest',
-              [25, 50, 75] // Percentiles for priority fees
+              [25, 50, 75], // Percentiles for priority fees
             ]);
 
-            if (feeHistory && feeHistory.reward && feeHistory.reward.length > 0) {
+            if (
+              feeHistory &&
+              feeHistory.reward &&
+              feeHistory.reward.length > 0
+            ) {
               // Use median of the 50th percentile from recent blocks
               const recentFees = feeHistory.reward
                 .map((r: any[]) => r[1]) // Get 50th percentile
@@ -685,7 +728,9 @@ export class EthereumTransactions implements IEthereumTransactions {
             }
           } catch (feeHistoryError) {
             // If fee history fails, use current gas price as reference
-            console.warn('Fee history not available, using gas price based estimation');
+            console.warn(
+              'Fee history not available, using gas price based estimation'
+            );
             // Use 10% of current gas price as priority fee
             const currentGasPrice = await this.web3Provider.getGasPrice();
             maxPriorityFeePerGas = currentGasPrice.mul(10).div(100);
@@ -700,8 +745,13 @@ export class EthereumTransactions implements IEthereumTransactions {
           // Calculate maxFeePerGas based on current network conditions
           const currentGasPrice = await this.web3Provider.getGasPrice();
           const baselineMaxFee = currentGasPrice.mul(120).div(100);
-          const calculatedMaxFee = block.baseFeePerGas.mul(250).div(100).add(maxPriorityFeePerGas);
-          maxFeePerGas = calculatedMaxFee.gt(baselineMaxFee) ? calculatedMaxFee : baselineMaxFee;
+          const calculatedMaxFee = block.baseFeePerGas
+            .mul(250)
+            .div(100)
+            .add(maxPriorityFeePerGas);
+          maxFeePerGas = calculatedMaxFee.gt(baselineMaxFee)
+            ? calculatedMaxFee
+            : baselineMaxFee;
         }
 
         // Ensure maxFeePerGas is at least 20% higher than maxPriorityFeePerGas
@@ -714,7 +764,10 @@ export class EthereumTransactions implements IEthereumTransactions {
       } else if (block && !block.baseFeePerGas) {
         // For non-EIP1559 chains, return zeros to indicate legacy transaction should be used
         console.log('Chain does not support EIP1559, use legacy transactions');
-        return { maxFeePerGas: BigNumber.from(0), maxPriorityFeePerGas: BigNumber.from(0) };
+        return {
+          maxFeePerGas: BigNumber.from(0),
+          maxPriorityFeePerGas: BigNumber.from(0),
+        };
       } else if (!block) throw new Error('Block not found');
 
       return { maxFeePerGas, maxPriorityFeePerGas };
@@ -983,9 +1036,9 @@ export class EthereumTransactions implements IEthereumTransactions {
           gasLimit:
             typeof formattedTx.gasLimit === 'string'
               ? formattedTx.gasLimit
-              : this.toBigNumber(String(formattedTx.gasLimit || 0))._hex,
+              : this.toHex0x(formattedTx.gasLimit, 'gasLimit'),
           value: '0x0',
-          nonce: this.toBigNumber(String(formattedTx.nonce || 0))._hex,
+          nonce: this.toHex0x(formattedTx.nonce, 'nonce'),
           chainId: activeNetwork.chainId,
           type: isLegacy ? 0 : 2, // Need explicit type for hardware wallet serialization
         };
@@ -994,22 +1047,19 @@ export class EthereumTransactions implements IEthereumTransactions {
           txFormattedForTrezor.gasPrice =
             typeof formattedTx.gasPrice === 'string'
               ? formattedTx.gasPrice
-              : this.toBigNumber(String(formattedTx.gasPrice || 0))._hex;
+              : this.toHex0x(formattedTx.gasPrice, 'gasPrice');
         } else {
           txFormattedForTrezor.maxFeePerGas =
             typeof (formattedTx as any).maxFeePerGas === 'string'
               ? (formattedTx as any).maxFeePerGas
-              : `${
-                  (formattedTx as any).maxFeePerGas?._hex ||
-                  (formattedTx as any).maxFeePerGas
-                }`;
+              : this.toHex0x((formattedTx as any).maxFeePerGas, 'maxFeePerGas');
           txFormattedForTrezor.maxPriorityFeePerGas =
             typeof (formattedTx as any).maxPriorityFeePerGas === 'string'
               ? (formattedTx as any).maxPriorityFeePerGas
-              : `${
-                  (formattedTx as any).maxPriorityFeePerGas?._hex ||
-                  (formattedTx as any).maxPriorityFeePerGas
-                }`;
+              : this.toHex0x(
+                  (formattedTx as any).maxPriorityFeePerGas,
+                  'maxPriorityFeePerGas'
+                );
         }
 
         const signature = await this.trezorSigner.signEthTransaction({
@@ -1097,7 +1147,10 @@ export class EthereumTransactions implements IEthereumTransactions {
     if (this.isZkSyncNetwork) {
       // zkSync uses EIP-712 transactions but we can still use EIP-1559 format
       // Ensure proper gas configuration for zkSync
-      if (!params.gasLimit || BigNumber.from(params.gasLimit).lt(BigNumber.from('500000'))) {
+      if (
+        !params.gasLimit ||
+        BigNumber.from(params.gasLimit).lt(BigNumber.from('500000'))
+      ) {
         // zkSync typically needs higher gas limits
         params.gasLimit = BigNumber.from('1000000'); // 1M gas default for zkSync
         console.log('[zkSync] Setting gas limit to 1M');
@@ -1109,7 +1162,9 @@ export class EthereumTransactions implements IEthereumTransactions {
         isLegacy = false;
 
         // Convert legacy to EIP-1559 for zkSync
-        const gasPrice = params.gasPrice ? BigNumber.from(params.gasPrice) : await this.web3Provider.getGasPrice();
+        const gasPrice = params.gasPrice
+          ? BigNumber.from(params.gasPrice)
+          : await this.web3Provider.getGasPrice();
         params.maxFeePerGas = gasPrice.mul(120).div(100); // 20% buffer
         params.maxPriorityFeePerGas = gasPrice.div(100); // 1% operator tip for zkSync
         delete params.gasPrice;
@@ -1131,7 +1186,12 @@ export class EthereumTransactions implements IEthereumTransactions {
 
     // Check if we should force legacy transactions for non-zkSync networks
     // Some networks have issues with EIP-1559 validation
-    if (!this.isZkSyncNetwork && !isLegacy && params.maxFeePerGas && params.maxPriorityFeePerGas) {
+    if (
+      !this.isZkSyncNetwork &&
+      !isLegacy &&
+      params.maxFeePerGas &&
+      params.maxPriorityFeePerGas
+    ) {
       const maxFee = BigNumber.from(params.maxFeePerGas);
       const priorityFee = BigNumber.from(params.maxPriorityFeePerGas);
 
@@ -1153,7 +1213,8 @@ export class EthereumTransactions implements IEthereumTransactions {
 
     // Ensure minimum gas limit for validation
     if (params.gasLimit) {
-      const minGasLimit = this.gasOverrides.minGasLimit || BigNumber.from('65000');
+      const minGasLimit =
+        this.gasOverrides.minGasLimit || BigNumber.from('65000');
       const currentGasLimit = BigNumber.from(params.gasLimit);
       if (currentGasLimit.lt(minGasLimit)) {
         params.gasLimit = minGasLimit;
@@ -1222,75 +1283,69 @@ export class EthereumTransactions implements IEthereumTransactions {
         case true:
           txFormattedForTrezor = {
             ...formatParams,
-            gasLimit:
-              typeof formatParams.gasLimit === 'string'
-                ? formatParams.gasLimit
-                : // @ts-ignore
-                  `${params.gasLimit.hex}`,
-            value:
-              typeof formatParams.value === 'string' ||
-              typeof formatParams.value === 'number'
-                ? `${formatParams.value}`
-                : // @ts-ignore
-                  `${params.value.hex}`,
+            gasLimit: this.toHex0x(
+              (formatParams as any).gasLimit ?? (params as any).gasLimit,
+              'gasLimit'
+            ),
+            value: this.toHex0x(
+              (formatParams as any).value ?? (params as any).value,
+              'value'
+            ),
             nonce: this.toBigNumber(transactionNonce)._hex,
             chainId: activeNetwork.chainId,
+            data: (formatParams as any).data ?? '0x',
           };
           break;
         case false:
           txFormattedForTrezor = {
             ...formatParams,
-            gasLimit:
-              typeof formatParams.gasLimit === 'string'
-                ? formatParams.gasLimit
-                : // @ts-ignore
-                  `${params.gasLimit.hex}`,
-            maxFeePerGas:
-              typeof formatParams.maxFeePerGas === 'string'
-                ? formatParams.maxFeePerGas
-                : // @ts-ignore
-                  `${params.maxFeePerGas.hex}`,
-            maxPriorityFeePerGas:
-              typeof formatParams.maxPriorityFeePerGas === 'string'
-                ? formatParams.maxPriorityFeePerGas
-                : // @ts-ignore
-                  `${params.maxPriorityFeePerGas.hex}`,
-            value:
-              typeof formatParams.value === 'string' ||
-              typeof formatParams.value === 'number'
-                ? `${formatParams.value}`
-                : // @ts-ignore
-                  `${params.value.hex}`,
+            gasLimit: this.toHex0x(
+              (formatParams as any).gasLimit ?? (params as any).gasLimit,
+              'gasLimit'
+            ),
+            maxFeePerGas: this.toHex0x(
+              (formatParams as any).maxFeePerGas ??
+                (params as any).maxFeePerGas,
+              'maxFeePerGas'
+            ),
+            maxPriorityFeePerGas: this.toHex0x(
+              (formatParams as any).maxPriorityFeePerGas ??
+                (params as any).maxPriorityFeePerGas,
+              'maxPriorityFeePerGas'
+            ),
+            value: this.toHex0x(
+              (formatParams as any).value ?? (params as any).value,
+              'value'
+            ),
             nonce: this.toBigNumber(transactionNonce)._hex,
             chainId: activeNetwork.chainId,
+            data: (formatParams as any).data ?? '0x',
           };
           break;
         default:
           txFormattedForTrezor = {
             ...formatParams,
-            gasLimit:
-              typeof formatParams.gasLimit === 'string'
-                ? formatParams.gasLimit
-                : // @ts-ignore
-                  `${params.gasLimit.hex}`,
-            maxFeePerGas:
-              typeof formatParams.maxFeePerGas === 'string'
-                ? formatParams.maxFeePerGas
-                : // @ts-ignore
-                  `${params.maxFeePerGas.hex}`,
-            maxPriorityFeePerGas:
-              typeof formatParams.maxPriorityFeePerGas === 'string'
-                ? formatParams.maxPriorityFeePerGas
-                : // @ts-ignore
-                  `${params.maxPriorityFeePerGas.hex}`,
-            value:
-              typeof formatParams.value === 'string' ||
-              typeof formatParams.value === 'number'
-                ? `${formatParams.value}`
-                : // @ts-ignore
-                  `${params.value.hex}`,
+            gasLimit: this.toHex0x(
+              (formatParams as any).gasLimit ?? (params as any).gasLimit,
+              'gasLimit'
+            ),
+            maxFeePerGas: this.toHex0x(
+              (formatParams as any).maxFeePerGas ??
+                (params as any).maxFeePerGas,
+              'maxFeePerGas'
+            ),
+            maxPriorityFeePerGas: this.toHex0x(
+              (formatParams as any).maxPriorityFeePerGas ??
+                (params as any).maxPriorityFeePerGas,
+              'maxPriorityFeePerGas'
+            ),
+            value: this.toHex0x(
+              (formatParams as any).value ?? (params as any).value,
+              'value'
+            ),
             nonce: this.toBigNumber(transactionNonce)._hex,
             chainId: activeNetwork.chainId,
+            data: (formatParams as any).data ?? '0x',
           };
           break;
       }
@@ -1662,12 +1717,12 @@ export class EthereumTransactions implements IEthereumTransactions {
           gasLimit:
             typeof formattedTx.gasLimit === 'string'
               ? formattedTx.gasLimit
-              : this.toBigNumber(String(formattedTx.gasLimit || 0))._hex,
+              : this.toHex0x(formattedTx.gasLimit, 'gasLimit'),
           value:
             typeof formattedTx.value === 'string'
               ? formattedTx.value
-              : this.toBigNumber(String(formattedTx.value || 0))._hex,
-          nonce: this.toBigNumber(String(formattedTx.nonce || 0))._hex,
+              : this.toHex0x(formattedTx.value, 'value'),
+          nonce: this.toHex0x(formattedTx.nonce, 'nonce'),
           chainId: activeNetwork.chainId,
           type: isLegacy ? 0 : 2, // Need explicit type for hardware wallet serialization
         };
@@ -1680,22 +1735,19 @@ export class EthereumTransactions implements IEthereumTransactions {
           txFormattedForTrezor.gasPrice =
             typeof formattedTx.gasPrice === 'string'
               ? formattedTx.gasPrice
-              : this.toBigNumber(String(formattedTx.gasPrice || 0))._hex;
+              : this.toHex0x(formattedTx.gasPrice, 'gasPrice');
         } else {
           txFormattedForTrezor.maxFeePerGas =
             typeof (formattedTx as any).maxFeePerGas === 'string'
               ? (formattedTx as any).maxFeePerGas
-              : `${
-                  (formattedTx as any).maxFeePerGas?._hex ||
-                  (formattedTx as any).maxFeePerGas
-                }`;
+              : this.toHex0x((formattedTx as any).maxFeePerGas, 'maxFeePerGas');
           txFormattedForTrezor.maxPriorityFeePerGas =
             typeof (formattedTx as any).maxPriorityFeePerGas === 'string'
               ? (formattedTx as any).maxPriorityFeePerGas
-              : `${
-                  (formattedTx as any).maxPriorityFeePerGas?._hex ||
-                  (formattedTx as any).maxPriorityFeePerGas
-                }`;
+              : this.toHex0x(
+                  (formattedTx as any).maxPriorityFeePerGas,
+                  'maxPriorityFeePerGas'
+                );
         }
 
         const signature = await this.trezorSigner.signEthTransaction({
@@ -2636,12 +2688,16 @@ export class EthereumTransactions implements IEthereumTransactions {
         // zkSync requires special gas estimation
         // Use zks_estimateFee for more accurate estimation
         try {
-          const zkEstimate = await this.web3Provider.send('zks_estimateFee', [{
-            from: tx.from,
-            to: tx.to,
-            data: tx.data || '0x',
-            value: tx.value ? `0x${BigNumber.from(tx.value).toHexString().slice(2)}` : '0x0'
-          }]);
+          const zkEstimate = await this.web3Provider.send('zks_estimateFee', [
+            {
+              from: tx.from,
+              to: tx.to,
+              data: tx.data || '0x',
+              value: tx.value
+                ? `0x${BigNumber.from(tx.value).toHexString().slice(2)}`
+                : '0x0',
+            },
+          ]);
 
           if (zkEstimate && zkEstimate.gas_limit) {
             const gasLimit = BigNumber.from(zkEstimate.gas_limit);
@@ -2651,14 +2707,19 @@ export class EthereumTransactions implements IEthereumTransactions {
             return withBuffer;
           }
         } catch (zkError) {
-          console.log('zks_estimateFee not available, using standard estimation');
+          console.log(
+            'zks_estimateFee not available, using standard estimation'
+          );
         }
 
         // Fallback to standard estimation with higher buffer for zkSync
         const estimated = await this.web3Provider.estimateGas(tx);
         // zkSync needs more buffer for validation
         const withBuffer = estimated.mul(200).div(100); // 100% buffer
-        console.log('[zkSync] Standard gas limit with buffer:', withBuffer.toString());
+        console.log(
+          '[zkSync] Standard gas limit with buffer:',
+          withBuffer.toString()
+        );
         return withBuffer;
       } catch (error) {
         console.warn('zkSync gas estimation failed, using high default');
@@ -2672,7 +2733,10 @@ export class EthereumTransactions implements IEthereumTransactions {
       const estimated = await this.web3Provider.estimateGas(tx);
 
       // Apply override if set
-      if (this.gasOverrides.minGasLimit && estimated.lt(this.gasOverrides.minGasLimit)) {
+      if (
+        this.gasOverrides.minGasLimit &&
+        estimated.lt(this.gasOverrides.minGasLimit)
+      ) {
         return this.gasOverrides.minGasLimit;
       }
 
@@ -2690,15 +2754,19 @@ export class EthereumTransactions implements IEthereumTransactions {
         const simpleEstimate = await this.web3Provider.estimateGas({
           to: tx.to,
           from: tx.from,
-          value: tx.value || '0x0'
+          value: tx.value || '0x0',
         });
 
         const withBuffer = simpleEstimate.mul(150).div(100); // 50% buffer for failed estimations
-        const minGas = this.gasOverrides.minGasLimit || BigNumber.from('100000');
+        const minGas =
+          this.gasOverrides.minGasLimit || BigNumber.from('100000');
         return withBuffer.gt(minGas) ? withBuffer : minGas;
       } catch (secondError) {
         // Ultimate fallback
-        console.warn('Simple estimation also failed, using default', secondError);
+        console.warn(
+          'Simple estimation also failed, using default',
+          secondError
+        );
         return this.gasOverrides.minGasLimit || BigNumber.from('100000');
       }
     }
@@ -2752,7 +2820,9 @@ export class EthereumTransactions implements IEthereumTransactions {
     // Detect if this is a zkSync network
     this.isZkSyncNetwork = this.detectZkSyncNetwork(network);
     if (this.isZkSyncNetwork) {
-      console.log('[EthereumTransactions] Detected zkSync network, using zkSync-specific handling');
+      console.log(
+        '[EthereumTransactions] Detected zkSync network, using zkSync-specific handling'
+      );
     }
 
     // Check if network is a UTXO network to avoid creating web3 providers for blockbook URLs
@@ -2766,11 +2836,13 @@ export class EthereumTransactions implements IEthereumTransactions {
       );
       // Clear any existing providers for UTXO networks
       this._web3Provider = undefined as any;
+      this._web3ProviderKey = undefined;
     } else {
       this._web3Provider = new CustomJsonRpcProvider(
         this.abortController.signal,
         network.url
       );
+      this._web3ProviderKey = `${network.chainId}|${network.url ?? ''}`;
     }
   }
 
@@ -2793,9 +2865,13 @@ export class EthereumTransactions implements IEthereumTransactions {
     feeMultiplier?: number;
   }) {
     this.gasOverrides = {
-      minGasLimit: overrides.minGasLimit ? BigNumber.from(overrides.minGasLimit) : undefined,
-      minPriorityFee: overrides.minPriorityFee ? BigNumber.from(overrides.minPriorityFee) : undefined,
-      feeMultiplier: overrides.feeMultiplier
+      minGasLimit: overrides.minGasLimit
+        ? BigNumber.from(overrides.minGasLimit)
+        : undefined,
+      minPriorityFee: overrides.minPriorityFee
+        ? BigNumber.from(overrides.minPriorityFee)
+        : undefined,
+      feeMultiplier: overrides.feeMultiplier,
     };
   }
 
@@ -2813,7 +2889,7 @@ export class EthereumTransactions implements IEthereumTransactions {
       return {
         gasPrice: bufferedGasPrice,
         maxFeePerGas: undefined,
-        maxPriorityFeePerGas: undefined
+        maxPriorityFeePerGas: undefined,
       };
     }
 
@@ -2822,22 +2898,26 @@ export class EthereumTransactions implements IEthereumTransactions {
       const feeData = await this.getFeeDataWithDynamicMaxPriorityFeePerGas();
 
       // If fees are zero or too low, fallback to legacy
-      if (!feeData.maxFeePerGas || feeData.maxFeePerGas.isZero() ||
-          !feeData.maxPriorityFeePerGas || feeData.maxPriorityFeePerGas.isZero()) {
+      if (
+        !feeData.maxFeePerGas ||
+        feeData.maxFeePerGas.isZero() ||
+        !feeData.maxPriorityFeePerGas ||
+        feeData.maxPriorityFeePerGas.isZero()
+      ) {
         console.log('EIP-1559 fees invalid, falling back to legacy gas price');
         const gasPrice = await this.web3Provider.getGasPrice();
         const bufferedGasPrice = gasPrice.mul(110).div(100);
         return {
           gasPrice: bufferedGasPrice,
           maxFeePerGas: undefined,
-          maxPriorityFeePerGas: undefined
+          maxPriorityFeePerGas: undefined,
         };
       }
 
       return {
         gasPrice: undefined,
         maxFeePerGas: feeData.maxFeePerGas,
-        maxPriorityFeePerGas: feeData.maxPriorityFeePerGas
+        maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
       };
     } catch (error) {
       console.warn('Failed to get EIP-1559 fees, using legacy:', error);
@@ -2846,8 +2926,8 @@ export class EthereumTransactions implements IEthereumTransactions {
       return {
         gasPrice: bufferedGasPrice,
         maxFeePerGas: undefined,
-        maxPriorityFeePerGas: undefined
+        maxPriorityFeePerGas: undefined,
       };
     }
-  }
+  };
 }
