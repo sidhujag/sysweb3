@@ -1221,6 +1221,45 @@ export class EthereumTransactions implements IEthereumTransactions {
       }
     }
 
+    // MAX-send handling (native transfers only): recompute value at send-time
+    // using live balance and the final gas parameters we will actually submit.
+    // This avoids caller-side rounding/estimation mismatches (e.g. 42k vs 65k min gasLimit,
+    // EIP-1559->legacy switching, or fee changes) which otherwise surface as
+    // "insufficient funds for gas * price + value".
+    const isMaxSend = Boolean((params as any).isMaxSend);
+    if (isMaxSend) {
+      const data = (params as any).data;
+      const isSimpleTransfer =
+        data === undefined ||
+        data === null ||
+        data === '0x' ||
+        (typeof data === 'string' && data.toLowerCase() === '0x');
+
+      if (isSimpleTransfer && params.gasLimit) {
+        const liveBalanceWei = await this.web3Provider.getBalance(
+          activeAccount.address
+        );
+        const gasLimit = BigNumber.from(params.gasLimit);
+
+        // Use maxFeePerGas as worst-case for EIP-1559; gasPrice for legacy.
+        const feePerGas =
+          isLegacy || params.gasPrice
+            ? BigNumber.from(params.gasPrice || 0)
+            : BigNumber.from(params.maxFeePerGas || 0);
+
+        const gasCostWei = gasLimit.mul(feePerGas);
+        params.value = liveBalanceWei.gt(gasCostWei)
+          ? liveBalanceWei.sub(gasCostWei)
+          : Zero;
+      }
+    }
+
+    // Never forward meta fields to ethers/serializers/hardware wallet payloads.
+    // Ethers' signer will throw `invalid transaction key` for unknown keys.
+    if ('isMaxSend' in (params as any)) {
+      delete (params as any).isMaxSend;
+    }
+
     const sendEVMLedgerTransaction = async () => {
       const transactionNonce = await this.getRecommendedNonce(
         activeAccount.address
