@@ -5,7 +5,7 @@ import * as syscoinjs from 'syscoinjs-lib';
 // import { BIP_84, ONE_HUNDRED_MILLION, SYSCOIN_BASIC_FEE } from 'utils';
 
 import { LedgerKeyring } from '../ledger';
-import { DefaultWalletPolicy, WalletPolicy } from '../ledger/bitcoin_client';
+import { WalletPolicy } from '../ledger/bitcoin_client';
 import { PsbtV2 } from '../ledger/bitcoin_client/lib/psbtv2';
 import { DESCRIPTOR } from '../ledger/consts';
 import { SyscoinHDSigner } from '../signers';
@@ -399,49 +399,42 @@ export class SyscoinTransactions implements ISyscoinTransactions {
         accountId
       );
 
-      // Normalize stored zpub/vpub back to device-friendly xpub/tpub for policy descriptor
-      // Ledger expects standard Bitcoin versions in descriptor; address type is in the policy template
-      const devicePubMagicHex =
-        activeNetwork.slip44 === 1 ? '043587cf' : '0488b21e';
-      const deviceXpub = convertExtendedKeyVersion(
-        accountXpub,
-        devicePubMagicHex
-      );
+      // For policy key preimages, match what the currently-open Ledger app expects.
+      // Prefer the device-reported extended pubkey for this path (silent), and only fall back
+      // to converting the stored xpub/vpub/zpub if needed.
+      let deviceXpub: string | null = null;
+      try {
+        deviceXpub = await this.ledger.ledgerUtxoClient.getExtendedPubkey(
+          hdPath,
+          false
+        );
+      } catch (_e) {
+        // ignore; we'll fall back
+      }
+
+      if (!deviceXpub) {
+        const devicePubMagicHex =
+          activeNetwork.slip44 === 1 ? '043587cf' : '0488b21e';
+        deviceXpub = convertExtendedKeyVersion(accountXpub, devicePubMagicHex);
+      }
+
       const xpubWithDescriptor = `[${hdPath}]${deviceXpub}`.replace(
         'm',
         fingerprint
       );
-      // Use DefaultWalletPolicy for standard single-sig templates (no registration / no HMAC required).
-      // This avoids device rejections (0x6a80) if policy registration fails and we would otherwise
-      // proceed with an invalid/zero HMAC.
-      const isDefaultTemplate = DESCRIPTOR === 'wpkh(@0/**)';
-      const walletPolicy: any = isDefaultTemplate
-        ? new DefaultWalletPolicy(DESCRIPTOR as any, xpubWithDescriptor)
-        : new WalletPolicy(
-            activeNetwork.currency.toLowerCase(),
-            DESCRIPTOR as any,
-            [xpubWithDescriptor]
-          );
+      const walletPolicy = new WalletPolicy(
+        activeNetwork.currency.toLowerCase(),
+        DESCRIPTOR as any,
+        [xpubWithDescriptor]
+      );
 
-      // For default wallet policies, HMAC must be null. For non-default policies, require registration.
+      // Register lazily and retrieve HMAC for silent operations thereafter
       let hmac: Buffer | null = null;
-      if (!isDefaultTemplate) {
-        const getOrRegisterHmac: any = (this.ledger as any)?.getOrRegisterHmac;
-        if (typeof getOrRegisterHmac !== 'function') {
-          throw new Error(
-            'Ledger: Wallet policy registration is unavailable in this environment.'
-          );
-        }
-        hmac = await getOrRegisterHmac.call(
-          this.ledger,
+      if (typeof (this.ledger as any).getOrRegisterHmac === 'function') {
+        hmac = await (this.ledger as any).getOrRegisterHmac(
           walletPolicy,
           fingerprint
         );
-        if (!hmac) {
-          throw new Error(
-            'Ledger: Failed to register wallet policy (missing HMAC). Ensure the Bitcoin app is open and approve wallet registration.'
-          );
-        }
       }
 
       // Convert to PsbtV2 for direct signing without intermediate base64 encode/decode

@@ -2,10 +2,7 @@
 /* eslint-disable import/no-named-as-default */
 /* eslint-disable import/order */
 import Transport from '@ledgerhq/hw-transport';
-import SysUtxoClient, {
-  DefaultWalletPolicy,
-  WalletPolicy,
-} from './bitcoin_client';
+import SysUtxoClient, { WalletPolicy } from './bitcoin_client';
 import type { Psbt } from 'bitcoinjs-lib';
 import {
   RECEIVING_ADDRESS_INDEX,
@@ -134,46 +131,20 @@ export class LedgerKeyring {
         'm',
         fingerprint
       );
-      const isDefaultTemplate = DESCRIPTOR === 'wpkh(@0/**)';
-
-      // Prefer DefaultWalletPolicy for standard templates (no registration/HMAC),
-      // but fall back to registration if the app requires it (common in forks).
-      if (isDefaultTemplate) {
-        try {
-          const defaultPolicy = new DefaultWalletPolicy(
-            DESCRIPTOR as any,
-            xpubWithDescriptor
-          );
-          return await this.ledgerUtxoClient.getWalletAddress(
-            defaultPolicy,
-            null,
-            RECEIVING_ADDRESS_INDEX,
-            0, // verify imported account address at first receive index
-            !!showInLedger
-          );
-        } catch (e: any) {
-          const message = String(e?.message || '');
-          const statusCode = (e as any)?.statusCode;
-          const isInvalidData =
-            statusCode === 0x6a80 || message.includes('0x6a80');
-          if (!isInvalidData) {
-            throw e;
-          }
-          // Else: fall through to registered policy
-        }
-      }
-
       const walletPolicy = new WalletPolicy(coin, DESCRIPTOR, [
         xpubWithDescriptor,
       ]);
       const hmac = await this.getOrRegisterHmac(walletPolicy, fingerprint);
-      return await this.ledgerUtxoClient.getWalletAddress(
+
+      const address = await this.ledgerUtxoClient.getWalletAddress(
         walletPolicy,
         hmac,
         RECEIVING_ADDRESS_INDEX,
         0, // verify imported account address at first receive index
         !!showInLedger
       );
+
+      return address;
     }, 'getUtxoAddress');
   };
 
