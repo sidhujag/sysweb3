@@ -6,6 +6,7 @@
     "baseUrl": "src",
     "outDir": "dist/cjs",
     "declarationDir": "dist/types",
+    "isolatedModules": true,
     "resolveJsonModule": true
   },
   "include": ["src"]

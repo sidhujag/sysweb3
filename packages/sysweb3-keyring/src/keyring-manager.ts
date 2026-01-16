@@ -1724,7 +1724,7 @@ export class KeyringManager implements IKeyringManager {
       typeof process !== 'undefined' && process?.env?.NODE_ENV === 'test';
     return (
       Number.parseInt(process?.env?.SYSWEB3_PBKDF2_ENC_ITERS || '', 10) ||
-      (isTestEnv ? 1_000 : 100_000)
+      (isTestEnv ? 1_000 : 900_000)
     );
   };
 

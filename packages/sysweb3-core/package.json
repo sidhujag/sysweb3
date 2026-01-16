@@ -1,6 +1,6 @@
 {
   "name": "@sidhujag/sysweb3-core",
-  "version": "1.0.27",
+  "version": "1.0.28",
   "description": "The localStorage Manager For PrivKeys",
   "main": "cjs/index.js",
   "types": "types/index.d.ts",
@@ -26,6 +26,6 @@
     "localTest": "yarn prebuild && yarn build && yarn copy"
   },
   "devDependencies": {
-    "rimraf": "^6.0.1"
+    "rimraf": "^6.1.2"
   }
 }
