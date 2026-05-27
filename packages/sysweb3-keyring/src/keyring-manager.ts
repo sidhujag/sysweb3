@@ -2333,7 +2333,29 @@ export class KeyringManager implements IKeyringManager {
 
       importedAccountValue = {
         address,
-        publicKey: node.neutered().toBase58(),
+        // IMPORTANT: Store BIP84 extended *public* key (zpub/vpub), not device-style xpub/tpub.
+        // Blockbook derives different address branches depending on version bytes.
+        // Using zpub/vpub ensures UTXO discovery and `input.path` match BIP84 (m/84'/slip44'/...),
+        // which is required for HD signing.
+        publicKey: (() => {
+          try {
+            const { types } = getNetworkConfig(
+              networkToUse.slip44,
+              networkToUse.currency || 'Bitcoin'
+            );
+            const target =
+              networkToUse.slip44 === 1
+                ? (types.zPubType as any).testnet.vpub
+                : types.zPubType.mainnet.zpub;
+            return convertExtendedKeyVersion(
+              node.neutered().toBase58(),
+              target
+            );
+          } catch (_e) {
+            // Fall back to the default neutered key if conversion fails.
+            return node.neutered().toBase58();
+          }
+        })(),
         privateKey: privKey,
       };
 
