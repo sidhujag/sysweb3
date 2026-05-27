@@ -72,9 +72,6 @@ export class EthereumTransactions implements IEthereumTransactions {
     feeMultiplier?: number;
   } = {};
 
-  // zkSync specific settings
-  private isZkSyncNetwork: boolean = false;
-
   private getState: () => {
     accounts: {
       HDAccount: accountType;
@@ -164,20 +161,6 @@ export class EthereumTransactions implements IEthereumTransactions {
     const hasUtxoKind = (network as any).kind === INetworkType.Syscoin;
 
     return hasBlockbookUrl || hasUtxoKind;
-  }
-
-  // Helper method to detect zkSync networks
-  private detectZkSyncNetwork(network: INetwork): boolean {
-    // zkSync detection patterns:
-    // 1. Chain ID 324 for zkSync Era mainnet, 280 for zkSync Era testnet, 300 for zkSync Era Sepolia
-    // 2. URL contains 'zksync'
-    // 3. Network name contains 'zkSync'
-    const zkSyncChainIds = [324, 280, 300];
-    const isZkSyncChainId = zkSyncChainIds.includes(network.chainId);
-    const hasZkSyncUrl = network.url?.toLowerCase().includes('zksync');
-    const hasZkSyncName = network.label?.toLowerCase().includes('zksync');
-
-    return isZkSyncChainId || hasZkSyncUrl || hasZkSyncName;
   }
 
   signTypedData = async (
@@ -622,32 +605,6 @@ export class EthereumTransactions implements IEthereumTransactions {
   getFeeDataWithDynamicMaxPriorityFeePerGas = async () => {
     let maxFeePerGas = this.toBigNumber(0);
     let maxPriorityFeePerGas = this.toBigNumber(0);
-
-    // Special handling for zkSync networks
-    if (this.isZkSyncNetwork) {
-      try {
-        // zkSync uses a different fee model
-        const gasPrice = await this.web3Provider.getGasPrice();
-        // zkSync recommends using gasPrice for both maxFeePerGas and maxPriorityFeePerGas
-        // with maxPriorityFeePerGas being a small portion (operator tip)
-        maxPriorityFeePerGas = gasPrice.div(100); // 1% as operator tip
-        maxFeePerGas = gasPrice.mul(120).div(100); // 20% buffer on gas price
-
-        console.log('[zkSync] Fee data:', {
-          maxFeePerGas: maxFeePerGas.toString(),
-          maxPriorityFeePerGas: maxPriorityFeePerGas.toString(),
-        });
-
-        return { maxFeePerGas, maxPriorityFeePerGas };
-      } catch (error) {
-        console.error('zkSync fee estimation failed:', error);
-        // Fallback for zkSync
-        return {
-          maxFeePerGas: BigNumber.from('250000000'), // 0.25 gwei
-          maxPriorityFeePerGas: BigNumber.from('2500000'), // 0.0025 gwei
-        };
-      }
-    }
 
     try {
       // First, try to get the current gas price as a baseline
@@ -1143,55 +1100,9 @@ export class EthereumTransactions implements IEthereumTransactions {
       this.getState();
     const activeAccount = accounts[activeAccountType][activeAccountId];
 
-    // zkSync specific handling
-    if (this.isZkSyncNetwork) {
-      // zkSync uses EIP-712 transactions but we can still use EIP-1559 format
-      // Ensure proper gas configuration for zkSync
-      if (
-        !params.gasLimit ||
-        BigNumber.from(params.gasLimit).lt(BigNumber.from('500000'))
-      ) {
-        // zkSync typically needs higher gas limits
-        params.gasLimit = BigNumber.from('1000000'); // 1M gas default for zkSync
-        console.log('[zkSync] Setting gas limit to 1M');
-      }
-
-      // Ensure we're using EIP-1559 for zkSync (not legacy)
-      if (isLegacy || params.gasPrice) {
-        console.log('[zkSync] Converting to EIP-1559 format');
-        isLegacy = false;
-
-        // Convert legacy to EIP-1559 for zkSync
-        const gasPrice = params.gasPrice
-          ? BigNumber.from(params.gasPrice)
-          : await this.web3Provider.getGasPrice();
-        params.maxFeePerGas = gasPrice.mul(120).div(100); // 20% buffer
-        params.maxPriorityFeePerGas = gasPrice.div(100); // 1% operator tip for zkSync
-        delete params.gasPrice;
-      }
-
-      // Ensure proper fee structure for zkSync
-      if (params.maxFeePerGas && params.maxPriorityFeePerGas) {
-        const maxFee = BigNumber.from(params.maxFeePerGas);
-        const priorityFee = BigNumber.from(params.maxPriorityFeePerGas);
-
-        // zkSync requires maxPriorityFeePerGas to be much lower than maxFeePerGas
-        // Typically 1% or less of the maxFeePerGas
-        if (priorityFee.gt(maxFee.div(50))) {
-          params.maxPriorityFeePerGas = maxFee.div(100); // Set to 1% of maxFeePerGas
-          console.log('[zkSync] Adjusted priority fee to 1% of max fee');
-        }
-      }
-    }
-
-    // Check if we should force legacy transactions for non-zkSync networks
+    // Check if we should force legacy transactions for networks with EIP-1559 issues
     // Some networks have issues with EIP-1559 validation
-    if (
-      !this.isZkSyncNetwork &&
-      !isLegacy &&
-      params.maxFeePerGas &&
-      params.maxPriorityFeePerGas
-    ) {
+    if (!isLegacy && params.maxFeePerGas && params.maxPriorityFeePerGas) {
       const maxFee = BigNumber.from(params.maxFeePerGas);
       const priorityFee = BigNumber.from(params.maxPriorityFeePerGas);
 
@@ -2682,52 +2593,6 @@ export class EthereumTransactions implements IEthereumTransactions {
   };
 
   getTxGasLimit = async (tx: SimpleTransactionRequest) => {
-    // Special handling for zkSync
-    if (this.isZkSyncNetwork) {
-      try {
-        // zkSync requires special gas estimation
-        // Use zks_estimateFee for more accurate estimation
-        try {
-          const zkEstimate = await this.web3Provider.send('zks_estimateFee', [
-            {
-              from: tx.from,
-              to: tx.to,
-              data: tx.data || '0x',
-              value: tx.value
-                ? `0x${BigNumber.from(tx.value).toHexString().slice(2)}`
-                : '0x0',
-            },
-          ]);
-
-          if (zkEstimate && zkEstimate.gas_limit) {
-            const gasLimit = BigNumber.from(zkEstimate.gas_limit);
-            // Add 50% buffer for zkSync validation
-            const withBuffer = gasLimit.mul(150).div(100);
-            console.log('[zkSync] Gas limit estimated:', withBuffer.toString());
-            return withBuffer;
-          }
-        } catch (zkError) {
-          console.log(
-            'zks_estimateFee not available, using standard estimation'
-          );
-        }
-
-        // Fallback to standard estimation with higher buffer for zkSync
-        const estimated = await this.web3Provider.estimateGas(tx);
-        // zkSync needs more buffer for validation
-        const withBuffer = estimated.mul(200).div(100); // 100% buffer
-        console.log(
-          '[zkSync] Standard gas limit with buffer:',
-          withBuffer.toString()
-        );
-        return withBuffer;
-      } catch (error) {
-        console.warn('zkSync gas estimation failed, using high default');
-        // zkSync typically needs more gas
-        return BigNumber.from('1000000'); // 1M gas for zkSync
-      }
-    }
-
     try {
       // First attempt: standard estimation
       const estimated = await this.web3Provider.estimateGas(tx);
@@ -2816,14 +2681,6 @@ export class EthereumTransactions implements IEthereumTransactions {
   public setWeb3Provider(network: INetwork) {
     this.abortController.abort();
     this.abortController = new AbortController();
-
-    // Detect if this is a zkSync network
-    this.isZkSyncNetwork = this.detectZkSyncNetwork(network);
-    if (this.isZkSyncNetwork) {
-      console.log(
-        '[EthereumTransactions] Detected zkSync network, using zkSync-specific handling'
-      );
-    }
 
     // Check if network is a UTXO network to avoid creating web3 providers for blockbook URLs
     const isUtxoNetwork = this.isUtxoNetwork(network);

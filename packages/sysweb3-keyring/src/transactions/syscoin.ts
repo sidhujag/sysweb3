@@ -195,6 +195,12 @@ export class SyscoinTransactions implements ISyscoinTransactions {
     const isSingleAddressImported =
       activeAccountType === KeyringAccountType.Imported &&
       xpub === account.address;
+
+    // For imported extended-key accounts we store BIP84 xpubs (zpub/vpub).
+    // Blockbook derives different address branches depending on version bytes, so preserve xpub as-is.
+    const sourceForUtxoLookup = isSingleAddressImported
+      ? account.address
+      : xpub;
     // Convert amount to satoshis (1 SYS = 1e8 satoshis)
     // Using BigNumber to prevent precision loss
     const amountStr = amount.toString();
@@ -242,7 +248,7 @@ export class SyscoinTransactions implements ISyscoinTransactions {
           assetMap,
           changeAddress,
           feeRateBN,
-          isSingleAddressImported ? account.address : xpub // Pass source
+          sourceForUtxoLookup // Pass source (address for WIF imports, zpub/vpub for HD)
         );
 
         // Return PSBT and fee
@@ -263,7 +269,7 @@ export class SyscoinTransactions implements ISyscoinTransactions {
             outputs,
             changeAddress,
             feeRateBN,
-            xpub: isSingleAddressImported ? account.address : xpub,
+            xpub: sourceForUtxoLookup,
           },
           main
         );
@@ -475,6 +481,122 @@ export class SyscoinTransactions implements ISyscoinTransactions {
       const signedPsbt = await this.trezor.signUtxoTransaction(trezorTx, psbt);
       return signedPsbt;
     } else {
+      // HD signing (seed-based HDAccount or imported BIP84 zprv/vprv account).
+      // Some Blockbook deployments return UTXOs without per-input derivation `path`,
+      // which causes bitcoinjs-lib to throw "Need derivation path to sign with HD".
+      //
+      // We can recover by enriching PSBT inputs with a proprietary `path` field using
+      // Blockbook's xpub token list (address -> path mapping), which reliably includes paths.
+      try {
+        const account = accounts[activeAccountType]?.[activeAccountId] as any;
+        const accountXpub = account?.xpub as string | undefined;
+        const accountAddress = account?.address as string | undefined;
+        const isSingleAddressImported =
+          activeAccountType === KeyringAccountType.Imported &&
+          Boolean(accountXpub) &&
+          Boolean(accountAddress) &&
+          accountXpub === accountAddress;
+        const isImportedExtended =
+          activeAccountType === KeyringAccountType.Imported &&
+          Boolean(accountXpub) &&
+          !isSingleAddressImported;
+
+        // IMPORTANT: Imported extended keys (zprv/vprv) are typically *account-level* keys.
+        // syscoinjs-lib signs using the imported key as the BIP32 root, so PSBT `path` must be
+        // relative (change/index), not the full `m/84'/.../change/index`. If we keep full paths,
+        // bip32.derivePath can throw, leaving no derivations and causing "Need derivation path".
+        if (isImportedExtended) {
+          const inputs: any[] = (psbt as any)?.data?.inputs || [];
+          for (const input of inputs) {
+            const unknowns = input?.unknownKeyVals || [];
+            const pathKv = unknowns.find(
+              (kv) => kv?.key?.toString?.() === 'path'
+            );
+            if (!pathKv?.value) continue;
+            const fullPath = String(Buffer.from(pathKv.value).toString());
+            const parts = fullPath.split('/').filter(Boolean);
+            // Expected: m/84'/slip44'/account'/change/index
+            if (parts.length >= 2) {
+              const change = parts[parts.length - 2];
+              const index = parts[parts.length - 1];
+              const rel = `${change}/${index}`;
+              pathKv.value = Buffer.from(rel);
+            }
+          }
+        }
+
+        const needsAnyPath = (psbt as any)?.data?.inputs?.some((input) => {
+          const unknowns = input?.unknownKeyVals || [];
+          return !unknowns.some((kv) => kv?.key?.toString?.() === 'path');
+        });
+
+        if (
+          needsAnyPath &&
+          accountXpub &&
+          !isSingleAddressImported &&
+          typeof (psbt as any).addUnknownKeyValToInput === 'function'
+        ) {
+          // Fetch address->path mapping from Blockbook xpub endpoint
+          const blockbookUrl = activeNetwork.url;
+          const res: any = await (syscoinjs.utils as any).fetchBackendAccount(
+            blockbookUrl,
+            accountXpub,
+            'tokens=used&details=tokens',
+            true
+          );
+          const tokens: any[] = Array.isArray(res?.tokens) ? res.tokens : [];
+          const addrToPath = new Map<string, string>();
+          for (const t of tokens) {
+            if (t?.name && t?.path) {
+              addrToPath.set(String(t.name), String(t.path));
+            }
+          }
+
+          const inputs: any[] = (psbt as any)?.data?.inputs || [];
+          for (let i = 0; i < inputs.length; i++) {
+            const input = inputs[i];
+            const unknowns = input?.unknownKeyVals || [];
+            const hasPath = unknowns.some(
+              (kv) => kv?.key?.toString?.() === 'path'
+            );
+            if (hasPath) continue;
+
+            const addrKv = unknowns.find(
+              (kv) => kv?.key?.toString?.() === 'address'
+            );
+            const addr = addrKv?.value
+              ? String(Buffer.from(addrKv.value).toString())
+              : null;
+            if (!addr) continue;
+
+            const fullPath = addrToPath.get(addr);
+            if (!fullPath) continue;
+
+            // Imported extended keys are account-level (BIP84 account node), so we must provide a
+            // path relative to that node (change/index), not the full m/84'/... path.
+            const pathForSigner = isImportedExtended
+              ? (() => {
+                  const parts = String(fullPath).split('/').filter(Boolean);
+                  // Expected: m/84'/slip44'/account'/change/index
+                  if (parts.length >= 2) {
+                    const change = parts[parts.length - 2];
+                    const index = parts[parts.length - 1];
+                    return `${change}/${index}`;
+                  }
+                  return fullPath;
+                })()
+              : fullPath;
+
+            (psbt as any).addUnknownKeyValToInput(i, {
+              key: Buffer.from('path'),
+              value: Buffer.from(pathForSigner),
+            });
+          }
+        }
+      } catch (_e) {
+        // Best-effort enrichment; if it fails, fall back to default signing error path.
+      }
+
       const { hd } = this.getSigner();
       const signedPsbt = await this.signPSBTWithSigner({
         psbt,
