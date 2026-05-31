@@ -36,6 +36,7 @@ import { EthereumTransactions, SyscoinTransactions } from './transactions';
 import { TrezorKeyring } from './trezor';
 import {
   IKeyringAccountState,
+  ICreatePasskeySmartAccountParams,
   ISyscoinTransactions,
   KeyringAccountType,
   IEthereumTransactions,
@@ -157,6 +158,28 @@ export class KeyringManager implements IKeyringManager {
   // Helper to get active chain from vault state (replaces this.activeChain)
   private getActiveChain = (): INetworkType => {
     return this.getVault().activeNetwork.kind;
+  };
+
+  private accountAddressExists = (
+    accounts: Record<string, Record<number, IKeyringAccountState>>,
+    address: string,
+    caseInsensitive = false
+  ): boolean => {
+    const expectedAddress = caseInsensitive ? address.toLowerCase() : address;
+
+    return Object.values(accounts || {}).some((accountsByType) =>
+      Object.values(accountsByType || {}).some((account) => {
+        if (!account?.address) {
+          return false;
+        }
+
+        const accountAddress = caseInsensitive
+          ? account.address.toLowerCase()
+          : account.address;
+
+        return accountAddress === expectedAddress;
+      })
+    );
   };
 
   // Secure session data - using Buffers that can be explicitly cleared
@@ -358,6 +381,40 @@ export class KeyringManager implements IKeyringManager {
       // EVM chainType
       return await this.addNewAccountToEth(label);
     }
+  };
+
+  public createPasskeySmartAccount = async ({
+    address,
+    label,
+    metadata,
+  }: ICreatePasskeySmartAccountParams): Promise<IKeyringAccountState> => {
+    const vault = this.getVault();
+    const { accounts } = vault;
+
+    if (this.accountAddressExists(accounts, address, true)) {
+      throw new Error('Account already exists on your Wallet.');
+    }
+
+    const passkeyAccounts =
+      accounts[KeyringAccountType.PasskeySmartAccount] || {};
+    const nextId = this.getNextAccountId(passkeyAccounts);
+
+    return {
+      address,
+      balances: {
+        [INetworkType.Syscoin]: 0,
+        [INetworkType.Ethereum]: 0,
+      },
+      id: nextId,
+      isImported: false,
+      isLedgerWallet: false,
+      isPasskeySmartAccount: true,
+      isTrezorWallet: false,
+      label: label || `Passkey Account ${nextId + 1}`,
+      passkey: metadata,
+      xprv: '',
+      xpub: address,
+    };
   };
 
   public async unlock(password: string): Promise<{
@@ -1181,14 +1238,8 @@ export class KeyringManager implements IKeyringManager {
       }
     }
 
-    // Validate duplicates
-    const existsInImported = Object.values(
-      accounts[KeyringAccountType.Imported] as IKeyringAccountState[]
-    ).some((a) => a.address === addressToStore);
-    const existsInHD = Object.values(
-      accounts[KeyringAccountType.HDAccount] as IKeyringAccountState[]
-    ).some((a) => a.address === addressToStore);
-    if (existsInImported || existsInHD) {
+    // Validate duplicates across all account buckets, including passkey smart accounts.
+    if (this.accountAddressExists(accounts, addressToStore)) {
       throw new Error('Account already exists on your Wallet.');
     }
     // Confirm with Blockbook
@@ -1862,21 +1913,7 @@ export class KeyringManager implements IKeyringManager {
       address = await this.getAddress(xpub, false, { forceIndex0: true });
     }
 
-    const accountAlreadyExists =
-      Object.values(
-        accounts[KeyringAccountType.Ledger] as IKeyringAccountState[]
-      ).some((account) => account.address === address) ||
-      Object.values(
-        accounts[KeyringAccountType.Trezor] as IKeyringAccountState[]
-      ).some((account) => account.address === address) ||
-      Object.values(
-        accounts[KeyringAccountType.HDAccount] as IKeyringAccountState[]
-      ).some((account) => account.address === address) ||
-      Object.values(
-        accounts[KeyringAccountType.Imported] as IKeyringAccountState[]
-      ).some((account) => account.address === address);
-
-    if (accountAlreadyExists)
+    if (this.accountAddressExists(accounts, address, isEVM))
       throw new Error('Account already exists on your Wallet.');
     if (!xpub || !address)
       throw new Error(
@@ -1960,21 +1997,7 @@ export class KeyringManager implements IKeyringManager {
       address = await this.getAddress(xpub, false, { forceIndex0: true });
     }
 
-    const accountAlreadyExists =
-      Object.values(
-        accounts[KeyringAccountType.Ledger] as IKeyringAccountState[]
-      ).some((account) => account.address === address) ||
-      Object.values(
-        accounts[KeyringAccountType.Trezor] as IKeyringAccountState[]
-      ).some((account) => account.address === address) ||
-      Object.values(
-        accounts[KeyringAccountType.HDAccount] as IKeyringAccountState[]
-      ).some((account) => account.address === address) ||
-      Object.values(
-        accounts[KeyringAccountType.Imported] as IKeyringAccountState[]
-      ).some((account) => account.address === address);
-
-    if (accountAlreadyExists)
+    if (this.accountAddressExists(accounts, address, isEvmCoin(coin, slip44)))
       throw new Error('Account already exists on your Wallet.');
     if (!xpub || !address)
       throw new Error(
@@ -2521,17 +2544,8 @@ export class KeyringManager implements IKeyringManager {
 
     const { address, publicKey, privateKey } = importedAccountValue;
 
-    //Validate if account already exists
-    const accountAlreadyExists =
-      (accounts[KeyringAccountType.Imported] &&
-        Object.values(
-          accounts[KeyringAccountType.Imported] as IKeyringAccountState[]
-        ).some((account) => account.address === address)) ||
-      Object.values(
-        accounts[KeyringAccountType.HDAccount] as IKeyringAccountState[]
-      ).some((account) => account.address === address); //Find a way to verify if private Key is not par of seed wallet derivation path
-
-    if (accountAlreadyExists)
+    // Validate duplicates across all account buckets, including passkey smart accounts.
+    if (this.accountAddressExists(accounts, address, isEvmNetwork))
       throw new Error(
         'Account already exists, try again with another Private Key.'
       );
