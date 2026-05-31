@@ -160,6 +160,28 @@ export class KeyringManager implements IKeyringManager {
     return this.getVault().activeNetwork.kind;
   };
 
+  private accountAddressExists = (
+    accounts: Record<string, Record<number, IKeyringAccountState>>,
+    address: string,
+    caseInsensitive = false
+  ): boolean => {
+    const expectedAddress = caseInsensitive ? address.toLowerCase() : address;
+
+    return Object.values(accounts || {}).some((accountsByType) =>
+      Object.values(accountsByType || {}).some((account) => {
+        if (!account?.address) {
+          return false;
+        }
+
+        const accountAddress = caseInsensitive
+          ? account.address.toLowerCase()
+          : account.address;
+
+        return accountAddress === expectedAddress;
+      })
+    );
+  };
+
   // Secure session data - using Buffers that can be explicitly cleared
   private sessionPassword: SecureBuffer | null = null;
   private sessionMnemonic: SecureBuffer | null = null; // can be a mnemonic or a zprv, can be changed to a zprv when using an imported wallet
@@ -368,15 +390,8 @@ export class KeyringManager implements IKeyringManager {
   }: ICreatePasskeySmartAccountParams): Promise<IKeyringAccountState> => {
     const vault = this.getVault();
     const { accounts } = vault;
-    const normalizedAddress = address.toLowerCase();
-    const accountAlreadyExists = Object.values(accounts).some(
-      (accountsByType: Record<number, IKeyringAccountState>) =>
-        Object.values(accountsByType || {}).some(
-          (account) => account.address?.toLowerCase() === normalizedAddress
-        )
-    );
 
-    if (accountAlreadyExists) {
+    if (this.accountAddressExists(accounts, address, true)) {
       throw new Error('Account already exists on your Wallet.');
     }
 
@@ -1223,14 +1238,8 @@ export class KeyringManager implements IKeyringManager {
       }
     }
 
-    // Validate duplicates
-    const existsInImported = Object.values(
-      accounts[KeyringAccountType.Imported] as IKeyringAccountState[]
-    ).some((a) => a.address === addressToStore);
-    const existsInHD = Object.values(
-      accounts[KeyringAccountType.HDAccount] as IKeyringAccountState[]
-    ).some((a) => a.address === addressToStore);
-    if (existsInImported || existsInHD) {
+    // Validate duplicates across all account buckets, including passkey smart accounts.
+    if (this.accountAddressExists(accounts, addressToStore)) {
       throw new Error('Account already exists on your Wallet.');
     }
     // Confirm with Blockbook
@@ -1904,21 +1913,7 @@ export class KeyringManager implements IKeyringManager {
       address = await this.getAddress(xpub, false, { forceIndex0: true });
     }
 
-    const accountAlreadyExists =
-      Object.values(
-        accounts[KeyringAccountType.Ledger] as IKeyringAccountState[]
-      ).some((account) => account.address === address) ||
-      Object.values(
-        accounts[KeyringAccountType.Trezor] as IKeyringAccountState[]
-      ).some((account) => account.address === address) ||
-      Object.values(
-        accounts[KeyringAccountType.HDAccount] as IKeyringAccountState[]
-      ).some((account) => account.address === address) ||
-      Object.values(
-        accounts[KeyringAccountType.Imported] as IKeyringAccountState[]
-      ).some((account) => account.address === address);
-
-    if (accountAlreadyExists)
+    if (this.accountAddressExists(accounts, address, isEVM))
       throw new Error('Account already exists on your Wallet.');
     if (!xpub || !address)
       throw new Error(
@@ -2002,21 +1997,7 @@ export class KeyringManager implements IKeyringManager {
       address = await this.getAddress(xpub, false, { forceIndex0: true });
     }
 
-    const accountAlreadyExists =
-      Object.values(
-        accounts[KeyringAccountType.Ledger] as IKeyringAccountState[]
-      ).some((account) => account.address === address) ||
-      Object.values(
-        accounts[KeyringAccountType.Trezor] as IKeyringAccountState[]
-      ).some((account) => account.address === address) ||
-      Object.values(
-        accounts[KeyringAccountType.HDAccount] as IKeyringAccountState[]
-      ).some((account) => account.address === address) ||
-      Object.values(
-        accounts[KeyringAccountType.Imported] as IKeyringAccountState[]
-      ).some((account) => account.address === address);
-
-    if (accountAlreadyExists)
+    if (this.accountAddressExists(accounts, address, isEvmCoin(coin, slip44)))
       throw new Error('Account already exists on your Wallet.');
     if (!xpub || !address)
       throw new Error(
@@ -2563,17 +2544,8 @@ export class KeyringManager implements IKeyringManager {
 
     const { address, publicKey, privateKey } = importedAccountValue;
 
-    //Validate if account already exists
-    const accountAlreadyExists =
-      (accounts[KeyringAccountType.Imported] &&
-        Object.values(
-          accounts[KeyringAccountType.Imported] as IKeyringAccountState[]
-        ).some((account) => account.address === address)) ||
-      Object.values(
-        accounts[KeyringAccountType.HDAccount] as IKeyringAccountState[]
-      ).some((account) => account.address === address); //Find a way to verify if private Key is not par of seed wallet derivation path
-
-    if (accountAlreadyExists)
+    // Validate duplicates across all account buckets, including passkey smart accounts.
+    if (this.accountAddressExists(accounts, address, isEvmNetwork))
       throw new Error(
         'Account already exists, try again with another Private Key.'
       );
