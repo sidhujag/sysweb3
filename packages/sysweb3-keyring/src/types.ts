@@ -171,6 +171,9 @@ export interface ISyscoinTransactions {
 export interface IKeyringManager {
   // Core keyring functionality
   addNewAccount: (label?: string) => Promise<IKeyringAccountState>;
+  createPasskeySmartAccount: (
+    params: ICreatePasskeySmartAccountParams
+  ) => Promise<IKeyringAccountState>;
   ethereumTransaction: IEthereumTransactions;
   forgetMainWallet: (pwd: string) => void;
   getAccountById: (
@@ -256,7 +259,50 @@ export enum KeyringAccountType {
   HDAccount = 'HDAccount',
   Imported = 'Imported',
   Ledger = 'Ledger',
+  PasskeySmartAccount = 'PasskeySmartAccount',
   Trezor = 'Trezor',
+}
+
+export enum PasskeySponsorMode {
+  Disabled = 'disabled',
+  GasOnly = 'gasOnly',
+  Required = 'required',
+}
+
+export interface IPasskeySmartAccountMetadata {
+  chainId: number;
+  contractVersion: string;
+  credentialId: string;
+  credentialIdHash: string;
+  deploymentGasPayer?: {
+    address: string;
+    id: number;
+    type: KeyringAccountType;
+  };
+  deploymentSalt: string;
+  factoryAddress?: string;
+  isDeployed: boolean;
+  passkeyName: string;
+  publicKey: {
+    originHash: string;
+    originLength: number;
+    rpIdHash: string;
+    x: string;
+    y: string;
+  };
+  sponsor?: {
+    mode: PasskeySponsorMode;
+    policyText?: string;
+    signer?: string;
+    url?: string;
+    urlHash?: string;
+  };
+}
+
+export interface ICreatePasskeySmartAccountParams {
+  address: string;
+  label?: string;
+  metadata: IPasskeySmartAccountMetadata;
 }
 
 export type IKeyringDApp = {
@@ -300,8 +346,10 @@ export interface IKeyringAccountState {
   id: number;
   isImported: boolean;
   isLedgerWallet: boolean;
+  isPasskeySmartAccount?: boolean;
   isTrezorWallet: boolean;
   label: string;
+  passkey?: IPasskeySmartAccountMetadata;
   xprv: string;
   xpub: string;
 }

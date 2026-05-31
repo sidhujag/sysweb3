@@ -36,6 +36,7 @@ import { EthereumTransactions, SyscoinTransactions } from './transactions';
 import { TrezorKeyring } from './trezor';
 import {
   IKeyringAccountState,
+  ICreatePasskeySmartAccountParams,
   ISyscoinTransactions,
   KeyringAccountType,
   IEthereumTransactions,
@@ -358,6 +359,34 @@ export class KeyringManager implements IKeyringManager {
       // EVM chainType
       return await this.addNewAccountToEth(label);
     }
+  };
+
+  public createPasskeySmartAccount = async ({
+    address,
+    label,
+    metadata,
+  }: ICreatePasskeySmartAccountParams): Promise<IKeyringAccountState> => {
+    const vault = this.getVault();
+    const accounts =
+      vault.accounts[KeyringAccountType.PasskeySmartAccount] || {};
+    const nextId = this.getNextAccountId(accounts);
+
+    return {
+      address,
+      balances: {
+        [INetworkType.Syscoin]: 0,
+        [INetworkType.Ethereum]: 0,
+      },
+      id: nextId,
+      isImported: false,
+      isLedgerWallet: false,
+      isPasskeySmartAccount: true,
+      isTrezorWallet: false,
+      label: label || `Passkey Account ${nextId + 1}`,
+      passkey: metadata,
+      xprv: '',
+      xpub: address,
+    };
   };
 
   public async unlock(password: string): Promise<{
