@@ -367,9 +367,22 @@ export class KeyringManager implements IKeyringManager {
     metadata,
   }: ICreatePasskeySmartAccountParams): Promise<IKeyringAccountState> => {
     const vault = this.getVault();
-    const accounts =
-      vault.accounts[KeyringAccountType.PasskeySmartAccount] || {};
-    const nextId = this.getNextAccountId(accounts);
+    const { accounts } = vault;
+    const normalizedAddress = address.toLowerCase();
+    const accountAlreadyExists = Object.values(accounts).some(
+      (accountsByType: Record<number, IKeyringAccountState>) =>
+        Object.values(accountsByType || {}).some(
+          (account) => account.address?.toLowerCase() === normalizedAddress
+        )
+    );
+
+    if (accountAlreadyExists) {
+      throw new Error('Account already exists on your Wallet.');
+    }
+
+    const passkeyAccounts =
+      accounts[KeyringAccountType.PasskeySmartAccount] || {};
+    const nextId = this.getNextAccountId(passkeyAccounts);
 
     return {
       address,
