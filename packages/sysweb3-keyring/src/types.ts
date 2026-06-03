@@ -269,7 +269,15 @@ export enum PasskeySponsorMode {
   Required = 'required',
 }
 
+export enum PasskeyBackupStatus {
+  BackupCapable = 'backupCapable',
+  DeviceBound = 'deviceBound',
+  Synced = 'synced',
+  Unavailable = 'unavailable',
+}
+
 export interface IPasskeySmartAccountMetadata {
+  backupStatus?: PasskeyBackupStatus;
   chainId: number;
   contractVersion: string;
   credentialId: string;
@@ -290,13 +298,21 @@ export interface IPasskeySmartAccountMetadata {
     x: string;
     y: string;
   };
+  recoveryId?: string;
   sponsor?: {
     mode: PasskeySponsorMode;
     policyText?: string;
     signer?: string;
     url?: string;
-    urlHash?: string;
   };
+}
+
+export interface IPasskeyCredentialProfile {
+  backupStatus?: PasskeyBackupStatus;
+  credentialId: string;
+  credentialIdHash: string;
+  passkeyName: string;
+  publicKey: IPasskeySmartAccountMetadata['publicKey'];
 }
 
 export interface ICreatePasskeySmartAccountParams {
