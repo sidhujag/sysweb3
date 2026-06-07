@@ -36,7 +36,7 @@ import { EthereumTransactions, SyscoinTransactions } from './transactions';
 import { TrezorKeyring } from './trezor';
 import {
   IKeyringAccountState,
-  ICreatePasskeySmartAccountParams,
+  ICreateSmartAccountParams,
   ISyscoinTransactions,
   KeyringAccountType,
   IEthereumTransactions,
@@ -383,24 +383,30 @@ export class KeyringManager implements IKeyringManager {
     }
   };
 
-  public createPasskeySmartAccount = async ({
+  public createSmartAccount = async ({
     address,
+    deriveAccount,
     label,
     metadata,
-  }: ICreatePasskeySmartAccountParams): Promise<IKeyringAccountState> => {
+  }: ICreateSmartAccountParams): Promise<IKeyringAccountState> => {
     const vault = this.getVault();
     const { accounts } = vault;
 
-    if (this.accountAddressExists(accounts, address, true)) {
+    const smartAccounts = accounts[KeyringAccountType.SmartAccount] || {};
+    const nextId = this.getNextAccountId(smartAccounts);
+    const derived = deriveAccount
+      ? await deriveAccount(nextId)
+      : { address, metadata };
+    if (!derived.address) {
+      throw new Error('Smart account address is required');
+    }
+
+    if (this.accountAddressExists(accounts, derived.address, true)) {
       throw new Error('Account already exists on your Wallet.');
     }
 
-    const passkeyAccounts =
-      accounts[KeyringAccountType.PasskeySmartAccount] || {};
-    const nextId = this.getNextAccountId(passkeyAccounts);
-
     return {
-      address,
+      address: derived.address,
       balances: {
         [INetworkType.Syscoin]: 0,
         [INetworkType.Ethereum]: 0,
@@ -408,12 +414,12 @@ export class KeyringManager implements IKeyringManager {
       id: nextId,
       isImported: false,
       isLedgerWallet: false,
-      isPasskeySmartAccount: true,
+      isSmartAccount: true,
       isTrezorWallet: false,
-      label: label || `Passkey Account ${nextId + 1}`,
-      passkey: metadata,
+      label: label || `Smart Account ${nextId + 1}`,
+      smartAccount: derived.metadata,
       xprv: '',
-      xpub: address,
+      xpub: derived.address,
     };
   };
 

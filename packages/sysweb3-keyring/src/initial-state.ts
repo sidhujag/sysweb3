@@ -13,7 +13,6 @@ export const initialActiveHdAccountState: IKeyringAccountState = {
   isTrezorWallet: false,
   isLedgerWallet: false,
   label: 'Account 1',
-  isPasskeySmartAccount: false,
   xprv: '',
   xpub: '',
   isImported: false,

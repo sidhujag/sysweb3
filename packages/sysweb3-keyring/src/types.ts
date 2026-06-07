@@ -171,8 +171,8 @@ export interface ISyscoinTransactions {
 export interface IKeyringManager {
   // Core keyring functionality
   addNewAccount: (label?: string) => Promise<IKeyringAccountState>;
-  createPasskeySmartAccount: (
-    params: ICreatePasskeySmartAccountParams
+  createSmartAccount: (
+    params: ICreateSmartAccountParams
   ) => Promise<IKeyringAccountState>;
   ethereumTransaction: IEthereumTransactions;
   forgetMainWallet: (pwd: string) => void;
@@ -259,14 +259,8 @@ export enum KeyringAccountType {
   HDAccount = 'HDAccount',
   Imported = 'Imported',
   Ledger = 'Ledger',
-  PasskeySmartAccount = 'PasskeySmartAccount',
+  SmartAccount = 'SmartAccount',
   Trezor = 'Trezor',
-}
-
-export enum PasskeySponsorMode {
-  Disabled = 'disabled',
-  GasOnly = 'gasOnly',
-  Required = 'required',
 }
 
 export enum PasskeyBackupStatus {
@@ -276,20 +270,10 @@ export enum PasskeyBackupStatus {
   Unavailable = 'unavailable',
 }
 
-export interface IPasskeySmartAccountMetadata {
+export interface IPasskeyCredentialProfile {
   backupStatus?: PasskeyBackupStatus;
-  chainId: number;
-  contractVersion: string;
   credentialId: string;
   credentialIdHash: string;
-  deploymentGasPayer?: {
-    address: string;
-    id: number;
-    type: KeyringAccountType;
-  };
-  deploymentSalt: string;
-  factoryAddress?: string;
-  isDeployed: boolean;
   passkeyName: string;
   publicKey: {
     originHash: string;
@@ -298,27 +282,16 @@ export interface IPasskeySmartAccountMetadata {
     x: string;
     y: string;
   };
-  recoveryId?: string;
-  sponsor?: {
-    mode: PasskeySponsorMode;
-    policyText?: string;
-    signer?: string;
-    url?: string;
-  };
 }
 
-export interface IPasskeyCredentialProfile {
-  backupStatus?: PasskeyBackupStatus;
-  credentialId: string;
-  credentialIdHash: string;
-  passkeyName: string;
-  publicKey: IPasskeySmartAccountMetadata['publicKey'];
-}
-
-export interface ICreatePasskeySmartAccountParams {
-  address: string;
+export interface ICreateSmartAccountParams {
+  address?: string;
+  deriveAccount?: (accountIndex: number) => Promise<{
+    address: string;
+    metadata: unknown;
+  }>;
   label?: string;
-  metadata: IPasskeySmartAccountMetadata;
+  metadata?: unknown;
 }
 
 export type IKeyringDApp = {
@@ -362,10 +335,10 @@ export interface IKeyringAccountState {
   id: number;
   isImported: boolean;
   isLedgerWallet: boolean;
-  isPasskeySmartAccount?: boolean;
+  isSmartAccount?: boolean;
   isTrezorWallet: boolean;
   label: string;
-  passkey?: IPasskeySmartAccountMetadata;
+  smartAccount?: unknown;
   xprv: string;
   xpub: string;
 }
