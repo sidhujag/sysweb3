@@ -284,14 +284,14 @@ export interface IPasskeyCredentialProfile {
   };
 }
 
-export interface ICreateSmartAccountParams {
+export interface ICreateSmartAccountParams<TSmartAccountMetadata = any> {
   address?: string;
   deriveAccount?: (accountIndex: number) => Promise<{
     address: string;
-    metadata: unknown;
+    metadata: TSmartAccountMetadata;
   }>;
   label?: string;
-  metadata?: unknown;
+  metadata?: TSmartAccountMetadata;
 }
 
 export type IKeyringDApp = {
@@ -329,7 +329,7 @@ interface IValidateZprvResponse {
   node?: any;
 }
 
-export interface IKeyringAccountState {
+export interface IKeyringAccountState<TSmartAccountMetadata = any> {
   address: string;
   balances: IKeyringBalances;
   id: number;
@@ -338,7 +338,7 @@ export interface IKeyringAccountState {
   isSmartAccount?: boolean;
   isTrezorWallet: boolean;
   label: string;
-  smartAccount?: unknown;
+  smartAccount?: TSmartAccountMetadata;
   xprv: string;
   xpub: string;
 }
