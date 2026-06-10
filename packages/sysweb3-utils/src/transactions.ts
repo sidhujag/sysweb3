@@ -2,9 +2,65 @@ import * as syscoinjs from 'syscoinjs-lib';
 
 // import { web3Provider } from '@sidhujag/sysweb3-network';
 
+// Short-TTL cache + in-flight dedup for Blockbook /api/v2/tx lookups.
+// The fields consumers rely on (hex, vin/vout) are immutable per txid, but the
+// response also carries mutable fields (confirmations), so entries expire
+// quickly instead of being cached forever.
+const RAW_TX_CACHE_TTL_MS = 60_000;
+const RAW_TX_CACHE_MAX_ENTRIES = 100;
+const rawTxCache = new Map<
+  string,
+  { promise: Promise<any>; timestamp: number }
+>();
+
+const getRawTransactionCached = (
+  explorerUrl: string,
+  txid: string
+): Promise<any> => {
+  const key = `${explorerUrl}::${txid}`;
+  const now = Date.now();
+
+  const cached = rawTxCache.get(key);
+  if (cached && now - cached.timestamp < RAW_TX_CACHE_TTL_MS) {
+    return cached.promise;
+  }
+
+  if (!rawTxCache.has(key) && rawTxCache.size >= RAW_TX_CACHE_MAX_ENTRIES) {
+    const oldestKey = rawTxCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      rawTxCache.delete(oldestKey);
+    }
+  }
+
+  const promise = Promise.resolve(
+    syscoinjs.utils.fetchBackendRawTx(explorerUrl, txid)
+  );
+  rawTxCache.set(key, { promise, timestamp: now });
+
+  // Never cache failures or empty responses (e.g. tx not indexed yet) -
+  // the next caller should retry
+  const dropEntry = () => {
+    const entry = rawTxCache.get(key);
+    if (entry && entry.promise === promise) {
+      rawTxCache.delete(key);
+    }
+  };
+  promise.then((value) => {
+    if (value === null || value === undefined) {
+      dropEntry();
+    }
+  }, dropEntry);
+
+  return promise;
+};
+
+export const clearRawTransactionCache = () => {
+  rawTxCache.clear();
+};
+
 export const txUtils = () => {
   const getRawTransaction = (explorerUrl: string, txid: string) =>
-    syscoinjs.utils.fetchBackendRawTx(explorerUrl, txid);
+    getRawTransactionCached(explorerUrl, txid);
 
   return {
     getRawTransaction,

@@ -42,6 +42,7 @@ import {
   IEthereumTransactions,
   IKeyringManager,
 } from './types';
+import { fetchBackendAccountCached as fetchBlockbookAccountCached } from './utils/blockbook-cache';
 import {
   getAddressDerivationPath,
   isEvmCoin,
@@ -1086,12 +1087,12 @@ export class KeyringManager implements IKeyringManager {
     const { main } = this.getReadOnlySigner();
     const options = 'tokens=used&details=tokens';
 
-    const { tokens } = await syscoinjs.utils.fetchBackendAccount(
+    // In-flight deduplicated: concurrent callers within a send flow
+    // (fee estimation, PSBT creation, signing) share a single request
+    const { tokens } = await fetchBlockbookAccountCached(
       main.blockbookURL,
       xpub,
-      options,
-      true,
-      undefined
+      options
     );
 
     const { receivingIndex, changeIndex } =

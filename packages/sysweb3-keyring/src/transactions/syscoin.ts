@@ -15,11 +15,16 @@ import {
   KeyringAccountType,
   accountType,
 } from '../types';
+import { fetchBackendAccountCached } from '../utils/blockbook-cache';
 import {
   getAccountDerivationPath,
   convertExtendedKeyVersion,
 } from '../utils/derivation-paths';
 import { PsbtUtils } from '../utils/psbt';
+
+// Recommended fee changes slowly; cache per explorer to avoid hammering
+// Blockbook while the user edits amounts on the send screen
+const FEE_CACHE_TTL_MS = 60_000;
 
 type EstimateFeeParams = {
   changeAddress: string;
@@ -147,8 +152,18 @@ export class SyscoinTransactions implements ISyscoinTransactions {
     }
   };
 
-  public getRecommendedFee = async (explorerUrl: string): Promise<number> =>
-    (await syscoinjs.utils.fetchEstimateFee(explorerUrl, 1)) / 1024;
+  private feeCache = new Map<string, { fee: number; timestamp: number }>();
+
+  public getRecommendedFee = async (explorerUrl: string): Promise<number> => {
+    const cached = this.feeCache.get(explorerUrl);
+    if (cached && Date.now() - cached.timestamp < FEE_CACHE_TTL_MS) {
+      return cached.fee;
+    }
+
+    const fee = (await syscoinjs.utils.fetchEstimateFee(explorerUrl, 1)) / 1024;
+    this.feeCache.set(explorerUrl, { fee, timestamp: Date.now() });
+    return fee;
+  };
 
   public txUtilsFunctions = () => {
     const { getRawTransaction } = txUtils();
@@ -537,12 +552,12 @@ export class SyscoinTransactions implements ISyscoinTransactions {
           typeof (psbt as any).addUnknownKeyValToInput === 'function'
         ) {
           // Fetch address->path mapping from Blockbook xpub endpoint
+          // (in-flight deduplicated with the keyring's getAddress lookups)
           const blockbookUrl = activeNetwork.url;
-          const res: any = await (syscoinjs.utils as any).fetchBackendAccount(
+          const res: any = await fetchBackendAccountCached(
             blockbookUrl,
             accountXpub,
-            'tokens=used&details=tokens',
-            true
+            'tokens=used&details=tokens'
           );
           const tokens: any[] = Array.isArray(res?.tokens) ? res.tokens : [];
           const addrToPath = new Map<string, string>();
