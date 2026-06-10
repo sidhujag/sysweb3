@@ -653,8 +653,7 @@ describe('KeyringManager - Key Derivation', () => {
           expect.any(String), // blockbook URL
           account.xpub,
           'tokens=used&details=tokens',
-          true,
-          undefined
+          true
         );
       });
 
