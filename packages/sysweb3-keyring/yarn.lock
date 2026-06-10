@@ -819,10 +819,10 @@
     "@ethersproject/bytes" "^5.8.0"
     eth-chains "^1.0.0"
 
-"@sidhujag/sysweb3-utils@^1.1.272":
-  version "1.1.272"
-  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-utils/-/sysweb3-utils-1.1.272.tgz#441b845361fd0d6c7a0b3801c57b2255a9953e68"
-  integrity sha512-xTbgsIll+1z9QVBQC5mwNkMQ7ImYNn8WCcNAezkEvaTYu162756Sh4tc8bPIPtJNOwwYYFTnukBZEGXkvjc3/g==
+"@sidhujag/sysweb3-utils@^1.1.273":
+  version "1.1.273"
+  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-utils/-/sysweb3-utils-1.1.273.tgz#43ca8edf8cd8c5eebda55b3a402d2e53acd76b9e"
+  integrity sha512-MvrufvGgfo/GmRp2RxOPMoRgTtB8FuQXIfNv/6hulADnsqIDbgOEVdw1pEluKa3wAafxhKKvw7+aNaPYy3f2MA==
   dependencies:
     "@ethersproject/address" "^5.8.0"
     "@ethersproject/contracts" "^5.8.0"
@@ -3450,9 +3450,9 @@ semver@7.7.3:
   integrity sha512-SdsKMrI9TdgjdweUSR9MweHA4EJ8YxHn8DFaDisvhVlUOe4BF1tLD7GAj0lIqWVl+dPb/rExr0Btby5loQm20Q==
 
 semver@^7.3.5, semver@^7.5.4:
-  version "7.8.2"
-  resolved "https://registry.yarnpkg.com/semver/-/semver-7.8.2.tgz#194bd65723a28cf82542d2bf176b91c26b343be1"
-  integrity sha512-c8jsqUZm3omBOI66G90z1Dyw5z622G8oLG+omfsHBJf3CWQTlOcwOjvOG6wtiNfW6anKm/eA39LMwMtMez2TiQ==
+  version "7.8.4"
+  resolved "https://registry.yarnpkg.com/semver/-/semver-7.8.4.tgz#c73eceebae0616934be8dff28a7fd70757c8e696"
+  integrity sha512-rUCObTnP32Q08R2uuIrt7r9PlEonuTmtuXYcW6s5kjdlj3xbnwe+21yXptAUYcMAABLkYYTtnmzb3w3EDZfueA==
 
 set-function-length@^1.2.2:
   version "1.2.2"
