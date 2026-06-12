@@ -9,6 +9,27 @@ import { checkError } from './utils';
 
 const logger = new Logger('sysweb3-keyring/providers');
 
+// Preserve JSON-RPC error details (code, revert data) on thrown errors so
+// consumers can decode custom contract errors instead of only seeing
+// "execution reverted".
+const makeRpcError = (rpcError: {
+  code?: number;
+  data?: unknown;
+  message: string;
+}): Error => {
+  const error = new Error(rpcError.message) as Error & {
+    code?: number;
+    data?: unknown;
+  };
+  if (rpcError.code !== undefined) {
+    error.code = rpcError.code;
+  }
+  if (rpcError.data !== undefined) {
+    error.data = rpcError.data;
+  }
+  return error;
+};
+
 class BaseProvider extends JsonRpcProvider {
   private isPossibleGetChainId = true;
   private cooldownTime = 120 * 1000;
@@ -207,14 +228,14 @@ class BaseProvider extends JsonRpcProvider {
                 errorMessage: json.error.message,
               });
               this.errorMessage = json.error.message;
-              throw new Error(json.error.message);
+              throw makeRpcError(json.error);
             }
             this.errorMessage = json.error.message;
             console.log({ requestData: { method, params }, error: json.error });
             console.error({
               errorMessage: json.error.message,
             });
-            throw new Error(json.error.message);
+            throw makeRpcError(json.error);
           }
           if (method === 'eth_chainId') {
             this.currentChainId = json.result;
@@ -282,7 +303,7 @@ class BaseProvider extends JsonRpcProvider {
               console.error({
                 errorMessage: json.error.message,
               });
-              throw new Error(json.error.message);
+              throw makeRpcError(json.error);
             }
             return json.result;
           });
