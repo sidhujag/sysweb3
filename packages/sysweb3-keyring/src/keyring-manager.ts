@@ -22,6 +22,12 @@ import * as BIP84 from 'syscoinjs-lib/bip84-replacement';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const bjs: any = (syscoinjs.utils as any).bitcoinjs;
 
+const SLH_DSA_DERIVATION_VERSION = 1;
+// Preserve Pali v1 SLH derivation: first 32 bytes of the account-scoped HMAC.
+// Pali expands this setup secret into the 48-byte SLH skSeed/skPrf/pkSeed tuple.
+const SLH_DSA_SETUP_SECRET_HEX_LENGTH = 64;
+const SLH_DSA_PARAMETER_SET = 'SLH-DSA-SHA2-128-24';
+
 import { HardwareWalletManager } from './hardware-wallet-manager';
 import { HardwareWalletManagerSingleton } from './hardware-wallet-manager-singleton';
 import {
@@ -820,6 +826,61 @@ export class KeyringManager implements IKeyringManager {
     }
 
     return mnemonic;
+  };
+
+  public deriveSLHDSASetupSecretForAccount = async ({
+    accountIndex,
+  }: {
+    accountIndex: number;
+  }): Promise<{
+    derivationLabel: string;
+    setupSecretHex: string;
+  }> => {
+    if (!this.sessionPassword) {
+      throw new Error('Unlock wallet first');
+    }
+
+    const mnemonic = this.getDecryptedMnemonic();
+    const normalizedMnemonic = mnemonic.normalize('NFKD');
+    const seed = CryptoJS.PBKDF2(
+      normalizedMnemonic,
+      `mnemonic`.normalize('NFKD'),
+      {
+        hasher: CryptoJS.algo.SHA512,
+        iterations: 2048,
+        keySize: 512 / 32,
+      }
+    );
+    const derivationLabel = `PALI/${SLH_DSA_PARAMETER_SET}/v${SLH_DSA_DERIVATION_VERSION}/account/${accountIndex}`;
+    const digest = CryptoJS.HmacSHA512(
+      derivationLabel,
+      CryptoJS.enc.Hex.parse(seed.toString(CryptoJS.enc.Hex))
+    );
+
+    return {
+      derivationLabel,
+      setupSecretHex: digest
+        .toString(CryptoJS.enc.Hex)
+        .slice(0, SLH_DSA_SETUP_SECRET_HEX_LENGTH),
+    };
+  };
+
+  public encryptSLHDSASessionState = (plainText: string): string => {
+    return this.withSecureData((sessionPwd) =>
+      CryptoJS.AES.encrypt(plainText, sessionPwd).toString()
+    );
+  };
+
+  public decryptSLHDSASessionState = (cipherText: string): string => {
+    return this.withSecureData((sessionPwd) => {
+      const plainText = CryptoJS.AES.decrypt(cipherText, sessionPwd).toString(
+        CryptoJS.enc.Utf8
+      );
+      if (!plainText) {
+        throw new Error('Failed to decrypt SLH-DSA session state');
+      }
+      return plainText;
+    });
   };
 
   public setSignerNetwork = async (

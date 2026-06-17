@@ -205,6 +205,14 @@ export interface IKeyringManager {
   syscoinTransaction: ISyscoinTransactions;
   isSeedValid: (seedPhrase: string) => boolean;
   getSeed: (pwd: string) => Promise<string>;
+  deriveSLHDSASetupSecretForAccount: (params: {
+    accountIndex: number;
+  }) => Promise<{
+    derivationLabel: string;
+    setupSecretHex: string;
+  }>;
+  decryptSLHDSASessionState: (cipherText: string) => string;
+  encryptSLHDSASessionState: (plainText: string) => string;
   importTrezorAccount: (label?: string) => Promise<IKeyringAccountState>;
   utf8Error: boolean;
   validateZprv: (
