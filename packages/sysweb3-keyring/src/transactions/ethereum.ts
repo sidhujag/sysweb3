@@ -2593,6 +2593,10 @@ export class EthereumTransactions implements IEthereumTransactions {
   };
 
   getTxGasLimit = async (tx: SimpleTransactionRequest) => {
+    const hasCalldata = Boolean(
+      tx.data && tx.data !== '0x' && tx.data !== '0x0'
+    );
+
     try {
       // First attempt: standard estimation
       const estimated = await this.web3Provider.estimateGas(tx);
@@ -2611,6 +2615,18 @@ export class EthereumTransactions implements IEthereumTransactions {
       return withBuffer;
     } catch (error) {
       console.warn('Gas estimation failed:', error);
+
+      if (hasCalldata) {
+        const calldataFallback = BigNumber.from('100000');
+        if (
+          this.gasOverrides.minGasLimit &&
+          calldataFallback.lt(this.gasOverrides.minGasLimit)
+        ) {
+          return this.gasOverrides.minGasLimit;
+        }
+
+        return calldataFallback;
+      }
 
       // Try a simpler estimation for basic transfers
       try {

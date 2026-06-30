@@ -104,6 +104,50 @@ describe('Ethereum Transactions', () => {
 
       expect(gasLimit.toString()).toBe('65000');
     });
+
+    it('should keep a conservative fallback when calldata estimation fails', async () => {
+      const provider = keyringManager.ethereumTransaction.web3Provider as any;
+      provider.estimateGas.mockRejectedValueOnce(new Error('estimate failed'));
+
+      const tx = {
+        from: keyringManager.getActiveAccount().activeAccount.address,
+        to: '0x742d35Cc6634C0532925a3b844Bc9e7595f8b2bc',
+        value: '0x0',
+        data: '0xabcdef',
+        chainId: 1,
+        maxFeePerGas: '0x4a817c800',
+        maxPriorityFeePerGas: '0x77359400',
+      };
+
+      const gasLimit = await keyringManager.ethereumTransaction.getTxGasLimit(
+        tx
+      );
+
+      expect(gasLimit.toString()).toBe('100000');
+      expect(provider.estimateGas).toHaveBeenCalledTimes(1);
+    });
+
+    it('should use simple fallback for basic transfer estimation failures', async () => {
+      const provider = keyringManager.ethereumTransaction.web3Provider as any;
+      provider.estimateGas
+        .mockRejectedValueOnce(new Error('estimate failed'))
+        .mockResolvedValueOnce(BigNumber.from('21000'));
+
+      const tx = {
+        from: keyringManager.getActiveAccount().activeAccount.address,
+        to: '0x742d35Cc6634C0532925a3b844Bc9e7595f8b2bc',
+        value: '0x0',
+        chainId: 1,
+        maxFeePerGas: '0x4a817c800',
+        maxPriorityFeePerGas: '0x77359400',
+      };
+
+      const gasLimit = await keyringManager.ethereumTransaction.getTxGasLimit(
+        tx
+      );
+
+      expect(gasLimit.toString()).toBe('31500');
+    });
   });
 
   describe('Message Signing', () => {
