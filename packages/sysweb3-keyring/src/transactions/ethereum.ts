@@ -1122,10 +1122,10 @@ export class EthereumTransactions implements IEthereumTransactions {
       }
     }
 
-    // Ensure minimum gas limit for validation
-    if (params.gasLimit) {
-      const minGasLimit =
-        this.gasOverrides.minGasLimit || BigNumber.from('65000');
+    // Only apply a minimum gas limit when a network-specific override is set.
+    // Otherwise keep the user/dapp-approved gas limit unchanged.
+    if (params.gasLimit && this.gasOverrides.minGasLimit) {
+      const minGasLimit = this.gasOverrides.minGasLimit;
       const currentGasLimit = BigNumber.from(params.gasLimit);
       if (currentGasLimit.lt(minGasLimit)) {
         params.gasLimit = minGasLimit;
@@ -2597,20 +2597,18 @@ export class EthereumTransactions implements IEthereumTransactions {
       // First attempt: standard estimation
       const estimated = await this.web3Provider.estimateGas(tx);
 
-      // Apply override if set
+      // Add 20% buffer to the estimated gas
+      const withBuffer = estimated.mul(120).div(100);
+
+      // Apply an explicit per-network floor only when configured.
       if (
         this.gasOverrides.minGasLimit &&
-        estimated.lt(this.gasOverrides.minGasLimit)
+        withBuffer.lt(this.gasOverrides.minGasLimit)
       ) {
         return this.gasOverrides.minGasLimit;
       }
 
-      // Add 20% buffer to the estimated gas
-      const withBuffer = estimated.mul(120).div(100);
-
-      // Ensure minimum of 65k for validation
-      const minGas = BigNumber.from('65000');
-      return withBuffer.gt(minGas) ? withBuffer : minGas;
+      return withBuffer;
     } catch (error) {
       console.warn('Gas estimation failed:', error);
 
@@ -2623,9 +2621,14 @@ export class EthereumTransactions implements IEthereumTransactions {
         });
 
         const withBuffer = simpleEstimate.mul(150).div(100); // 50% buffer for failed estimations
-        const minGas =
-          this.gasOverrides.minGasLimit || BigNumber.from('100000');
-        return withBuffer.gt(minGas) ? withBuffer : minGas;
+        if (
+          this.gasOverrides.minGasLimit &&
+          withBuffer.lt(this.gasOverrides.minGasLimit)
+        ) {
+          return this.gasOverrides.minGasLimit;
+        }
+
+        return withBuffer;
       } catch (secondError) {
         // Ultimate fallback
         console.warn(

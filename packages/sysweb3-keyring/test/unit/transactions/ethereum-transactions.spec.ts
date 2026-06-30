@@ -81,6 +81,28 @@ describe('Ethereum Transactions', () => {
       );
       expect(gasLimit).toBeDefined();
       expect(gasLimit._isBigNumber).toBe(true);
+      expect(gasLimit.toString()).toBe('25200');
+    });
+
+    it('should honor explicit minimum gas override', async () => {
+      keyringManager.ethereumTransaction.setGasOverrides({
+        minGasLimit: '65000',
+      });
+
+      const tx = {
+        from: keyringManager.getActiveAccount().activeAccount.address,
+        to: '0x742d35Cc6634C0532925a3b844Bc9e7595f8b2bc',
+        value: '0x0',
+        chainId: 1,
+        maxFeePerGas: '0x4a817c800',
+        maxPriorityFeePerGas: '0x77359400',
+      };
+
+      const gasLimit = await keyringManager.ethereumTransaction.getTxGasLimit(
+        tx
+      );
+
+      expect(gasLimit.toString()).toBe('65000');
     });
   });
 
