@@ -1,3 +1,4 @@
+import { BigNumber } from '@ethersproject/bignumber';
 import { encrypt, SignTypedDataVersion } from '@metamask/eth-sig-util';
 import { INetworkType } from '@sidhujag/sysweb3-network';
 
