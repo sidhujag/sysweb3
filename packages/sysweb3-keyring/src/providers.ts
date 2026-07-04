@@ -321,15 +321,7 @@ class BaseProvider extends JsonRpcProvider {
   }
 
   async getBlock(blockHashOrBlockTag: any): Promise<any> {
-    const block = await super.getBlock(blockHashOrBlockTag);
-    if (!block) return block;
-    return {
-      ...block,
-      baseFeePerGas:
-        block.baseFeePerGas == null
-          ? null
-          : BigNumber.from(block.baseFeePerGas),
-    };
+    return await super.getBlock(blockHashOrBlockTag);
   }
 
   private wrapTransactionResponse(transaction: any) {

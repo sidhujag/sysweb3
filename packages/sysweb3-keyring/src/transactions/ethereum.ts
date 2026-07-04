@@ -609,6 +609,7 @@ export class EthereumTransactions implements IEthereumTransactions {
 
       const block = await this.web3Provider.getBlock('latest');
       if (block && block.baseFeePerGas) {
+        const baseFeePerGas = BigNumber.from(block.baseFeePerGas);
         try {
           // Some networks don't support this RPC method
           const ethMaxPriorityFee = await this.web3Provider.send(
@@ -635,7 +636,7 @@ export class EthereumTransactions implements IEthereumTransactions {
 
           // Calculate standard maxFeePerGas
           const multiplier = this.gasOverrides.feeMultiplier || 250;
-          const calculatedMaxFee = block.baseFeePerGas
+          const calculatedMaxFee = baseFeePerGas
             .mul(multiplier)
             .div(100)
             .add(maxPriorityFeePerGas);
@@ -699,7 +700,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           // Calculate maxFeePerGas based on current network conditions
           const currentGasPrice = await this.web3Provider.getGasPrice();
           const baselineMaxFee = currentGasPrice.mul(120).div(100);
-          const calculatedMaxFee = block.baseFeePerGas
+          const calculatedMaxFee = baseFeePerGas
             .mul(250)
             .div(100)
             .add(maxPriorityFeePerGas);

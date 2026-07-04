@@ -2,6 +2,7 @@ import ecc from '@bitcoinerlab/secp256k1';
 import { BIP32Factory } from 'bip32';
 import CryptoJS from 'crypto-js';
 import omit from 'lodash/omit';
+import * as BIP84 from 'syscoinjs-lib/bip84-replacement';
 
 import {
   arrayify,
@@ -67,6 +68,10 @@ export const deriveEvmAccountFromMnemonic = (
   derivationPath: string
 ): EvmLocalAccount => {
   const normalizedMnemonic = mnemonic.normalize('NFKD');
+  if (!BIP84.validateMnemonic(normalizedMnemonic)) {
+    throw new Error('Invalid EVM mnemonic');
+  }
+
   const seedWords = CryptoJS.PBKDF2(
     normalizedMnemonic,
     'mnemonic'.normalize('NFKD'),
@@ -159,6 +164,10 @@ export const sendLocalEvmTransaction = async (
 ) => {
   const account = privateKeyToAccount(privateKey);
   const resolved = await resolveProperties(transaction);
+  if (resolved.from && !sameAddress(resolved.from, account.address)) {
+    throw new Error('Transaction from does not match EVM private key');
+  }
+
   const tx = omit(resolved, [
     'from',
     'ccipReadEnabled',

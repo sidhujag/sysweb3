@@ -6,6 +6,7 @@ import {
   hashPersonalMessage,
   parsePersonalMessage,
   privateKeyToAccount,
+  sendLocalEvmTransaction,
   signDigestHex,
   signPersonalMessage,
   signTransaction,
@@ -44,6 +45,15 @@ describe('EVM local signer', () => {
     );
   });
 
+  it('rejects invalid mnemonic phrases before deriving EVM accounts', () => {
+    expect(() =>
+      deriveEvmAccountFromMnemonic(
+        'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon',
+        "m/44'/60'/0'/0/0"
+      )
+    ).toThrow('Invalid EVM mnemonic');
+  });
+
   it('rejects invalid private keys before signing or deriving', () => {
     expect(() => privateKeyToAccount('0x' + '00'.repeat(32))).toThrow(
       'Invalid EVM private key'
@@ -61,6 +71,31 @@ describe('EVM local signer', () => {
     expect(() => signDigestHex('0x1234', PRIVATE_KEY)).toThrow(
       'EVM signatures require a 32-byte digest'
     );
+  });
+
+  it('rejects local transaction signing when from does not match the private key', async () => {
+    const provider = {
+      getNetwork: jest.fn().mockResolvedValue({ chainId: 1 }),
+      getTransactionCount: jest.fn(),
+      estimateGas: jest.fn(),
+      getGasPrice: jest.fn(),
+      sendTransaction: jest.fn(),
+    } as any;
+
+    await expect(
+      sendLocalEvmTransaction(provider, PRIVATE_KEY, {
+        from: '0x0000000000000000000000000000000000000001',
+        to: ADDRESS,
+        value: '0x0',
+        gasLimit: '0x5208',
+        gasPrice: '0x01',
+        nonce: 0,
+        chainId: 1,
+        type: 0,
+        data: '0x',
+      })
+    ).rejects.toThrow('Transaction from does not match EVM private key');
+    expect(provider.sendTransaction).not.toHaveBeenCalled();
   });
 
   it('signs personal messages in MetaMask-compatible format', () => {
