@@ -608,7 +608,7 @@ export class EthereumTransactions implements IEthereumTransactions {
       const currentGasPrice = await this.web3Provider.getGasPrice();
 
       const block = await this.web3Provider.getBlock('latest');
-      if (block && block.baseFeePerGas) {
+      if (block && block.baseFeePerGas != null) {
         const baseFeePerGas = BigNumber.from(block.baseFeePerGas);
         try {
           // Some networks don't support this RPC method
@@ -716,7 +716,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         }
 
         return { maxFeePerGas, maxPriorityFeePerGas };
-      } else if (block && !block.baseFeePerGas) {
+      } else if (block && block.baseFeePerGas == null) {
         // For non-EIP1559 chains, return zeros to indicate legacy transaction should be used
         console.log('Chain does not support EIP1559, use legacy transactions');
         return {
@@ -2376,7 +2376,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           activeAccountAddress,
           receiver,
           tokenId as number,
-          amount,
+          amount.toBigInt(),
           [],
           overrides
         );
@@ -2410,7 +2410,7 @@ export class EthereumTransactions implements IEthereumTransactions {
 
         const txData = _contract.interface.encodeFunctionData(
           'safeTransferFrom',
-          [activeAccountAddress, receiver, tokenId, amount, []]
+          [activeAccountAddress, receiver, tokenId, amount.toBigInt(), []]
         );
 
         // Use fallback gas limit if not provided (for auto-estimation)
@@ -2490,7 +2490,7 @@ export class EthereumTransactions implements IEthereumTransactions {
 
         const txData = _contract.interface.encodeFunctionData(
           'safeTransferFrom',
-          [activeAccountAddress, receiver, tokenId, amount, []]
+          [activeAccountAddress, receiver, tokenId, amount.toBigInt(), []]
         );
 
         // Use fallback gas limit if not provided (for auto-estimation)

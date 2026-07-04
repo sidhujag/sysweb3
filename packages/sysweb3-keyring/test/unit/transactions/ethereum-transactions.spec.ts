@@ -67,6 +67,25 @@ describe('Ethereum Transactions', () => {
       expect(feeData.maxPriorityFeePerGas).toBeDefined();
     });
 
+    it('should treat zero base fee blocks as EIP-1559 compatible', async () => {
+      const provider = keyringManager.ethereumTransaction.web3Provider as any;
+      provider.getBlock.mockResolvedValueOnce({
+        number: 12345,
+        timestamp: Math.floor(Date.now() / 1000),
+        baseFeePerGas: 0n,
+        gasLimit: BigNumber.from('30000000'),
+        gasUsed: BigNumber.from('21000'),
+        transactions: [],
+        hash: '0x1234567890123456789012345678901234567890123456789012345678901234',
+      });
+
+      const feeData =
+        await keyringManager.ethereumTransaction.getFeeDataWithDynamicMaxPriorityFeePerGas();
+
+      expect(feeData.maxFeePerGas.isZero()).toBe(false);
+      expect(feeData.maxPriorityFeePerGas.isZero()).toBe(false);
+    });
+
     it('should estimate gas limit', async () => {
       const tx = {
         from: keyringManager.getActiveAccount().activeAccount.address,

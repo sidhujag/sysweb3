@@ -212,19 +212,35 @@ export const serializeTransaction = (
   tx: Record<string, any>,
   signature?: { r: string; s: string; v?: number; recoveryParam?: number }
 ) => {
-  if ((tx.type == null || tx.type === 0) && tx.accessList != null) {
-    throw new Error('untyped transactions do not support accessList');
+  if (tx.type === 0 && tx.accessList != null) {
+    throw new Error('legacy transactions do not support accessList');
   }
 
-  if (tx.type === 2 && tx.gasPrice != null && tx.maxFeePerGas != null) {
-    const gasPrice = normalizeTxValue(tx.gasPrice);
-    const maxFeePerGas = normalizeTxValue(tx.maxFeePerGas);
+  const txForSerialization = { ...tx };
+  if (
+    txForSerialization.type == null &&
+    txForSerialization.accessList != null &&
+    txForSerialization.maxFeePerGas == null &&
+    txForSerialization.maxPriorityFeePerGas == null
+  ) {
+    txForSerialization.type = 1;
+  }
+
+  if (
+    txForSerialization.type === 2 &&
+    txForSerialization.gasPrice != null &&
+    txForSerialization.maxFeePerGas != null
+  ) {
+    const gasPrice = normalizeTxValue(txForSerialization.gasPrice);
+    const maxFeePerGas = normalizeTxValue(txForSerialization.maxFeePerGas);
     if (gasPrice !== maxFeePerGas) {
       throw new Error('mismatch EIP-1559 gasPrice != maxFeePerGas');
     }
   }
 
-  const transaction = Transaction.from(normalizeTransactionRequest(tx));
+  const transaction = Transaction.from(
+    normalizeTransactionRequest(txForSerialization)
+  );
   if (!signature) return transaction.unsignedSerialized;
 
   transaction.signature = Signature.from(

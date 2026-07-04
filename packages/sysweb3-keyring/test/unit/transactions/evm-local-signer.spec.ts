@@ -246,6 +246,28 @@ describe('EVM transaction serializer', () => {
     );
   });
 
+  it('infers EIP-2930 type for access-list transactions', () => {
+    const unsigned = serializeTransaction({
+      to: '0x2c7536E3605D9C16a7a3D7b1898e529396a65c23',
+      value: '0x0',
+      gasLimit: '0x5208',
+      gasPrice: '0x4a817c800',
+      nonce: 2,
+      chainId: 1,
+      data: '0x',
+      accessList: [
+        {
+          address: '0x0000000000000000000000000000000000000001',
+          storageKeys: [
+            '0x0000000000000000000000000000000000000000000000000000000000000000',
+          ],
+        },
+      ],
+    });
+
+    expect(Transaction.from(unsigned).type).toBe(1);
+  });
+
   it('rejects unsupported transaction shapes', () => {
     expect(() =>
       serializeTransaction({ type: 5, chainId: 1, data: '0x' })
@@ -270,6 +292,6 @@ describe('EVM transaction serializer', () => {
           },
         ],
       })
-    ).toThrow('untyped transactions do not support accessList');
+    ).toThrow('legacy transactions do not support accessList');
   });
 });
