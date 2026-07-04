@@ -6,6 +6,36 @@ import {
   type Networkish,
 } from './ethers-v6';
 
+const TRANSACTION_RESPONSE_BIG_NUMBER_FIELDS = new Set([
+  'gasLimit',
+  'gasPrice',
+  'maxFeePerGas',
+  'maxPriorityFeePerGas',
+  'value',
+]);
+
+export const wrapTransactionResponse = (transaction: any) => {
+  if (!transaction) return transaction;
+  const wrapped = Object.create(transaction);
+  for (const field of TRANSACTION_RESPONSE_BIG_NUMBER_FIELDS) {
+    if (transaction[field] != null) {
+      Object.defineProperty(wrapped, field, {
+        value: BigNumber.from(transaction[field]),
+        configurable: true,
+        enumerable: true,
+        writable: true,
+      });
+    }
+  }
+
+  return new Proxy(wrapped, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === 'function' ? value.bind(transaction) : value;
+    },
+  });
+};
+
 // Preserve JSON-RPC error details (code, revert data) on thrown errors so
 // consumers can decode custom contract errors instead of only seeing
 // "execution reverted".
@@ -324,33 +354,12 @@ class BaseProvider extends JsonRpcProvider {
     return await super.getBlock(blockHashOrBlockTag);
   }
 
-  private wrapTransactionResponse(transaction: any) {
-    if (!transaction) return transaction;
-    for (const field of [
-      'gasLimit',
-      'gasPrice',
-      'maxFeePerGas',
-      'maxPriorityFeePerGas',
-      'value',
-    ]) {
-      if (transaction[field] != null) {
-        Object.defineProperty(transaction, field, {
-          value: BigNumber.from(transaction[field]),
-          configurable: true,
-          enumerable: true,
-          writable: true,
-        });
-      }
-    }
-    return transaction;
-  }
-
   async getTransaction(hash: string): Promise<any> {
-    return this.wrapTransactionResponse(await super.getTransaction(hash));
+    return wrapTransactionResponse(await super.getTransaction(hash));
   }
 
   async sendTransaction(signedTransaction: string) {
-    return this.wrapTransactionResponse(
+    return wrapTransactionResponse(
       await this.broadcastTransaction(signedTransaction)
     );
   }
