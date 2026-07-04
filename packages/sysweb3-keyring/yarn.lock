@@ -103,7 +103,7 @@
     ethereum-cryptography "^2.0.0"
     micro-ftch "^0.3.1"
 
-"@ethersproject/abi@^5.7.0", "@ethersproject/abi@^5.8.0":
+"@ethersproject/abi@^5.7.0":
   version "5.8.0"
   resolved "https://registry.yarnpkg.com/@ethersproject/abi/-/abi-5.8.0.tgz#e79bb51940ac35fe6f3262d7fe2cdb25ad5f07d9"
   integrity sha512-b9YS/43ObplgyV6SlyQsG53/vkSal0MNA1fskSC4mbnCMi8R+NkcH8K9FPYNESf6jUefBUniE4SOKms0E/KK1Q==
@@ -159,14 +159,6 @@
   integrity sha512-lN0oIwfkYj9LbPx4xEkie6rAMJtySbpOAFXSDVQaBnAzYfB4X2Qr+FXJGxMoc3Bxp2Sm8OwvzMrywxyw0gLjIQ==
   dependencies:
     "@ethersproject/bytes" "^5.8.0"
-
-"@ethersproject/basex@^5.8.0":
-  version "5.8.0"
-  resolved "https://registry.yarnpkg.com/@ethersproject/basex/-/basex-5.8.0.tgz#1d279a90c4be84d1c1139114a1f844869e57d03a"
-  integrity sha512-PIgTszMlDRmNwW9nhS6iqtVfdTAKosA7llYXNmGPw4YAI1PUyMv28988wAb41/gHF/WqGdoLv0erHaRcHRKW2Q==
-  dependencies:
-    "@ethersproject/bytes" "^5.8.0"
-    "@ethersproject/properties" "^5.8.0"
 
 "@ethersproject/bignumber@^5.8.0":
   version "5.8.0"
@@ -233,40 +225,6 @@
   dependencies:
     "@ethersproject/logger" "^5.8.0"
 
-"@ethersproject/providers@^5.8.0":
-  version "5.8.0"
-  resolved "https://registry.yarnpkg.com/@ethersproject/providers/-/providers-5.8.0.tgz#6c2ae354f7f96ee150439f7de06236928bc04cb4"
-  integrity sha512-3Il3oTzEx3o6kzcg9ZzbE+oCZYyY+3Zh83sKkn4s1DZfTUjIegHnN2Cm0kbn9YFy45FDVcuCLLONhU7ny0SsCw==
-  dependencies:
-    "@ethersproject/abstract-provider" "^5.8.0"
-    "@ethersproject/abstract-signer" "^5.8.0"
-    "@ethersproject/address" "^5.8.0"
-    "@ethersproject/base64" "^5.8.0"
-    "@ethersproject/basex" "^5.8.0"
-    "@ethersproject/bignumber" "^5.8.0"
-    "@ethersproject/bytes" "^5.8.0"
-    "@ethersproject/constants" "^5.8.0"
-    "@ethersproject/hash" "^5.8.0"
-    "@ethersproject/logger" "^5.8.0"
-    "@ethersproject/networks" "^5.8.0"
-    "@ethersproject/properties" "^5.8.0"
-    "@ethersproject/random" "^5.8.0"
-    "@ethersproject/rlp" "^5.8.0"
-    "@ethersproject/sha2" "^5.8.0"
-    "@ethersproject/strings" "^5.8.0"
-    "@ethersproject/transactions" "^5.8.0"
-    "@ethersproject/web" "^5.8.0"
-    bech32 "1.1.4"
-    ws "8.18.0"
-
-"@ethersproject/random@^5.8.0":
-  version "5.8.0"
-  resolved "https://registry.yarnpkg.com/@ethersproject/random/-/random-5.8.0.tgz#1bced04d49449f37c6437c701735a1a022f0057a"
-  integrity sha512-E4I5TDl7SVqyg4/kkA/qTfuLWAQGXmSOgYyO01So8hLfwgKvYK5snIlzxJMk72IFdG/7oh8yuSqY2KX7MMwg+A==
-  dependencies:
-    "@ethersproject/bytes" "^5.8.0"
-    "@ethersproject/logger" "^5.8.0"
-
 "@ethersproject/rlp@^5.7.0", "@ethersproject/rlp@^5.8.0":
   version "5.8.0"
   resolved "https://registry.yarnpkg.com/@ethersproject/rlp/-/rlp-5.8.0.tgz#5a0d49f61bc53e051532a5179472779141451de5"
@@ -274,15 +232,6 @@
   dependencies:
     "@ethersproject/bytes" "^5.8.0"
     "@ethersproject/logger" "^5.8.0"
-
-"@ethersproject/sha2@^5.8.0":
-  version "5.8.0"
-  resolved "https://registry.yarnpkg.com/@ethersproject/sha2/-/sha2-5.8.0.tgz#8954a613bb78dac9b46829c0a95de561ef74e5e1"
-  integrity sha512-dDOUrXr9wF/YFltgTBYS0tKslPEKr6AekjqDW2dbn1L1xmjGR+9GiKu4ajxovnrDbwxAKdHjW8jNcwfz8PAz4A==
-  dependencies:
-    "@ethersproject/bytes" "^5.8.0"
-    "@ethersproject/logger" "^5.8.0"
-    hash.js "1.1.7"
 
 "@ethersproject/signing-key@^5.8.0":
   version "5.8.0"
@@ -731,10 +680,10 @@
     eth-chains "^1.0.0"
     ethers "^6.17.0"
 
-"@sidhujag/sysweb3-utils@^1.1.274":
-  version "1.1.274"
-  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-utils/-/sysweb3-utils-1.1.274.tgz#cdfe12e14c493b83e7db1d2fe002235b07e4370a"
-  integrity sha512-UJceJCxh+SPJ3nuskMsrs/VxRcTO7bZI3iR0JnBPocoqZGrgjlhwDfF+I3xFJqYsIwE9KvWr6NncoRbQyqKDHQ==
+"@sidhujag/sysweb3-utils@^1.1.275":
+  version "1.1.275"
+  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-utils/-/sysweb3-utils-1.1.275.tgz#77280ac34490fbbb36d19c56efd82bcb0654e796"
+  integrity sha512-hTldZHGcW7piyg9dh6/rPHhNSTGTAOZKHqk+yOETh3LPm1rLWPIAQibw8oDTg9o656tybIAUhyuEtp5emWTW7w==
   dependencies:
     "@sidhujag/sysweb3-network" "^1.0.108"
     bech32 "^2.0.0"
@@ -1706,11 +1655,6 @@ bchaddrjs@^0.5.2:
     buffer "^6.0.3"
     cashaddrjs "0.4.4"
     stream-browserify "^3.0.0"
-
-bech32@1.1.4:
-  version "1.1.4"
-  resolved "https://registry.yarnpkg.com/bech32/-/bech32-1.1.4.tgz#e38c9f37bf179b8eb16ae3a772b40c356d4832e9"
-  integrity sha512-s0IrSOzLlbvX7yp4WBfPITzpAU8sqQcpsmwXDiKwrG4r491vwCO/XpejasRNl0piBMe/DvP4Tz0mIS/X1DPJBQ==
 
 bech32@^2.0.0:
   version "2.0.0"
@@ -3439,15 +3383,12 @@ supports-color@^7.1.0:
   dependencies:
     has-flag "^4.0.0"
 
-syscoinjs-lib@^1.0.269:
-  version "1.0.269"
-  resolved "https://registry.yarnpkg.com/syscoinjs-lib/-/syscoinjs-lib-1.0.269.tgz#780738a47d75b669c0dfb6020146033dfc32062a"
-  integrity sha512-zuLmFy/9dW952RueazBSPEEajSKwHCUsXcreMMk2LPLrZyZxXOxAdadcMPMY7FTASp8XXE9Ae7jgjsjcH2rhdQ==
+syscoinjs-lib@^1.0.270:
+  version "1.0.270"
+  resolved "https://registry.yarnpkg.com/syscoinjs-lib/-/syscoinjs-lib-1.0.270.tgz#a4a64a95d24ed956b8744c9195eca17c5b328507"
+  integrity sha512-eTnThoGHw5Pz6bxxiZjTDmq5y8MktSYyopXCDAzVXtxxsMDBX/raHsoCPI7qlddHHp8oiViwEq1WnAuzUqGxcQ==
   dependencies:
     "@bitcoinerlab/secp256k1" "^1.2.0"
-    "@ethersproject/abi" "^5.8.0"
-    "@ethersproject/keccak256" "^5.8.0"
-    "@ethersproject/providers" "^5.8.0"
     axios "^1.18.1"
     bip32 "^5.0.1"
     bip39 "^3.1.0"
@@ -3458,6 +3399,7 @@ syscoinjs-lib@^1.0.269:
     ecpair "^3.0.1"
     eth-object "https://github.com/syscoin/eth-object.git"
     eth-proof "^2.1.6"
+    ethers "^6.17.0"
     syscointx-js "^1.0.125"
     varuint-bitcoin "^2.0.0"
 
@@ -3687,11 +3629,6 @@ wif@^5.0.0:
   integrity sha512-iFzrC/9ne740qFbNjTZ2FciSRJlHIXoxqk/Y5EnE08QOXu1WjJyCCswwDTYbohAOEnlCtLaAAQBhyaLRFh2hMA==
   dependencies:
     bs58check "^4.0.0"
-
-ws@8.18.0:
-  version "8.18.0"
-  resolved "https://registry.yarnpkg.com/ws/-/ws-8.18.0.tgz#0d7505a6eafe2b0e712d232b42279f53bc289bbc"
-  integrity sha512-8VbfWfHLbbwu3+N6OKsOMpBdT4kXPDDB9cJk2bJ6mh9ucxdlnNvH1e+roYkKmN9Nxw2yjz7VzeO9oOz2zJ04Pw==
 
 ws@8.21.0, ws@^8.18.0, ws@^8.20.0:
   version "8.21.0"
