@@ -14,24 +14,86 @@ const TRANSACTION_RESPONSE_BIG_NUMBER_FIELDS = new Set([
   'value',
 ]);
 
-export const wrapTransactionResponse = (transaction: any) => {
-  if (!transaction) return transaction;
-  const wrapped = Object.create(Object.getPrototypeOf(transaction));
-  const descriptors = Object.getOwnPropertyDescriptors(transaction);
-  for (const field of TRANSACTION_RESPONSE_BIG_NUMBER_FIELDS) {
+const TRANSACTION_RESPONSE_NUMBER_FIELDS = new Set(['chainId']);
+
+const TRANSACTION_RECEIPT_BIG_NUMBER_FIELDS = new Set([
+  'blobGasPrice',
+  'blobGasUsed',
+  'cumulativeGasUsed',
+  'effectiveGasPrice',
+  'gasPrice',
+  'gasUsed',
+]);
+
+const defineValue = (target: any, field: string, value: any) => {
+  Object.defineProperty(target, field, {
+    value,
+    configurable: true,
+    enumerable: true,
+    writable: true,
+  });
+};
+
+const wrapBigNumberFields = (
+  source: any,
+  fields: Set<string>,
+  omittedFields: Set<string> = fields
+) => {
+  if (!source) return source;
+  const wrapped = Object.create(Object.getPrototypeOf(source));
+  const descriptors = Object.getOwnPropertyDescriptors(source);
+  for (const field of omittedFields) {
     delete descriptors[field];
   }
   Object.defineProperties(wrapped, descriptors);
 
-  for (const field of TRANSACTION_RESPONSE_BIG_NUMBER_FIELDS) {
-    if (transaction[field] != null) {
-      Object.defineProperty(wrapped, field, {
-        value: BigNumber.from(transaction[field]),
-        configurable: true,
-        enumerable: true,
-        writable: true,
-      });
+  for (const field of fields) {
+    if (source[field] != null) {
+      defineValue(wrapped, field, BigNumber.from(source[field]));
     }
+  }
+
+  return wrapped;
+};
+
+export const wrapTransactionReceipt = (receipt: any) => {
+  const wrapped = wrapBigNumberFields(
+    receipt,
+    TRANSACTION_RECEIPT_BIG_NUMBER_FIELDS
+  );
+  if (!wrapped) return wrapped;
+
+  return new Proxy(wrapped, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === 'function' ? value.bind(receipt) : value;
+    },
+  });
+};
+
+export const wrapTransactionResponse = (transaction: any) => {
+  if (!transaction) return transaction;
+  const omittedFields = new Set([
+    ...TRANSACTION_RESPONSE_BIG_NUMBER_FIELDS,
+    ...TRANSACTION_RESPONSE_NUMBER_FIELDS,
+    'wait',
+  ]);
+  const wrapped = wrapBigNumberFields(
+    transaction,
+    TRANSACTION_RESPONSE_BIG_NUMBER_FIELDS,
+    omittedFields
+  );
+
+  for (const field of TRANSACTION_RESPONSE_NUMBER_FIELDS) {
+    if (transaction[field] != null) {
+      defineValue(wrapped, field, Number(transaction[field]));
+    }
+  }
+
+  if (typeof transaction.wait === 'function') {
+    defineValue(wrapped, 'wait', async (...args: any[]) =>
+      wrapTransactionReceipt(await transaction.wait(...args))
+    );
   }
 
   return new Proxy(wrapped, {
@@ -315,17 +377,43 @@ class BaseProvider extends JsonRpcProvider {
 
   async getFeeData(): Promise<any> {
     const feeData = await super.getFeeData();
+    let maxFeePerGas =
+      feeData.maxFeePerGas == null
+        ? null
+        : BigNumber.from(feeData.maxFeePerGas);
+    let maxPriorityFeePerGas =
+      feeData.maxPriorityFeePerGas == null
+        ? null
+        : BigNumber.from(feeData.maxPriorityFeePerGas);
+
+    if (maxFeePerGas == null || maxPriorityFeePerGas == null) {
+      const block = await super.getBlock('latest');
+      if (block?.baseFeePerGas != null) {
+        const baseFeePerGas = BigNumber.from(block.baseFeePerGas);
+
+        if (maxPriorityFeePerGas == null) {
+          try {
+            maxPriorityFeePerGas = BigNumber.from(
+              await super.send('eth_maxPriorityFeePerGas', [])
+            );
+          } catch {
+            maxPriorityFeePerGas =
+              feeData.gasPrice == null
+                ? BigNumber.from(0)
+                : BigNumber.from(feeData.gasPrice);
+          }
+        }
+
+        maxFeePerGas =
+          maxFeePerGas ?? baseFeePerGas.mul(2).add(maxPriorityFeePerGas);
+      }
+    }
+
     return {
       gasPrice:
         feeData.gasPrice == null ? null : BigNumber.from(feeData.gasPrice),
-      maxFeePerGas:
-        feeData.maxFeePerGas == null
-          ? null
-          : BigNumber.from(feeData.maxFeePerGas),
-      maxPriorityFeePerGas:
-        feeData.maxPriorityFeePerGas == null
-          ? null
-          : BigNumber.from(feeData.maxPriorityFeePerGas),
+      maxFeePerGas,
+      maxPriorityFeePerGas,
     };
   }
 
