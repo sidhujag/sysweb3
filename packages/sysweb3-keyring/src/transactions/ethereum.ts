@@ -1,18 +1,4 @@
-import { TransactionResponse } from '@ethersproject/abstract-provider';
-import { BigNumber } from '@ethersproject/bignumber';
-import { isHexString } from '@ethersproject/bytes';
-import { Zero } from '@ethersproject/constants';
-import { Contract } from '@ethersproject/contracts';
-import { Deferrable, resolveProperties } from '@ethersproject/properties';
 import {
-  TransactionRequest,
-  TransactionResponse as EthersTransactionResponse,
-} from '@ethersproject/providers';
-import { serialize as serializeTransaction } from '@ethersproject/transactions';
-import { parseUnits, formatEther, formatUnits } from '@ethersproject/units';
-import { Wallet } from '@ethersproject/wallet';
-import {
-  concatSig,
   decrypt,
   signTypedData as signTypedDataUtil,
   TypedMessage,
@@ -31,15 +17,22 @@ import {
   getErc55Abi,
 } from '@sidhujag/sysweb3-utils';
 import { EthereumTransactionEIP1559 } from '@trezor/connect-web';
-import {
-  ecsign,
-  toBuffer,
-  stripHexPrefix,
-  hashPersonalMessage,
-  toAscii,
-} from 'ethereumjs-util';
 import omit from 'lodash/omit';
 
+import {
+  BigNumber,
+  Contract,
+  Deferrable,
+  TransactionRequest,
+  TransactionResponse,
+  Zero,
+  formatEther,
+  formatUnits,
+  isHexString,
+  parseUnits,
+  resolveProperties,
+  serializeTransaction,
+} from '../ethers-v6';
 import { LedgerKeyring } from '../ledger';
 import { CustomJsonRpcProvider } from '../providers';
 import { TrezorKeyring } from '../trezor';
@@ -52,6 +45,18 @@ import {
   accountType,
   IGasParams,
 } from '../types';
+import {
+  deriveEvmAccountFromMnemonic,
+  parsePersonalMessage as parseLocalPersonalMessage,
+  privateKeyToAccount,
+  sendLocalEvmTransaction,
+  signDigestHex,
+  signPersonalMessage as signLocalPersonalMessage,
+} from './evm-local-signer';
+import { getAddressDerivationPath } from '../utils/derivation-paths';
+
+const stripHexPrefix = (value: string) =>
+  value.startsWith('0x') || value.startsWith('0X') ? value.slice(2) : value;
 
 export class EthereumTransactions implements IEthereumTransactions {
   private _web3Provider: CustomJsonRpcProvider;
@@ -294,8 +299,6 @@ export class EthereumTransactions implements IEthereumTransactions {
 
     const sign = () => {
       try {
-        const bufPriv = toBuffer(decryptedPrivateKey);
-
         // Validate and prepare the message for eth_sign
         let msgHash: Buffer;
 
@@ -314,9 +317,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           );
         }
 
-        const sig = ecsign(msgHash, bufPriv);
-        const resp = concatSig(toBuffer(sig.v), sig.r, sig.s);
-        return resp;
+        return signDigestHex(msgHash, decryptedPrivateKey);
       } catch (error) {
         throw error;
       }
@@ -387,14 +388,12 @@ export class EthereumTransactions implements IEthereumTransactions {
 
     const signPersonalMessageWithDefaultWallet = () => {
       try {
-        const privateKey = toBuffer(decryptedPrivateKey);
-
         // Handle both hex-encoded and plain text messages for personal_sign
         let message: Buffer;
         if (msg.startsWith('0x')) {
           // Message is hex-encoded
           try {
-            message = toBuffer(msg);
+            message = Buffer.from(stripHexPrefix(msg), 'hex');
           } catch (error) {
             // If hex parsing fails, treat as plain text
             message = Buffer.from(msg, 'utf8');
@@ -404,10 +403,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           message = Buffer.from(msg, 'utf8');
         }
 
-        const msgHash = hashPersonalMessage(message);
-        const sig = ecsign(msgHash, privateKey);
-        const serialized = concatSig(toBuffer(sig.v), sig.r, sig.s);
-        return serialized;
+        return signLocalPersonalMessage(message, decryptedPrivateKey);
       } catch (error) {
         throw error;
       }
@@ -475,7 +471,7 @@ export class EthereumTransactions implements IEthereumTransactions {
 
   parsePersonalMessage = (hexMsg: string) => {
     try {
-      return toAscii(hexMsg);
+      return parseLocalPersonalMessage(hexMsg);
     } catch (error) {
       throw error;
     }
@@ -592,9 +588,10 @@ export class EthereumTransactions implements IEthereumTransactions {
         contractAddress,
         this.web3Provider
       );
-      const data = contract.methods
-        .transfer(receivingAddress, value)
-        .encodeABI();
+      const data = contract.interface.encodeFunctionData('transfer', [
+        receivingAddress,
+        value,
+      ]);
 
       return data;
     } catch (error) {
@@ -815,7 +812,7 @@ export class EthereumTransactions implements IEthereumTransactions {
 
     let tx = (await this.web3Provider.getTransaction(
       txHash
-    )) as Deferrable<EthersTransactionResponse>;
+    )) as Deferrable<TransactionResponse>;
 
     // If transaction not found, create a minimal tx object with current gas prices
     // This handles cases where tx with 0 gas never made it to the mempool
@@ -1057,9 +1054,9 @@ export class EthereumTransactions implements IEthereumTransactions {
     const cancelWithPrivateKey = async () => {
       try {
         const { decryptedPrivateKey } = this.getDecryptedPrivateKey();
-        const wallet = new Wallet(decryptedPrivateKey, this.web3Provider);
-
-        const transactionResponse = await wallet.sendTransaction(
+        const transactionResponse = await sendLocalEvmTransaction(
+          this.web3Provider,
+          decryptedPrivateKey,
           changedTxToCancel
         );
 
@@ -1315,9 +1312,12 @@ export class EthereumTransactions implements IEthereumTransactions {
         ? { ...params, type: 0 } // Force Type 0 for legacy transactions
         : (omit(params, ['gasPrice']) as Deferrable<TransactionRequest>); // Strip gasPrice for EIP-1559
 
-      const wallet = new Wallet(decryptedPrivateKey, this.web3Provider);
       try {
-        const transaction = await wallet.sendTransaction(tx);
+        const transaction = await sendLocalEvmTransaction(
+          this.web3Provider,
+          decryptedPrivateKey,
+          tx
+        );
         const response = await this.web3Provider.getTransaction(
           transaction.hash
         );
@@ -1350,7 +1350,7 @@ export class EthereumTransactions implements IEthereumTransactions {
   }> => {
     let tx = (await this.web3Provider.getTransaction(
       txHash
-    )) as Deferrable<EthersTransactionResponse>;
+    )) as Deferrable<TransactionResponse>;
 
     if (!tx) {
       // Retry a couple of times in case the node hasn't indexed the pending tx yet
@@ -1360,7 +1360,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         );
         tx = (await this.web3Provider.getTransaction(
           txHash
-        )) as Deferrable<EthersTransactionResponse>;
+        )) as Deferrable<TransactionResponse>;
       }
       if (!tx) {
         return {
@@ -1713,10 +1713,9 @@ export class EthereumTransactions implements IEthereumTransactions {
     const speedUpWithPrivateKey = async () => {
       try {
         const { decryptedPrivateKey } = this.getDecryptedPrivateKey();
-        const wallet = new Wallet(decryptedPrivateKey, this.web3Provider);
-
-        // Type already set in txWithEditedFee
-        const transactionResponse = await wallet.sendTransaction(
+        const transactionResponse = await sendLocalEvmTransaction(
+          this.web3Provider,
+          decryptedPrivateKey,
           txWithEditedFee
         );
 
@@ -1783,15 +1782,11 @@ export class EthereumTransactions implements IEthereumTransactions {
       accounts[activeAccountType][activeAccountId];
 
     const sendERC20Token = async () => {
-      const currentWallet = new Wallet(decryptedPrivateKey);
-
-      const walletSigned = currentWallet.connect(this.web3Provider);
-
       try {
         const _contract = new Contract(
           tokenAddress,
           getErc20Abi(),
-          walletSigned
+          this.web3Provider as any
         );
         // Preserve zero-decimal tokens: use provided decimals when defined (including 0).
         const resolvedDecimals =
@@ -1804,14 +1799,14 @@ export class EthereumTransactions implements IEthereumTransactions {
         if (isLegacy) {
           const overrides = {
             nonce: await this.web3Provider.getTransactionCount(
-              walletSigned.address,
+              activeAccountAddress,
               'pending'
             ),
             gasPrice,
             ...(gasLimit && { gasLimit }),
             type: 0, // Explicitly set Type 0 for legacy token transfers
           };
-          transferMethod = await _contract.transfer(
+          transferMethod = await _contract.transfer.populateTransaction(
             receiver,
             calculatedTokenAmount,
             overrides
@@ -1819,7 +1814,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         } else {
           const overrides = {
             nonce: await this.web3Provider.getTransactionCount(
-              walletSigned.address,
+              activeAccountAddress,
               'pending'
             ),
             maxPriorityFeePerGas,
@@ -1827,26 +1822,38 @@ export class EthereumTransactions implements IEthereumTransactions {
             ...(gasLimit && { gasLimit }),
           };
 
-          transferMethod = await _contract.transfer(
+          transferMethod = await _contract.transfer.populateTransaction(
             receiver,
             calculatedTokenAmount,
             overrides
           );
         }
 
-        return transferMethod;
+        return await sendLocalEvmTransaction(
+          this.web3Provider,
+          decryptedPrivateKey,
+          {
+            ...transferMethod,
+            chainId: activeNetwork.chainId,
+            from: activeAccountAddress,
+            value: '0x0',
+          }
+        );
       } catch (error) {
         throw error;
       }
     };
 
     const sendERC20TokenOnLedger = async () => {
-      const signer = this.web3Provider.getSigner(activeAccountAddress);
       const transactionNonce = await this.getRecommendedNonce(
         activeAccountAddress
       );
       try {
-        const _contract = new Contract(tokenAddress, getErc20Abi(), signer);
+        const _contract = new Contract(
+          tokenAddress,
+          getErc20Abi(),
+          this.web3Provider as any
+        );
 
         const resolvedDecimals =
           decimals === undefined || decimals === null ? 18 : Number(decimals);
@@ -1924,12 +1931,15 @@ export class EthereumTransactions implements IEthereumTransactions {
     };
 
     const sendERC20TokenOnTrezor = async () => {
-      const signer = this.web3Provider.getSigner(activeAccountAddress);
       const transactionNonce = await this.getRecommendedNonce(
         activeAccountAddress
       );
       try {
-        const _contract = new Contract(tokenAddress, getErc20Abi(), signer);
+        const _contract = new Contract(
+          tokenAddress,
+          getErc20Abi(),
+          this.web3Provider as any
+        );
 
         const resolvedDecimals =
           decimals === undefined || decimals === null ? 18 : Number(decimals);
@@ -2036,7 +2046,7 @@ export class EthereumTransactions implements IEthereumTransactions {
       case KeyringAccountType.Ledger:
         return await sendERC20TokenOnLedger();
       default:
-        return await sendERC20Token();
+        return (await sendERC20Token()) as any;
     }
   };
 
@@ -2057,28 +2067,26 @@ export class EthereumTransactions implements IEthereumTransactions {
       accounts[activeAccountType][activeAccountId];
 
     const sendERC721Token = async () => {
-      const currentWallet = new Wallet(decryptedPrivateKey);
-      const walletSigned = currentWallet.connect(this.web3Provider);
       let transferMethod;
       try {
         const _contract = new Contract(
           tokenAddress,
           getErc21Abi(),
-          walletSigned
+          this.web3Provider as any
         );
 
         if (isLegacy) {
           const overrides = {
             nonce: await this.web3Provider.getTransactionCount(
-              walletSigned.address,
+              activeAccountAddress,
               'pending'
             ),
             gasPrice,
             ...(gasLimit && { gasLimit }),
             type: 0, // Explicitly set Type 0 for legacy NFT transfers
           };
-          transferMethod = await _contract.transferFrom(
-            walletSigned.address,
+          transferMethod = await _contract.transferFrom.populateTransaction(
+            activeAccountAddress,
             receiver,
             tokenId as number,
             overrides
@@ -2086,34 +2094,46 @@ export class EthereumTransactions implements IEthereumTransactions {
         } else {
           const overrides = {
             nonce: await this.web3Provider.getTransactionCount(
-              walletSigned.address,
+              activeAccountAddress,
               'pending'
             ),
             maxPriorityFeePerGas,
             maxFeePerGas,
             ...(gasLimit && { gasLimit }),
           };
-          transferMethod = await _contract.transferFrom(
-            walletSigned.address,
+          transferMethod = await _contract.transferFrom.populateTransaction(
+            activeAccountAddress,
             receiver,
             tokenId as number,
             overrides
           );
         }
 
-        return transferMethod;
+        return await sendLocalEvmTransaction(
+          this.web3Provider,
+          decryptedPrivateKey,
+          {
+            ...transferMethod,
+            chainId: activeNetwork.chainId,
+            from: activeAccountAddress,
+            value: '0x0',
+          }
+        );
       } catch (error) {
         throw error;
       }
     };
 
     const sendERC721TokenOnLedger = async () => {
-      const signer = this.web3Provider.getSigner(activeAccountAddress);
       const transactionNonce = await this.getRecommendedNonce(
         activeAccountAddress
       );
       try {
-        const _contract = new Contract(tokenAddress, getErc21Abi(), signer);
+        const _contract = new Contract(
+          tokenAddress,
+          getErc21Abi(),
+          this.web3Provider as any
+        );
         const txData = _contract.interface.encodeFunctionData('transferFrom', [
           activeAccountAddress,
           receiver,
@@ -2183,12 +2203,15 @@ export class EthereumTransactions implements IEthereumTransactions {
     };
 
     const sendERC721TokenOnTrezor = async () => {
-      const signer = this.web3Provider.getSigner(activeAccountAddress);
       const transactionNonce = await this.getRecommendedNonce(
         activeAccountAddress
       );
       try {
-        const _contract = new Contract(tokenAddress, getErc21Abi(), signer);
+        const _contract = new Contract(
+          tokenAddress,
+          getErc21Abi(),
+          this.web3Provider as any
+        );
         const txData = _contract.interface.encodeFunctionData('transferFrom', [
           activeAccountAddress,
           receiver,
@@ -2292,7 +2315,7 @@ export class EthereumTransactions implements IEthereumTransactions {
       case KeyringAccountType.Ledger:
         return await sendERC721TokenOnLedger();
       default:
-        return await sendERC721Token();
+        return (await sendERC721Token()) as any;
     }
   };
 
@@ -2314,14 +2337,12 @@ export class EthereumTransactions implements IEthereumTransactions {
       accounts[activeAccountType][activeAccountId];
 
     const sendERC1155Token = async () => {
-      const currentWallet = new Wallet(decryptedPrivateKey);
-      const walletSigned = currentWallet.connect(this.web3Provider);
       let transferMethod;
       try {
         const _contract = new Contract(
           tokenAddress,
           getErc55Abi(),
-          walletSigned
+          this.web3Provider as any
         );
 
         // Use BigNumber to avoid JS number overflow/precision loss
@@ -2331,7 +2352,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         if (isLegacy) {
           overrides = {
             nonce: await this.web3Provider.getTransactionCount(
-              walletSigned.address,
+              activeAccountAddress,
               'pending'
             ),
             gasPrice,
@@ -2341,7 +2362,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         } else {
           overrides = {
             nonce: await this.web3Provider.getTransactionCount(
-              walletSigned.address,
+              activeAccountAddress,
               'pending'
             ),
             maxPriorityFeePerGas,
@@ -2350,27 +2371,39 @@ export class EthereumTransactions implements IEthereumTransactions {
           };
         }
 
-        transferMethod = await _contract.safeTransferFrom(
-          walletSigned.address,
+        transferMethod = await _contract.safeTransferFrom.populateTransaction(
+          activeAccountAddress,
           receiver,
           tokenId as number,
           amount,
           [],
           overrides
         );
-        return transferMethod;
+        return await sendLocalEvmTransaction(
+          this.web3Provider,
+          decryptedPrivateKey,
+          {
+            ...transferMethod,
+            chainId: activeNetwork.chainId,
+            from: activeAccountAddress,
+            value: '0x0',
+          }
+        );
       } catch (error) {
         throw error;
       }
     };
 
     const sendERC1155TokenOnLedger = async () => {
-      const signer = this.web3Provider.getSigner(activeAccountAddress);
       const transactionNonce = await this.getRecommendedNonce(
         activeAccountAddress
       );
       try {
-        const _contract = new Contract(tokenAddress, getErc55Abi(), signer);
+        const _contract = new Contract(
+          tokenAddress,
+          getErc55Abi(),
+          this.web3Provider as any
+        );
 
         const amount = BigNumber.from(tokenAmount ?? '1');
 
@@ -2442,12 +2475,15 @@ export class EthereumTransactions implements IEthereumTransactions {
     };
 
     const sendERC1155TokenOnTrezor = async () => {
-      const signer = this.web3Provider.getSigner(activeAccountAddress);
       const transactionNonce = await this.getRecommendedNonce(
         activeAccountAddress
       );
       try {
-        const _contract = new Contract(tokenAddress, getErc55Abi(), signer);
+        const _contract = new Contract(
+          tokenAddress,
+          getErc55Abi(),
+          this.web3Provider as any
+        );
 
         const amount = BigNumber.from(tokenAmount ?? '1');
 
@@ -2549,7 +2585,7 @@ export class EthereumTransactions implements IEthereumTransactions {
       case KeyringAccountType.Ledger:
         return await sendERC1155TokenOnLedger();
       default:
-        return await sendERC1155Token();
+        return (await sendERC1155Token()) as any;
     }
   };
 
@@ -2724,14 +2760,13 @@ export class EthereumTransactions implements IEthereumTransactions {
 
   public importAccount = (mnemonicOrPrivKey: string) => {
     if (isHexString(mnemonicOrPrivKey)) {
-      return new Wallet(mnemonicOrPrivKey);
+      return privateKeyToAccount(mnemonicOrPrivKey);
     }
 
-    const { privateKey } = Wallet.fromMnemonic(mnemonicOrPrivKey);
-
-    const account = new Wallet(privateKey);
-
-    return account;
+    return deriveEvmAccountFromMnemonic(
+      mnemonicOrPrivKey,
+      getAddressDerivationPath('eth', 60, 0, false, 0)
+    );
   };
 
   // Method to configure gas overrides for networks with validation issues

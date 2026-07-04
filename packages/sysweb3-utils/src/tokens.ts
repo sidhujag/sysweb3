@@ -1,17 +1,11 @@
-import {
-  Contract,
-  type ContractFunction,
-  type Event,
-} from '@ethersproject/contracts';
 import { retryableFetch } from '@sidhujag/sysweb3-network';
+import { Contract, type EventLog, type JsonRpcProvider } from 'ethers';
 import * as sys from 'syscoinjs-lib';
 
 import { createContractUsingAbi } from '.';
 import ABI1155 from './abi/erc1155.json';
 import abi20 from './abi/erc20.json';
 import ABI721 from './abi/erc721.json';
-
-import type { JsonRpcProvider } from '@ethersproject/providers';
 
 const COINGECKO_API = 'https://api.coingecko.com/api/v3';
 
@@ -81,20 +75,9 @@ export const ERC20ABI = [
   'event Transfer(address indexed from, address indexed to, uint amount)',
 ];
 
-type NftContract = InstanceType<typeof Contract> & {
-  balanceOf: ContractFunction<number>;
-  ownerOf: ContractFunction<string>;
-  tokenURI: ContractFunction<string>;
-  uri: ContractFunction<string>;
-};
+type NftContract = any;
 
-type TokenContract = InstanceType<typeof Contract> & {
-  Transfer: Event;
-  balanceOf: ContractFunction<number>;
-  decimals: ContractFunction<number>;
-  symbol: ContractFunction<string>;
-  transfer: ContractFunction<any>;
-};
+type TokenContract = any;
 
 export const url = async (
   contract: NftContract,
@@ -527,11 +510,18 @@ export const validateToken = async (
   try {
     const contract = createContractUsingAbi(abi20, address, web3Provider);
 
-    const [decimals, name, symbol]: IErc20Token[] = await Promise.all([
-      contract.methods.decimals().call(),
-      contract.methods.name().call(),
-      contract.methods.symbol().call(),
-    ]);
+    const methods = (contract as any).methods;
+    const [decimals, name, symbol]: IErc20Token[] = methods
+      ? await Promise.all([
+          methods.decimals().call(),
+          methods.name().call(),
+          methods.symbol().call(),
+        ])
+      : await Promise.all([
+          (contract as any).decimals(),
+          (contract as any).name(),
+          (contract as any).symbol(),
+        ]);
 
     const validToken = decimals && name && symbol;
 
@@ -809,7 +799,7 @@ export type NftResultError = {
   status: 'error';
 };
 
-export type IQueryFilterResult = Promise<Array<Event>>;
+export type IQueryFilterResult = Promise<Array<EventLog>>;
 
 export type NftResult = NftResultLoading | NftResultError | NftResultDone;
 

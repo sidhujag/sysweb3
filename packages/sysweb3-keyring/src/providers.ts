@@ -1,13 +1,10 @@
-import { BigNumber } from '@ethersproject/bignumber';
-import { Logger } from '@ethersproject/logger';
-import { Networkish } from '@ethersproject/networks';
-import { shallowCopy } from '@ethersproject/properties';
-import { JsonRpcProvider } from '@ethersproject/providers';
-
 import { handleStatusCodeError } from './errorUtils';
-import { checkError } from './utils';
-
-const logger = new Logger('sysweb3-keyring/providers');
+import {
+  BigNumber,
+  JsonRpcProvider,
+  normalizeTransactionRequest,
+  type Networkish,
+} from './ethers-v6';
 
 // Preserve JSON-RPC error details (code, revert data) on thrown errors so
 // consumers can decode custom contract errors instead of only seeing
@@ -54,7 +51,7 @@ class BaseProvider extends JsonRpcProvider {
     url?: string | { url: string },
     network?: Networkish
   ) {
-    super(url, network);
+    super(typeof url === 'string' ? url : url?.url, network);
     this.signal = signal;
     this._pendingBatchAggregator = null;
     this._pendingBatch = null;
@@ -134,44 +131,6 @@ class BaseProvider extends JsonRpcProvider {
     };
   };
 
-  async perform(method: string, params: any): Promise<any> {
-    // Legacy networks do not like the type field being passed along (which
-    // is fair), so we delete type if it is 0 and a non-EIP-1559 network
-    if (method === 'call' || method === 'estimateGas') {
-      const tx = params.transaction;
-      if (tx && tx.type != null && BigNumber.from(tx.type).isZero()) {
-        // If there are no EIP-1559 properties, it might be non-EIP-1559
-        if (tx.maxFeePerGas == null && tx.maxPriorityFeePerGas == null) {
-          const feeData = await this.getFeeData();
-          if (
-            feeData.maxFeePerGas == null &&
-            feeData.maxPriorityFeePerGas == null
-          ) {
-            // Network doesn't know about EIP-1559 (and hence type)
-            params = shallowCopy(params);
-            params.transaction = shallowCopy(tx);
-            delete params.transaction.type;
-          }
-        }
-      }
-    }
-
-    const args = this.prepareRequest(method, params);
-
-    if (args == null) {
-      logger.throwError(
-        method + ' not implemented',
-        Logger.errors.NOT_IMPLEMENTED,
-        { operation: method }
-      );
-    }
-    try {
-      return await this.send(args[0], args[1]);
-    } catch (error) {
-      return checkError(method, error, params);
-    }
-  }
-
   override send = async (method: string, params: any[]) => {
     if (!this.isPossibleGetChainId && method === 'eth_chainId') {
       return this.currentChainId;
@@ -194,7 +153,7 @@ class BaseProvider extends JsonRpcProvider {
     };
 
     const result = await this.throttledRequest(() =>
-      fetch(this.connection.url, options)
+      fetch(this._getConnection().url, options)
         .then(async (response) => {
           if (!response.ok) {
             let errorBody = {
@@ -272,7 +231,7 @@ class BaseProvider extends JsonRpcProvider {
     };
 
     const results = await this.throttledRequest(() =>
-      fetch(this.connection.url, options)
+      fetch(this._getConnection().url, options)
         .then(async (response) => {
           if (!response.ok) {
             let errorBody = {
@@ -311,6 +270,75 @@ class BaseProvider extends JsonRpcProvider {
     );
 
     return results;
+  }
+
+  async getGasPrice() {
+    const feeData = await super.getFeeData();
+    return BigNumber.from(feeData.gasPrice ?? 0n);
+  }
+
+  async getFeeData(): Promise<any> {
+    const feeData = await super.getFeeData();
+    return {
+      gasPrice:
+        feeData.gasPrice == null ? null : BigNumber.from(feeData.gasPrice),
+      maxFeePerGas:
+        feeData.maxFeePerGas == null
+          ? null
+          : BigNumber.from(feeData.maxFeePerGas),
+      maxPriorityFeePerGas:
+        feeData.maxPriorityFeePerGas == null
+          ? null
+          : BigNumber.from(feeData.maxPriorityFeePerGas),
+    };
+  }
+
+  async getBalance(address: string): Promise<any> {
+    return BigNumber.from(await super.getBalance(address));
+  }
+
+  async estimateGas(transaction: any): Promise<any> {
+    return BigNumber.from(
+      await super.estimateGas(normalizeTransactionRequest(transaction))
+    );
+  }
+
+  async getBlock(blockHashOrBlockTag: any): Promise<any> {
+    const block = await super.getBlock(blockHashOrBlockTag);
+    if (!block) return block;
+    return {
+      ...block,
+      baseFeePerGas:
+        block.baseFeePerGas == null
+          ? null
+          : BigNumber.from(block.baseFeePerGas),
+    };
+  }
+
+  private wrapTransactionResponse(transaction: any) {
+    if (!transaction) return transaction;
+    const wrapped = { ...transaction };
+    for (const field of [
+      'gasLimit',
+      'gasPrice',
+      'maxFeePerGas',
+      'maxPriorityFeePerGas',
+      'value',
+    ]) {
+      if (wrapped[field] != null)
+        wrapped[field] = BigNumber.from(wrapped[field]);
+    }
+    return wrapped;
+  }
+
+  async getTransaction(hash: string): Promise<any> {
+    return this.wrapTransactionResponse(await super.getTransaction(hash));
+  }
+
+  async sendTransaction(signedTransaction: string) {
+    return this.wrapTransactionResponse(
+      await this.broadcastTransaction(signedTransaction)
+    );
   }
 }
 

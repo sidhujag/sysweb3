@@ -81,7 +81,7 @@ process.env.SEED_SWALLOW_HEALTH =
 // Mock the providers module
 jest.mock('../../src/providers', () => ({
   CustomJsonRpcProvider: jest.fn().mockImplementation((_signal, _url) => {
-    const { BigNumber } = jest.requireActual('@ethersproject/bignumber');
+    const { BigNumber } = jest.requireActual('../../src/ethers-v6');
 
     // Determine chainId based on URL
     let chainId = 57; // Default Syscoin mainnet
@@ -469,12 +469,13 @@ global.createMockVaultState = (
   let address, xpub, xprv;
   if (networkType === INetworkType.Ethereum) {
     // Derive real EVM address from test seed
-    const { HDNode } = jest.requireActual('@ethersproject/hdnode');
+    const { deriveEvmAccountFromMnemonic } = jest.requireActual(
+      '../../src/transactions/evm-local-signer'
+    );
     const { getAddressDerivationPath } = jest.requireActual(
       '../../src/utils/derivation-paths'
     );
 
-    const hdNode = HDNode.fromMnemonic(testSeedPhrase);
     const ethDerivationPath = getAddressDerivationPath(
       'eth',
       60,
@@ -482,7 +483,10 @@ global.createMockVaultState = (
       false,
       activeAccountId
     );
-    const derivedAccount = hdNode.derivePath(ethDerivationPath);
+    const derivedAccount = deriveEvmAccountFromMnemonic(
+      testSeedPhrase,
+      ethDerivationPath
+    );
 
     address = derivedAccount.address;
     xpub = derivedAccount.publicKey;

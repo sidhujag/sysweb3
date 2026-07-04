@@ -1,4 +1,4 @@
-import { Contract, ContractInterface } from '@ethersproject/contracts';
+import { Contract, type InterfaceAbi } from 'ethers';
 
 import abi55 from './abi/erc1155.json';
 import abi20 from './abi/erc20.json';
@@ -6,7 +6,7 @@ import abi21 from './abi/erc721.json';
 import { getContractType, ISupportsInterfaceProps } from './getContract';
 
 export const createContractUsingAbi = (
-  AbiContract: ContractInterface,
+  AbiContract: InterfaceAbi,
   address: string,
   web3Provider: any
 ): Contract => new Contract(String(address), AbiContract, web3Provider);

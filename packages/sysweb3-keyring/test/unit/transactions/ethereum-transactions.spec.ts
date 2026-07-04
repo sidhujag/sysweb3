@@ -1,8 +1,8 @@
-import { BigNumber } from '@ethersproject/bignumber';
 import { encrypt, SignTypedDataVersion } from '@metamask/eth-sig-util';
 import { INetworkType } from '@sidhujag/sysweb3-network';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
+import { BigNumber } from '../../../src/ethers-v6';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
 import { setupMocks } from '../../helpers/setup';
 

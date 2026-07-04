@@ -1,7 +1,4 @@
 import ecc from '@bitcoinerlab/secp256k1';
-import { isHexString } from '@ethersproject/bytes';
-import { HDNode } from '@ethersproject/hdnode';
-import { Wallet } from '@ethersproject/wallet';
 import * as sysweb3 from '@sidhujag/sysweb3-core';
 import {
   INetwork,
@@ -28,6 +25,7 @@ const SLH_DSA_DERIVATION_VERSION = 1;
 const SLH_DSA_SETUP_SECRET_HEX_LENGTH = 64;
 const SLH_DSA_PARAMETER_SET = 'SLH-DSA-SHA2-128-24';
 
+import { isHexString } from './ethers-v6';
 import { HardwareWalletManager } from './hardware-wallet-manager';
 import { HardwareWalletManagerSingleton } from './hardware-wallet-manager-singleton';
 import {
@@ -39,6 +37,10 @@ import { LedgerKeyring } from './ledger';
 import { getSyscoinSigners, SyscoinHDSigner } from './signers';
 import { getDecryptedVault, setEncryptedVault } from './storage';
 import { EthereumTransactions, SyscoinTransactions } from './transactions';
+import {
+  deriveEvmAccountFromMnemonic,
+  privateKeyToAccount,
+} from './transactions/evm-local-signer';
 import { TrezorKeyring } from './trezor';
 import {
   IKeyringAccountState,
@@ -1000,7 +1002,7 @@ export class KeyringManager implements IKeyringManager {
   public importWeb3Account = (mnemonicOrPrivKey: string) => {
     // Check if it's a hex string (Ethereum private key)
     if (isHexString(mnemonicOrPrivKey)) {
-      return new Wallet(mnemonicOrPrivKey);
+      return privateKeyToAccount(mnemonicOrPrivKey);
     }
 
     // Check if it's a zprv/tprv (Syscoin private key)
@@ -1012,9 +1014,10 @@ export class KeyringManager implements IKeyringManager {
     }
 
     // Otherwise, assume it's a mnemonic
-    const account = Wallet.fromMnemonic(mnemonicOrPrivKey);
-
-    return account;
+    return deriveEvmAccountFromMnemonic(
+      mnemonicOrPrivKey,
+      getAddressDerivationPath('eth', 60, 0, false, 0)
+    );
   };
 
   public getAccountXpub = (): string => {
@@ -1134,7 +1137,8 @@ export class KeyringManager implements IKeyringManager {
 
   public getNetwork = () => this.getVault().activeNetwork;
 
-  public createEthAccount = (privateKey: string) => new Wallet(privateKey);
+  public createEthAccount = (privateKey: string) =>
+    privateKeyToAccount(privateKey);
 
   // Helper to get current account data from backend
   private fetchCurrentAccountData = async (
@@ -1625,15 +1629,15 @@ export class KeyringManager implements IKeyringManager {
       // This helps catch account switching race conditions early
       if (this.getActiveChain() === INetworkType.Ethereum) {
         try {
-          const derivedWallet = new Wallet(decryptedPrivateKey);
-          if (derivedWallet.address.toLowerCase() !== address.toLowerCase()) {
+          const derivedAccount = privateKeyToAccount(decryptedPrivateKey);
+          if (derivedAccount.address.toLowerCase() !== address.toLowerCase()) {
             throw new Error(
-              `Address mismatch for account ${activeAccountType}:${activeAccountId}. Expected ${address} but derived ${derivedWallet.address}. Account switching may be in progress.`
+              `Address mismatch for account ${activeAccountType}:${activeAccountId}. Expected ${address} but derived ${derivedAccount.address}. Account switching may be in progress.`
             );
           }
-        } catch (ethersError) {
+        } catch (addressError) {
           throw new Error(
-            `Failed to validate EVM address for account ${activeAccountType}:${activeAccountId}: ${ethersError.message}`
+            `Failed to validate EVM address for account ${activeAccountType}:${activeAccountId}: ${addressError.message}`
           );
         }
       }
@@ -2264,9 +2268,11 @@ export class KeyringManager implements IKeyringManager {
     try {
       // For account creation, derive from mnemonic (since account doesn't exist yet)
       const mnemonic = this.getDecryptedMnemonic();
-      const hdNode = HDNode.fromMnemonic(mnemonic);
       const derivationPath = getAddressDerivationPath('eth', 60, 0, false, id);
-      const derivedAccount = hdNode.derivePath(derivationPath);
+      const derivedAccount = deriveEvmAccountFromMnemonic(
+        mnemonic,
+        derivationPath
+      );
 
       const basicAccountInfo = this.getBasicWeb3AccountInfo(id, label);
 

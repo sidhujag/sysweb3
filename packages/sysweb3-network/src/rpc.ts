@@ -1,5 +1,5 @@
-import { hexlify } from '@ethersproject/bytes';
 import { Chain, chains } from 'eth-chains';
+import { toBeHex } from 'ethers';
 
 import { findCoin } from './coin-utils';
 // import fetch from "node-fetch";
@@ -55,7 +55,7 @@ export const getChainById = (chainId: number): Chain | undefined => {
 export const validateChainId = (
   chainId: number | string
 ): { hexChainId: string; valid: boolean } => {
-  const hexChainId = hexlify(chainId);
+  const hexChainId = toBeHex(chainId);
 
   const isHexChainIdValid =
     typeof hexChainId === 'string' && hexRegEx.test(hexChainId);
