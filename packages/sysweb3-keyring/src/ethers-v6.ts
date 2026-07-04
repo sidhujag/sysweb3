@@ -200,6 +200,9 @@ export const normalizeTxValue = (value: any): any => {
 
 export const normalizeTransactionRequest = (tx: Record<string, any>) => {
   const normalized = { ...tx };
+  if (normalized.type != null) {
+    normalized.type = Number(normalizeTxValue(normalized.type));
+  }
   for (const field of [
     'chainId',
     'gasLimit',

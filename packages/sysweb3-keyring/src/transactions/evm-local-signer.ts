@@ -12,6 +12,7 @@ import {
   hexZeroPad,
   joinSignature,
   keccak256,
+  normalizeTransactionRequest,
   resolveProperties,
   serializeTransaction,
   type Deferrable,
@@ -168,11 +169,9 @@ export const sendLocalEvmTransaction = async (
     throw new Error('Transaction from does not match EVM private key');
   }
 
-  const tx = omit(resolved, [
-    'from',
-    'ccipReadEnabled',
-    'customData',
-  ]) as TransactionRequest;
+  const tx = normalizeTransactionRequest(
+    omit(resolved, ['from', 'ccipReadEnabled', 'customData'])
+  ) as TransactionRequest;
 
   if (!tx.chainId) {
     const network = await provider.getNetwork();

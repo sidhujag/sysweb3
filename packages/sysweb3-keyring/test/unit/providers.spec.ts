@@ -1,4 +1,4 @@
-import { BigNumber } from '../../src/ethers-v6';
+import { BigNumber, normalizeTransactionRequest } from '../../src/ethers-v6';
 
 const { wrapTransactionResponse } = jest.requireActual('../../src/providers');
 
@@ -30,5 +30,10 @@ describe('CustomJsonRpcProvider', () => {
     });
     await expect(wrapped.wait()).resolves.toEqual({ status: 1 });
     expect(transaction.wait).toHaveBeenCalledTimes(1);
+  });
+
+  it('normalizes JSON-RPC transaction type values to numbers', () => {
+    expect(normalizeTransactionRequest({ type: '0x0' }).type).toBe(0);
+    expect(normalizeTransactionRequest({ type: '0x1' }).type).toBe(1);
   });
 });

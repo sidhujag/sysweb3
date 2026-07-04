@@ -156,7 +156,7 @@ describe('EVM local signer', () => {
     } as any;
 
     await sendLocalEvmTransaction(provider, PRIVATE_KEY, {
-      type: 1,
+      type: '0x1',
       to: ADDRESS,
       value: '0x0',
       data: '0x',
