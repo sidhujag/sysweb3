@@ -357,11 +357,12 @@ class BaseProvider extends JsonRpcProvider {
   }
 
   async call(transaction: any, blockTag?: any): Promise<any> {
-    return await (JsonRpcProvider.prototype.call as any).call(
-      this,
-      await this.normalizeLegacyCallRequest(transaction),
-      blockTag
-    );
+    const normalized = await this.normalizeLegacyCallRequest(transaction);
+    if (blockTag != null) {
+      normalized.blockTag = blockTag;
+    }
+
+    return await (JsonRpcProvider.prototype.call as any).call(this, normalized);
   }
 
   async estimateGas(transaction: any): Promise<any> {

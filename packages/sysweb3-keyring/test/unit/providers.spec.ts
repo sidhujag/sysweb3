@@ -55,7 +55,10 @@ describe('CustomJsonRpcProvider', () => {
 
     await expect(provider.call(transaction, 'pending')).resolves.toBe('0x');
 
-    expect(parentCall).toHaveBeenCalledWith(transaction, 'pending');
+    expect(parentCall).toHaveBeenCalledWith({
+      ...transaction,
+      blockTag: 'pending',
+    });
     parentCall.mockRestore();
   });
 });
