@@ -183,6 +183,19 @@ export const sendLocalEvmTransaction = async (
     const network = await provider.getNetwork();
     tx.chainId = Number(network.chainId);
   }
+  if (tx.to && typeof tx.to === 'string') {
+    try {
+      tx.to = getAddress(tx.to);
+    } catch {
+      const resolvedTo = await provider.resolveName(tx.to);
+      if (!resolvedTo) {
+        throw new Error(
+          `Unable to resolve EVM transaction recipient: ${tx.to}`
+        );
+      }
+      tx.to = getAddress(resolvedTo);
+    }
+  }
   if (tx.nonce === undefined || tx.nonce === null) {
     tx.nonce = await provider.getTransactionCount(account.address, 'pending');
   }
