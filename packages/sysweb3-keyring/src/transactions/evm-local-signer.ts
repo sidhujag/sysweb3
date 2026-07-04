@@ -187,7 +187,7 @@ export const sendLocalEvmTransaction = async (
       from: account.address,
     } as any);
   }
-  if (tx.type === 0 && tx.gasPrice == null) {
+  if ((tx.type === 0 || tx.type === 1) && tx.gasPrice == null) {
     tx.gasPrice = await provider.getGasPrice();
   } else if (
     tx.gasPrice == null &&

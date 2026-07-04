@@ -134,6 +134,40 @@ describe('EVM local signer', () => {
     expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
   });
 
+  it('populates gasPrice for explicit EIP-2930 local transactions', async () => {
+    const provider = {
+      getNetwork: jest.fn().mockResolvedValue({ chainId: 1 }),
+      getTransactionCount: jest.fn().mockResolvedValue(7),
+      estimateGas: jest.fn().mockResolvedValue(BigNumber.from(21000)),
+      getFeeData: jest.fn(),
+      getGasPrice: jest.fn().mockResolvedValue(BigNumber.from(100)),
+      sendTransaction: jest
+        .fn()
+        .mockImplementation(async (signedTx: string) => {
+          const decoded = Transaction.from(signedTx);
+          expect(decoded.type).toBe(1);
+          expect(decoded.gasPrice).toBe(100n);
+          expect(decoded.maxFeePerGas).toBe(null);
+          expect(decoded.maxPriorityFeePerGas).toBe(null);
+          return {
+            hash: '0x1234567890123456789012345678901234567890123456789012345678901234',
+          };
+        }),
+    } as any;
+
+    await sendLocalEvmTransaction(provider, PRIVATE_KEY, {
+      type: 1,
+      to: ADDRESS,
+      value: '0x0',
+      data: '0x',
+      accessList: [],
+    });
+
+    expect(provider.getGasPrice).toHaveBeenCalledTimes(1);
+    expect(provider.getFeeData).not.toHaveBeenCalled();
+    expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
+  });
+
   it('signs personal messages in MetaMask-compatible format', () => {
     const signature = signPersonalMessage(PERSONAL_MESSAGE, PRIVATE_KEY);
     const recovered = recoverPersonalSignature({
