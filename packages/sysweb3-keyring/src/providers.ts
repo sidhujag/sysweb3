@@ -417,8 +417,8 @@ class BaseProvider extends JsonRpcProvider {
     };
   }
 
-  async getBalance(address: string): Promise<any> {
-    return BigNumber.from(await super.getBalance(address));
+  async getBalance(address: string, blockTag?: any): Promise<any> {
+    return BigNumber.from(await super.getBalance(address, blockTag));
   }
 
   private async normalizeLegacyCallRequest(transaction: any) {

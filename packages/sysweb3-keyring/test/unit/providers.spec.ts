@@ -87,6 +87,24 @@ describe('CustomJsonRpcProvider', () => {
     }
   });
 
+  it('forwards block tags for balance requests', async () => {
+    const parentGetBalance = jest
+      .spyOn(JsonRpcProvider.prototype, 'getBalance')
+      .mockResolvedValue(123n);
+    const provider = new CustomJsonRpcProvider(new AbortController().signal);
+    const address = '0x0000000000000000000000000000000000000001';
+
+    try {
+      await expect(provider.getBalance(address, 'pending')).resolves.toEqual(
+        BigNumber.from(123)
+      );
+
+      expect(parentGetBalance).toHaveBeenCalledWith(address, 'pending');
+    } finally {
+      parentGetBalance.mockRestore();
+    }
+  });
+
   it('forwards block tags for eth_call requests', async () => {
     const parentCall = jest
       .spyOn(JsonRpcProvider.prototype, 'call')
