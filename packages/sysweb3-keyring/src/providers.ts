@@ -16,7 +16,13 @@ const TRANSACTION_RESPONSE_BIG_NUMBER_FIELDS = new Set([
 
 export const wrapTransactionResponse = (transaction: any) => {
   if (!transaction) return transaction;
-  const wrapped = Object.create(transaction);
+  const wrapped = Object.create(Object.getPrototypeOf(transaction));
+  const descriptors = Object.getOwnPropertyDescriptors(transaction);
+  for (const field of TRANSACTION_RESPONSE_BIG_NUMBER_FIELDS) {
+    delete descriptors[field];
+  }
+  Object.defineProperties(wrapped, descriptors);
+
   for (const field of TRANSACTION_RESPONSE_BIG_NUMBER_FIELDS) {
     if (transaction[field] != null) {
       Object.defineProperty(wrapped, field, {

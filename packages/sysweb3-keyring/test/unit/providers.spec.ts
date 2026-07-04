@@ -6,6 +6,10 @@ describe('CustomJsonRpcProvider', () => {
   it('wraps read-only transaction response numeric fields without redefining them', async () => {
     const transaction = {
       hash: '0x1234567890123456789012345678901234567890123456789012345678901234',
+      from: '0x0000000000000000000000000000000000000001',
+      to: '0x0000000000000000000000000000000000000002',
+      nonce: 7,
+      blockNumber: 10,
       wait: jest.fn().mockResolvedValue({ status: 1 }),
     };
     Object.defineProperty(transaction, 'gasLimit', {
@@ -17,6 +21,13 @@ describe('CustomJsonRpcProvider', () => {
     const wrapped = wrapTransactionResponse(transaction);
 
     expect(wrapped.gasLimit).toEqual(BigNumber.from(21000));
+    expect({ ...wrapped }).toMatchObject({
+      hash: transaction.hash,
+      from: transaction.from,
+      to: transaction.to,
+      nonce: transaction.nonce,
+      blockNumber: transaction.blockNumber,
+    });
     await expect(wrapped.wait()).resolves.toEqual({ status: 1 });
     expect(transaction.wait).toHaveBeenCalledTimes(1);
   });

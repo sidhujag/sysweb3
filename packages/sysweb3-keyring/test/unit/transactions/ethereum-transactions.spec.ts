@@ -1,4 +1,8 @@
-import { encrypt, SignTypedDataVersion } from '@metamask/eth-sig-util';
+import {
+  encrypt,
+  recoverPersonalSignature,
+  SignTypedDataVersion,
+} from '@metamask/eth-sig-util';
 import { INetworkType } from '@sidhujag/sysweb3-network';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
@@ -195,6 +199,21 @@ describe('Ethereum Transactions', () => {
 
       expect(signature).toBeDefined();
       expect(signature.startsWith('0x')).toBe(true);
+    });
+
+    it('should sign malformed 0x-prefixed personal messages as text', async () => {
+      const address = keyringManager.getActiveAccount().activeAccount.address;
+      const signature =
+        await keyringManager.ethereumTransaction.signPersonalMessage([
+          '0xhello',
+          address,
+        ]);
+      const recovered = recoverPersonalSignature({
+        data: '0xhello',
+        signature,
+      });
+
+      expect(recovered.toLowerCase()).toBe(address.toLowerCase());
     });
 
     it('should verify personal message signature', () => {

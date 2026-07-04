@@ -391,11 +391,12 @@ export class EthereumTransactions implements IEthereumTransactions {
         // Handle both hex-encoded and plain text messages for personal_sign
         let message: Buffer;
         if (msg.startsWith('0x')) {
-          // Message is hex-encoded
-          try {
+          const rawHex = stripHexPrefix(msg);
+          if (rawHex.length % 2 === 0 && isHexString(msg)) {
+            // Message is valid hex-encoded bytes.
             message = Buffer.from(stripHexPrefix(msg), 'hex');
-          } catch (error) {
-            // If hex parsing fails, treat as plain text
+          } else {
+            // Malformed 0x-prefixed strings are literal text, not lossy hex.
             message = Buffer.from(msg, 'utf8');
           }
         } else {
