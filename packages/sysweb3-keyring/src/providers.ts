@@ -298,9 +298,26 @@ class BaseProvider extends JsonRpcProvider {
   }
 
   async estimateGas(transaction: any): Promise<any> {
-    return BigNumber.from(
-      await super.estimateGas(normalizeTransactionRequest(transaction))
-    );
+    const normalized = normalizeTransactionRequest(transaction);
+
+    // Some legacy/non-EIP-1559 RPCs reject a type field on call/estimateGas.
+    // Preserve the old provider behavior by stripping explicit type 0 only
+    // when the network does not expose EIP-1559 fee fields.
+    if (
+      normalized?.type === 0 &&
+      normalized.maxFeePerGas == null &&
+      normalized.maxPriorityFeePerGas == null
+    ) {
+      const feeData = await super.getFeeData();
+      if (
+        feeData.maxFeePerGas == null &&
+        feeData.maxPriorityFeePerGas == null
+      ) {
+        delete normalized.type;
+      }
+    }
+
+    return BigNumber.from(await super.estimateGas(normalized));
   }
 
   async getBlock(blockHashOrBlockTag: any): Promise<any> {
@@ -317,7 +334,6 @@ class BaseProvider extends JsonRpcProvider {
 
   private wrapTransactionResponse(transaction: any) {
     if (!transaction) return transaction;
-    const wrapped = { ...transaction };
     for (const field of [
       'gasLimit',
       'gasPrice',
@@ -325,10 +341,16 @@ class BaseProvider extends JsonRpcProvider {
       'maxPriorityFeePerGas',
       'value',
     ]) {
-      if (wrapped[field] != null)
-        wrapped[field] = BigNumber.from(wrapped[field]);
+      if (transaction[field] != null) {
+        Object.defineProperty(transaction, field, {
+          value: BigNumber.from(transaction[field]),
+          configurable: true,
+          enumerable: true,
+          writable: true,
+        });
+      }
     }
-    return wrapped;
+    return transaction;
   }
 
   async getTransaction(hash: string): Promise<any> {

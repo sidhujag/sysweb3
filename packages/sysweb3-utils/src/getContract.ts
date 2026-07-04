@@ -46,7 +46,7 @@ export const getContractType = async (
         );
         const balanceOf = await contractERC20.balanceOf(contractAddress);
 
-        if (typeof balanceOf === 'object') {
+        if (typeof balanceOf === 'bigint' || typeof balanceOf === 'object') {
           return { type: 'ERC-20' };
         }
         throw new Error('ERC-20');
