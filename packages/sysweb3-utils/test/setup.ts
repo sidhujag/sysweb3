@@ -18,7 +18,12 @@ jest.mock('ethers', () => {
       '0xd19018f7946d518d316bb10fdff118c28835cf7a',
     ];
     const erc1155Addresses = ['0xaa54a8e8bdea1aa7e2ed7e5f681c798a8ed7e5ab'];
-    const erc20Addresses = ['0xa6fa4fb5f76172d178d61b04b0ecd319c5d1c0aa'];
+    const zeroDecimalErc20Address =
+      '0x0000000000000000000000000000000000000020';
+    const erc20Addresses = [
+      '0xa6fa4fb5f76172d178d61b04b0ecd319c5d1c0aa',
+      zeroDecimalErc20Address,
+    ];
 
     const isERC721 = erc721Addresses.some(
       (a) => a.toLowerCase() === lowerAddress
@@ -34,7 +39,7 @@ jest.mock('ethers', () => {
       balanceOf: jest.fn().mockImplementation(async () => {
         // For ERC20 type detection, return balance even when checking contract's own balance
         if (isERC20) {
-          return Promise.resolve(BigNumber.from('1000000'));
+          return Promise.resolve(1000000n);
         }
         // For unknown contracts that don't support any standard, throw error
         if (!isERC721 && !isERC1155 && !isERC20) {
@@ -63,7 +68,9 @@ jest.mock('ethers', () => {
       tokenURI: jest.fn().mockResolvedValue('https://example.com/token/1'),
       symbol: jest.fn().mockResolvedValue('TEST'),
       name: jest.fn().mockResolvedValue('Test Token'),
-      decimals: jest.fn().mockResolvedValue(18),
+      decimals: jest
+        .fn()
+        .mockResolvedValue(lowerAddress === zeroDecimalErc20Address ? 0n : 18),
     };
   });
 

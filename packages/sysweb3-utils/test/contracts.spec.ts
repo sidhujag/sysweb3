@@ -1,5 +1,6 @@
 import { contractChecker, isContractAddress } from '../src/contracts';
 import { getContractType } from '../src/getContract';
+import { validateToken } from '../src/tokens';
 
 // Helper to create mock provider
 const createMockProvider = () => {
@@ -82,6 +83,16 @@ describe('Validate Contract Type in Mumbai Network using contractType function',
     }
   });
 
+  it('Should return ERC 20 Contract when balanceOf returns bigint', async () => {
+    const provider = createMockProvider();
+    const handleContractType = await getContractType(
+      '0xa6fa4fb5f76172d178d61b04b0ecd319c5d1c0aa',
+      provider
+    );
+
+    expect(handleContractType?.type).toBe('ERC-20');
+  });
+
   it('Should return ERC 721 Contract', async () => {
     const provider = createMockProvider();
     const handleContractType = await getContractType(
@@ -110,6 +121,21 @@ describe('Validate Contract Type in Mumbai Network using contractType function',
       expect(typeof handleContractType.type).toBe('string');
       expect(handleContractType.type).toBe('ERC-1155');
     }
+  });
+});
+
+describe('Validate ERC20 token metadata', () => {
+  it('Should accept zero-decimal ERC20 tokens', async () => {
+    const token = await validateToken(
+      '0x0000000000000000000000000000000000000020',
+      createMockProvider()
+    );
+
+    expect(token).toEqual({
+      name: 'Test Token',
+      symbol: 'TEST',
+      decimals: 0,
+    });
   });
 });
 

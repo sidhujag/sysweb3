@@ -523,7 +523,8 @@ export const validateToken = async (
           (contract as any).symbol(),
         ]);
 
-    const validToken = decimals && name && symbol;
+    const validToken =
+      decimals !== null && decimals !== undefined && name && symbol;
 
     if (validToken) {
       return {

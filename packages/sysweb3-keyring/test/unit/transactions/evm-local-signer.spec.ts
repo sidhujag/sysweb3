@@ -126,6 +126,27 @@ describe('EVM transaction serializer', () => {
     );
   });
 
+  it('serializes legacy EIP-155 signatures for Syscoin NEVM chain 57', () => {
+    const transaction = {
+      to: '0x2c7536E3605D9C16a7a3D7b1898e529396a65c23',
+      value: '0x01',
+      gasLimit: '0x5208',
+      gasPrice: '0x01',
+      nonce: 1,
+      chainId: 57,
+      type: 0,
+      data: '0x',
+    };
+    const signature = {
+      r: `0x${'11'.repeat(32)}`,
+      s: `0x${'22'.repeat(32)}`,
+      v: 149,
+    };
+
+    expect(() => serializeTransaction(transaction, signature)).not.toThrow();
+    expect(serializeTransaction(transaction, signature)).toContain('8195');
+  });
+
   it('signs an EIP-2930 transaction with access list byte-for-byte', () => {
     expect(
       signTransaction(

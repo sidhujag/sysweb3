@@ -227,18 +227,19 @@ export const serializeTransaction = (
   const transaction = Transaction.from(normalizeTransactionRequest(tx));
   if (!signature) return transaction.unsignedSerialized;
 
-  const yParity =
-    signature.recoveryParam ??
-    (signature.v != null
-      ? signature.v >= 27
-        ? signature.v - 27
-        : signature.v
-      : 0);
-  transaction.signature = Signature.from({
-    r: signature.r,
-    s: signature.s,
-    yParity: yParity as 0 | 1,
-  });
+  transaction.signature = Signature.from(
+    signature.v != null
+      ? {
+          r: signature.r,
+          s: signature.s,
+          v: signature.v,
+        }
+      : {
+          r: signature.r,
+          s: signature.s,
+          yParity: (signature.recoveryParam ?? 0) as 0 | 1,
+        }
+  );
   return transaction.serialized;
 };
 
@@ -256,13 +257,16 @@ export const joinSignature = (signature: {
   v?: number;
   recoveryParam?: number;
 }) =>
-  Signature.from({
-    r: signature.r,
-    s: signature.s,
-    yParity: (signature.recoveryParam ??
-      (signature.v != null
-        ? signature.v >= 27
-          ? signature.v - 27
-          : signature.v
-        : 0)) as 0 | 1,
-  }).serialized;
+  Signature.from(
+    signature.v != null
+      ? {
+          r: signature.r,
+          s: signature.s,
+          v: signature.v,
+        }
+      : {
+          r: signature.r,
+          s: signature.s,
+          yParity: (signature.recoveryParam ?? 0) as 0 | 1,
+        }
+  ).serialized;
