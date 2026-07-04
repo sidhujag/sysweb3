@@ -186,7 +186,12 @@ export const normalizeTxValue = (value: any): any => {
   if (value == null) return value;
   if (value instanceof BigNumberCompat) return value.toBigInt();
   if (typeof value === 'bigint') return value;
-  if (typeof value === 'number') return BigInt(Math.trunc(value));
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) {
+      throw new Error('unsafe numeric transaction value');
+    }
+    return BigInt(value);
+  }
   if (typeof value === 'string') {
     if (value === '') return 0n;
     return value.startsWith('0x') || value.startsWith('0X')

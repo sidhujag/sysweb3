@@ -58,6 +58,24 @@ describe('CustomJsonRpcProvider', () => {
     expect(normalizeTransactionRequest({ type: '0x1' }).type).toBe(1);
   });
 
+  it('rejects unsafe numeric transaction values', () => {
+    expect(() =>
+      normalizeTransactionRequest({
+        gasLimit: Number.MAX_SAFE_INTEGER + 1,
+      })
+    ).toThrow('unsafe numeric transaction value');
+    expect(() =>
+      normalizeTransactionRequest({
+        nonce: Number.MAX_SAFE_INTEGER + 1,
+      })
+    ).toThrow('unsafe numeric transaction value');
+    expect(() =>
+      normalizeTransactionRequest({
+        type: Number.MAX_SAFE_INTEGER + 1,
+      })
+    ).toThrow('unsafe numeric transaction value');
+  });
+
   it('populates EIP-1559 fees for zero-base-fee blocks', async () => {
     const parentFeeData = jest
       .spyOn(JsonRpcProvider.prototype, 'getFeeData')
