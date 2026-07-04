@@ -1,6 +1,9 @@
 import { JsonRpcProvider } from 'ethers';
 
-import { getERC721StandardBalance } from '../src/tokens';
+import {
+  getERC1155StandardBalance,
+  getERC721StandardBalance,
+} from '../src/tokens';
 
 describe('ERC-721 NFts tests', () => {
   it('should return balance 0 from NFT contract', async () => {
@@ -25,5 +28,18 @@ describe('ERC-721 NFts tests', () => {
 
     expect(typeof erc721Balance).toBe('number');
     expect(erc721Balance).toBeGreaterThanOrEqual(1);
+  });
+
+  it('should preserve exact ERC-1155 balances', async () => {
+    const RpcProvider = new JsonRpcProvider();
+    const erc1155Balance = await getERC1155StandardBalance(
+      '0xAa54A8E8BdEA1aa7E2ed7E5F681c798a8ed7e5AB',
+      '0x6a92eF94F6Db88098625a30396e0fde7255E97d5',
+      RpcProvider,
+      1
+    );
+
+    expect(erc1155Balance).toBe('1000000000000000001');
+    expect(typeof erc1155Balance).toBe('string');
   });
 });

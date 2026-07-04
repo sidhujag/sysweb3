@@ -122,7 +122,7 @@ export const fetchBalanceOfERC1155Contract = async (
   address: string,
   provider: JsonRpcProvider,
   tokenId: number
-): Promise<number | undefined> => {
+): Promise<string | undefined> => {
   const contract = new Contract(
     contractAddress,
     ABI1155,
@@ -131,7 +131,7 @@ export const fetchBalanceOfERC1155Contract = async (
 
   const fetchBalanceOfValue = await contract.balanceOf(address, tokenId);
 
-  return toNumber(fetchBalanceOfValue);
+  return toStringValue(fetchBalanceOfValue);
 };
 
 export const getERC1155StandardBalance = async (

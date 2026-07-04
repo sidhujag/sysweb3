@@ -45,6 +45,9 @@ jest.mock('ethers', () => {
         if (!isERC721 && !isERC1155 && !isERC20) {
           throw new Error('Contract does not support balanceOf');
         }
+        if (isERC1155) {
+          return Promise.resolve(1000000000000000001n);
+        }
         // Return different balances for NFTs
         if (lowerAddress === '0x0c702f78b889f25e3347fb978345f7ecf4f3861c') {
           return Promise.resolve(0n);
