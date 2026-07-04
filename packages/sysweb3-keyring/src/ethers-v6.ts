@@ -142,6 +142,13 @@ export class BigNumberCompat {
   toString() {
     return this.value.toString();
   }
+
+  toJSON() {
+    return {
+      type: 'BigNumber',
+      hex: this.toHexString(),
+    };
+  }
 }
 
 export { BigNumberCompat as BigNumber };

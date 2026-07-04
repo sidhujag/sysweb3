@@ -409,6 +409,9 @@ describe('Ethereum Transactions', () => {
 
       expect(bigNumber._isBigNumber).toBe(true);
       expect(bigNumber._hex).toBe('0x03e8'); // Updated to match actual format
+      expect(JSON.stringify({ gasLimit: bigNumber })).toBe(
+        '{"gasLimit":{"type":"BigNumber","hex":"0x03e8"}}'
+      );
     });
   });
 
