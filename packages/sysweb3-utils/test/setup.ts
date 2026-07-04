@@ -39,7 +39,7 @@ jest.mock('ethers', () => {
       balanceOf: jest.fn().mockImplementation(async () => {
         // For ERC20 type detection, return balance even when checking contract's own balance
         if (isERC20) {
-          return Promise.resolve(1000000n);
+          return Promise.resolve(1000000000000000001n);
         }
         // For unknown contracts that don't support any standard, throw error
         if (!isERC721 && !isERC1155 && !isERC20) {

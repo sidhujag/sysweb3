@@ -30,6 +30,9 @@ export const identity = <T = unknown>(arg: T): T => arg;
 const toNumber = (value: any): number =>
   Number(value?.toString ? value.toString() : value);
 
+const toStringValue = (value: any): string =>
+  value?.toString ? value.toString() : String(value);
+
 export const parseNftUrl = (url: string): [string, string] | null => {
   const raribleMatch = RARIBLE_MATCH_RE.exec(url);
 
@@ -277,7 +280,7 @@ export const fetchStandardTokenContractData = async (
   contractAddress: Address,
   address: Address,
   provider: JsonRpcProvider
-): Promise<{ balance: number; decimals: number; tokenSymbol: string }> => {
+): Promise<{ balance: string; decimals: number; tokenSymbol: string }> => {
   const contract = new Contract(
     contractAddress,
     ERC20ABI,
@@ -291,7 +294,7 @@ export const fetchStandardTokenContractData = async (
   ]);
 
   return {
-    balance: toNumber(balance),
+    balance: toStringValue(balance),
     decimals: toNumber(decimals),
     tokenSymbol: cleanTokenSymbol(symbol),
   };

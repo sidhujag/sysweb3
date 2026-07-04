@@ -1,6 +1,12 @@
-import { BigNumber, normalizeTransactionRequest } from '../../src/ethers-v6';
+import {
+  BigNumber,
+  JsonRpcProvider,
+  normalizeTransactionRequest,
+} from '../../src/ethers-v6';
 
-const { wrapTransactionResponse } = jest.requireActual('../../src/providers');
+const { CustomJsonRpcProvider, wrapTransactionResponse } = jest.requireActual(
+  '../../src/providers'
+);
 
 describe('CustomJsonRpcProvider', () => {
   it('wraps read-only transaction response numeric fields without redefining them', async () => {
@@ -35,5 +41,21 @@ describe('CustomJsonRpcProvider', () => {
   it('normalizes JSON-RPC transaction type values to numbers', () => {
     expect(normalizeTransactionRequest({ type: '0x0' }).type).toBe(0);
     expect(normalizeTransactionRequest({ type: '0x1' }).type).toBe(1);
+  });
+
+  it('forwards block tags for eth_call requests', async () => {
+    const parentCall = jest
+      .spyOn(JsonRpcProvider.prototype, 'call')
+      .mockResolvedValue('0x');
+    const provider = new CustomJsonRpcProvider(new AbortController().signal);
+    const transaction = {
+      to: '0x0000000000000000000000000000000000000001',
+      data: '0x',
+    };
+
+    await expect(provider.call(transaction, 'pending')).resolves.toBe('0x');
+
+    expect(parentCall).toHaveBeenCalledWith(transaction, 'pending');
+    parentCall.mockRestore();
   });
 });

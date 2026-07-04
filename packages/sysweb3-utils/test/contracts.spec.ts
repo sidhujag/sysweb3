@@ -125,7 +125,7 @@ describe('Validate Contract Type in Mumbai Network using contractType function',
 });
 
 describe('Validate ERC20 token metadata', () => {
-  it('Should return number metadata when ethers returns bigint integers', async () => {
+  it('Should preserve exact ERC20 balances when ethers returns bigint integers', async () => {
     const token = await getTokenStandardMetadata(
       '0xa6fa4fb5f76172d178d61b04b0ecd319c5d1c0aa',
       '0x0000000000000000000000000000000000000001',
@@ -133,11 +133,11 @@ describe('Validate ERC20 token metadata', () => {
     );
 
     expect(token).toEqual({
-      balance: 1000000,
+      balance: '1000000000000000001',
       decimals: 18,
       tokenSymbol: 'TEST',
     });
-    expect(typeof token.balance).toBe('number');
+    expect(typeof token.balance).toBe('string');
     expect(typeof token.decimals).toBe('number');
     expect(() => JSON.stringify(token)).not.toThrow();
   });
