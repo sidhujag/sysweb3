@@ -27,6 +27,9 @@ export const isAddress = (value: string): value is Address =>
 
 export const identity = <T = unknown>(arg: T): T => arg;
 
+const toNumber = (value: any): number =>
+  Number(value?.toString ? value.toString() : value);
+
 export const parseNftUrl = (url: string): [string, string] | null => {
   const raribleMatch = RARIBLE_MATCH_RE.exec(url);
 
@@ -108,7 +111,7 @@ export const fetchBalanceOfERC721Contract = async (
 
   const fetchBalanceOfValue = await contract.balanceOf(address);
 
-  return fetchBalanceOfValue;
+  return toNumber(fetchBalanceOfValue);
 };
 
 export const fetchBalanceOfERC1155Contract = async (
@@ -125,7 +128,7 @@ export const fetchBalanceOfERC1155Contract = async (
 
   const fetchBalanceOfValue = await contract.balanceOf(address, tokenId);
 
-  return fetchBalanceOfValue;
+  return toNumber(fetchBalanceOfValue);
 };
 
 export const getERC1155StandardBalance = async (
@@ -288,8 +291,8 @@ export const fetchStandardTokenContractData = async (
   ]);
 
   return {
-    balance,
-    decimals,
+    balance: toNumber(balance),
+    decimals: toNumber(decimals),
     tokenSymbol: cleanTokenSymbol(symbol),
   };
 };

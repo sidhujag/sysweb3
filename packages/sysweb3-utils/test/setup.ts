@@ -47,9 +47,9 @@ jest.mock('ethers', () => {
         }
         // Return different balances for NFTs
         if (lowerAddress === '0x0c702f78b889f25e3347fb978345f7ecf4f3861c') {
-          return Promise.resolve(BigNumber.from('0'));
+          return Promise.resolve(0n);
         }
-        return Promise.resolve(BigNumber.from('1'));
+        return Promise.resolve(1n);
       }),
       supportsInterface: jest
         .fn()

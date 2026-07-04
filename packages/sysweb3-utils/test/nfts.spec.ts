@@ -11,11 +11,8 @@ describe('ERC-721 NFts tests', () => {
       RpcProvider
     );
 
-    const convertBalance = Number(erc721Balance);
-
-    expect(typeof erc721Balance).toBe('object'); // Object of BigNumber
-    expect(typeof convertBalance).toBe('number');
-    expect(convertBalance).toBeLessThanOrEqual(0);
+    expect(typeof erc721Balance).toBe('number');
+    expect(erc721Balance).toBeLessThanOrEqual(0);
   });
 
   it('should return balance greater or equal to 1 from NFT contract', async () => {
@@ -26,10 +23,7 @@ describe('ERC-721 NFts tests', () => {
       RpcProvider
     );
 
-    const convertBalance = Number(erc721Balance);
-
-    expect(typeof erc721Balance).toBe('object'); // Object of BigNumber
-    expect(typeof convertBalance).toBe('number');
-    expect(convertBalance).toBeGreaterThanOrEqual(1);
+    expect(typeof erc721Balance).toBe('number');
+    expect(erc721Balance).toBeGreaterThanOrEqual(1);
   });
 });
