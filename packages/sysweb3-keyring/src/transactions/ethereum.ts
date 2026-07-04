@@ -1795,7 +1795,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         const calculatedTokenAmount = parseUnits(
           tokenAmount as string,
           resolvedDecimals
-        );
+        ).toBigInt();
         let transferMethod;
         if (isLegacy) {
           const overrides = {
@@ -1861,7 +1861,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         const calculatedTokenAmount = parseUnits(
           tokenAmount as string,
           resolvedDecimals
-        );
+        ).toBigInt();
 
         const txData = _contract.interface.encodeFunctionData('transfer', [
           receiver,
@@ -1947,7 +1947,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         const calculatedTokenAmount = parseUnits(
           tokenAmount as string,
           resolvedDecimals
-        );
+        ).toBigInt();
 
         const txData = _contract.interface.encodeFunctionData('transfer', [
           receiver,

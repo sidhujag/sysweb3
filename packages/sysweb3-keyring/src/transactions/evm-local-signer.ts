@@ -187,8 +187,24 @@ export const sendLocalEvmTransaction = async (
       from: account.address,
     } as any);
   }
-  if (tx.type === 0 && !tx.gasPrice) {
+  if (tx.type === 0 && tx.gasPrice == null) {
     tx.gasPrice = await provider.getGasPrice();
+  } else if (
+    tx.gasPrice == null &&
+    (tx.maxFeePerGas == null || tx.maxPriorityFeePerGas == null)
+  ) {
+    const feeData = await provider.getFeeData();
+    if (feeData.maxFeePerGas != null && feeData.maxPriorityFeePerGas != null) {
+      tx.maxFeePerGas = tx.maxFeePerGas ?? feeData.maxFeePerGas;
+      tx.maxPriorityFeePerGas =
+        tx.maxPriorityFeePerGas ?? feeData.maxPriorityFeePerGas;
+      tx.type = tx.type ?? 2;
+    } else if (tx.type !== 2) {
+      tx.gasPrice = feeData.gasPrice ?? (await provider.getGasPrice());
+      tx.type = tx.type ?? 0;
+    } else {
+      throw new Error('EIP-1559 fee data unavailable');
+    }
   }
   if (!tx.data) {
     tx.data = '0x';

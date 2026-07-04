@@ -1,6 +1,7 @@
 import { recoverPersonalSignature } from '@metamask/eth-sig-util';
+import { Transaction } from 'ethers';
 
-import { serializeTransaction } from '../../../src/ethers-v6';
+import { BigNumber, serializeTransaction } from '../../../src/ethers-v6';
 import {
   deriveEvmAccountFromMnemonic,
   hashPersonalMessage,
@@ -96,6 +97,41 @@ describe('EVM local signer', () => {
       })
     ).rejects.toThrow('Transaction from does not match EVM private key');
     expect(provider.sendTransaction).not.toHaveBeenCalled();
+  });
+
+  it('populates EIP-1559 fees before signing local transactions', async () => {
+    const provider = {
+      getNetwork: jest.fn().mockResolvedValue({ chainId: 1 }),
+      getTransactionCount: jest.fn().mockResolvedValue(7),
+      estimateGas: jest.fn().mockResolvedValue(BigNumber.from(21000)),
+      getFeeData: jest.fn().mockResolvedValue({
+        gasPrice: BigNumber.from(100),
+        maxFeePerGas: BigNumber.from(300),
+        maxPriorityFeePerGas: BigNumber.from(20),
+      }),
+      getGasPrice: jest.fn(),
+      sendTransaction: jest
+        .fn()
+        .mockImplementation(async (signedTx: string) => {
+          const decoded = Transaction.from(signedTx);
+          expect(decoded.type).toBe(2);
+          expect(decoded.maxFeePerGas).toBe(300n);
+          expect(decoded.maxPriorityFeePerGas).toBe(20n);
+          return {
+            hash: '0x1234567890123456789012345678901234567890123456789012345678901234',
+          };
+        }),
+    } as any;
+
+    await sendLocalEvmTransaction(provider, PRIVATE_KEY, {
+      to: ADDRESS,
+      value: '0x0',
+      data: '0x',
+    });
+
+    expect(provider.getFeeData).toHaveBeenCalledTimes(1);
+    expect(provider.getGasPrice).not.toHaveBeenCalled();
+    expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
   });
 
   it('signs personal messages in MetaMask-compatible format', () => {
