@@ -34,10 +34,16 @@ const strip0x = (value: string) =>
 const toHex = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex');
 
 export const normalizePrivateKey = (privateKey: string | Uint8Array) => {
-  const bytes =
-    typeof privateKey === 'string'
-      ? Buffer.from(strip0x(privateKey), 'hex')
-      : Buffer.from(privateKey);
+  let bytes: Buffer;
+  if (typeof privateKey === 'string') {
+    const stripped = strip0x(privateKey);
+    if (!/^[0-9a-fA-F]{64}$/.test(stripped)) {
+      throw new Error('Invalid EVM private key');
+    }
+    bytes = Buffer.from(stripped, 'hex');
+  } else {
+    bytes = Buffer.from(privateKey);
+  }
 
   if (bytes.length !== 32 || !ecc.isPrivate(bytes)) {
     throw new Error('Invalid EVM private key');

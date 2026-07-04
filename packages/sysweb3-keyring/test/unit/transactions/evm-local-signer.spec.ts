@@ -62,6 +62,12 @@ describe('EVM local signer', () => {
     expect(() => privateKeyToAccount('0x1234')).toThrow(
       'Invalid EVM private key'
     );
+    expect(() => privateKeyToAccount(PRIVATE_KEY + 'f')).toThrow(
+      'Invalid EVM private key'
+    );
+    expect(() => privateKeyToAccount(PRIVATE_KEY + 'zz')).toThrow(
+      'Invalid EVM private key'
+    );
   });
 
   it('signs a raw 32-byte eth_sign digest deterministically', () => {
