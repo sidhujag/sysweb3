@@ -394,7 +394,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           const rawHex = stripHexPrefix(msg);
           if (rawHex.length % 2 === 0 && isHexString(msg)) {
             // Message is valid hex-encoded bytes.
-            message = Buffer.from(stripHexPrefix(msg), 'hex');
+            message = Buffer.from(rawHex, 'hex');
           } else {
             // Malformed 0x-prefixed strings are literal text, not lossy hex.
             message = Buffer.from(msg, 'utf8');
