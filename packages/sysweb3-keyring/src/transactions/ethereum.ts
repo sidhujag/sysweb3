@@ -58,6 +58,24 @@ import { getAddressDerivationPath } from '../utils/derivation-paths';
 const stripHexPrefix = (value: string) =>
   value.startsWith('0x') || value.startsWith('0X') ? value.slice(2) : value;
 
+const normalizeEthersOverrideValue = (value: any) =>
+  BigNumber.isBigNumber(value) ? BigNumber.from(value).toBigInt() : value;
+
+const normalizeEthersOverrides = (overrides: Record<string, any>) => {
+  const normalized = { ...overrides };
+  for (const field of [
+    'gasLimit',
+    'gasPrice',
+    'maxFeePerGas',
+    'maxPriorityFeePerGas',
+  ]) {
+    if (normalized[field] != null) {
+      normalized[field] = normalizeEthersOverrideValue(normalized[field]);
+    }
+  }
+  return normalized;
+};
+
 export class EthereumTransactions implements IEthereumTransactions {
   private _web3Provider: CustomJsonRpcProvider;
   private _web3ProviderKey?: string;
@@ -1811,7 +1829,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           transferMethod = await _contract.transfer.populateTransaction(
             receiver,
             calculatedTokenAmount,
-            overrides
+            normalizeEthersOverrides(overrides)
           );
         } else {
           const overrides = {
@@ -1827,7 +1845,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           transferMethod = await _contract.transfer.populateTransaction(
             receiver,
             calculatedTokenAmount,
-            overrides
+            normalizeEthersOverrides(overrides)
           );
         }
 
@@ -2091,7 +2109,7 @@ export class EthereumTransactions implements IEthereumTransactions {
             activeAccountAddress,
             receiver,
             tokenId as number,
-            overrides
+            normalizeEthersOverrides(overrides)
           );
         } else {
           const overrides = {
@@ -2107,7 +2125,7 @@ export class EthereumTransactions implements IEthereumTransactions {
             activeAccountAddress,
             receiver,
             tokenId as number,
-            overrides
+            normalizeEthersOverrides(overrides)
           );
         }
 
@@ -2379,7 +2397,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           tokenId as number,
           amount.toBigInt(),
           [],
-          overrides
+          normalizeEthersOverrides(overrides)
         );
         return await sendLocalEvmTransaction(
           this.web3Provider,

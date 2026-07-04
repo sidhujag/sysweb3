@@ -333,7 +333,7 @@ class BaseProvider extends JsonRpcProvider {
     return BigNumber.from(await super.getBalance(address));
   }
 
-  async estimateGas(transaction: any): Promise<any> {
+  private async normalizeLegacyCallRequest(transaction: any) {
     const normalized = normalizeTransactionRequest(transaction);
 
     // Some legacy/non-EIP-1559 RPCs reject a type field on call/estimateGas.
@@ -352,6 +352,16 @@ class BaseProvider extends JsonRpcProvider {
         delete normalized.type;
       }
     }
+
+    return normalized;
+  }
+
+  async call(transaction: any): Promise<any> {
+    return await super.call(await this.normalizeLegacyCallRequest(transaction));
+  }
+
+  async estimateGas(transaction: any): Promise<any> {
+    const normalized = await this.normalizeLegacyCallRequest(transaction);
 
     return BigNumber.from(await super.estimateGas(normalized));
   }
