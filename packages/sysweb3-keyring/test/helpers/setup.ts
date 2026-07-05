@@ -121,6 +121,7 @@ jest.mock('../../src/providers', () => ({
     };
 
     const provider = {
+      verifyConfiguredChainId: jest.fn().mockResolvedValue(undefined),
       getNetwork: jest.fn().mockResolvedValue({ chainId, name }),
       getBalance: jest
         .fn()

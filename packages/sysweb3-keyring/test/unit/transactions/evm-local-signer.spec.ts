@@ -82,6 +82,7 @@ describe('EVM local signer', () => {
 
   it('rejects local transaction signing when from does not match the private key', async () => {
     const provider = {
+      verifyConfiguredChainId: jest.fn().mockResolvedValue(undefined),
       getNetwork: jest.fn().mockResolvedValue({ chainId: 1 }),
       getTransactionCount: jest.fn(),
       estimateGas: jest.fn(),
@@ -107,6 +108,7 @@ describe('EVM local signer', () => {
 
   it('populates EIP-1559 fees before signing local transactions', async () => {
     const provider = {
+      verifyConfiguredChainId: jest.fn().mockResolvedValue(undefined),
       getNetwork: jest.fn().mockResolvedValue({ chainId: 1 }),
       resolveName: jest.fn(),
       getTransactionCount: jest.fn().mockResolvedValue(7),
@@ -138,11 +140,13 @@ describe('EVM local signer', () => {
 
     expect(provider.getFeeData).toHaveBeenCalledTimes(1);
     expect(provider.getGasPrice).not.toHaveBeenCalled();
+    expect(provider.verifyConfiguredChainId).toHaveBeenCalledTimes(1);
     expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
   });
 
   it('resolves named recipients before signing local transactions', async () => {
     const provider = {
+      verifyConfiguredChainId: jest.fn().mockResolvedValue(undefined),
       getNetwork: jest.fn().mockResolvedValue({ chainId: 1 }),
       resolveName: jest.fn().mockResolvedValue(ADDRESS),
       getTransactionCount: jest.fn().mockResolvedValue(7),
@@ -171,11 +175,13 @@ describe('EVM local signer', () => {
     });
 
     expect(provider.resolveName).toHaveBeenCalledWith('alice.eth');
+    expect(provider.verifyConfiguredChainId).toHaveBeenCalledTimes(1);
     expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
   });
 
   it('rejects local transactions with unresolved named recipients', async () => {
     const provider = {
+      verifyConfiguredChainId: jest.fn().mockResolvedValue(undefined),
       getNetwork: jest.fn().mockResolvedValue({ chainId: 1 }),
       resolveName: jest.fn().mockResolvedValue(null),
       getTransactionCount: jest.fn(),
@@ -194,11 +200,13 @@ describe('EVM local signer', () => {
     ).rejects.toThrow('Unable to resolve EVM transaction recipient');
 
     expect(provider.resolveName).toHaveBeenCalledWith('missing.eth');
+    expect(provider.verifyConfiguredChainId).toHaveBeenCalledTimes(1);
     expect(provider.sendTransaction).not.toHaveBeenCalled();
   });
 
   it('populates gasPrice for explicit EIP-2930 local transactions', async () => {
     const provider = {
+      verifyConfiguredChainId: jest.fn().mockResolvedValue(undefined),
       getNetwork: jest.fn().mockResolvedValue({ chainId: 1 }),
       getTransactionCount: jest.fn().mockResolvedValue(7),
       estimateGas: jest.fn().mockResolvedValue(BigNumber.from(21000)),
@@ -228,6 +236,7 @@ describe('EVM local signer', () => {
 
     expect(provider.getGasPrice).toHaveBeenCalledTimes(1);
     expect(provider.getFeeData).not.toHaveBeenCalled();
+    expect(provider.verifyConfiguredChainId).toHaveBeenCalledTimes(1);
     expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
   });
 
