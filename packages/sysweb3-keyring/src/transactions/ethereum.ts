@@ -29,7 +29,6 @@ import {
   formatEther,
   formatUnits,
   isHexString,
-  normalizeTxValue,
   parseUnits,
   resolveProperties,
   serializeTransaction,
@@ -59,7 +58,8 @@ import { getAddressDerivationPath } from '../utils/derivation-paths';
 const stripHexPrefix = (value: string) =>
   value.startsWith('0x') || value.startsWith('0X') ? value.slice(2) : value;
 
-const normalizeEthersOverrideValue = (value: any) => normalizeTxValue(value);
+const normalizeEthersOverrideValue = (value: any) =>
+  BigNumber.isBigNumber(value) ? BigNumber.from(value).toBigInt() : value;
 
 const normalizeEthersOverrides = (overrides: Record<string, any>) => {
   const normalized = { ...overrides };
@@ -1149,32 +1149,6 @@ export class EthereumTransactions implements IEthereumTransactions {
       }
     }
 
-    const txForEstimation = {
-      ...params,
-      from: params.from || activeAccount.address,
-    };
-    if (!params.gasLimit) {
-      params.gasLimit = await this.web3Provider.estimateGas(txForEstimation);
-    }
-    if (isLegacy) {
-      if (!params.gasPrice) {
-        params.gasPrice = await this.web3Provider.getGasPrice();
-      }
-    } else if (!params.maxFeePerGas || !params.maxPriorityFeePerGas) {
-      const feeData = await this.web3Provider.getFeeData();
-      params.maxFeePerGas =
-        params.maxFeePerGas || feeData.maxFeePerGas || feeData.gasPrice;
-      params.maxPriorityFeePerGas =
-        params.maxPriorityFeePerGas || feeData.maxPriorityFeePerGas;
-      if (!params.maxFeePerGas || !params.maxPriorityFeePerGas) {
-        isLegacy = true;
-        params.gasPrice =
-          feeData.gasPrice || (await this.web3Provider.getGasPrice());
-        delete (params as any).maxFeePerGas;
-        delete (params as any).maxPriorityFeePerGas;
-      }
-    }
-
     const sendEVMLedgerTransaction = async () => {
       const transactionNonce = await this.getRecommendedNonce(
         activeAccount.address
@@ -2007,8 +1981,10 @@ export class EthereumTransactions implements IEthereumTransactions {
           txToBeSignedByTrezor = {
             to: tokenAddress,
             value: '0x0',
-            gasLimit: this.toHex0x(effectiveGasLimit, 'gasLimit'),
-            gasPrice: this.toHex0x(gasPrice, 'gasPrice'),
+            // @ts-ignore
+            gasLimit: `${effectiveGasLimit.hex}`,
+            // @ts-ignore
+            gasPrice: `${gasPrice}`,
             nonce: this.toBigNumber(transactionNonce)._hex,
             chainId: activeNetwork.chainId,
             data: txData,
@@ -2017,12 +1993,12 @@ export class EthereumTransactions implements IEthereumTransactions {
           txToBeSignedByTrezor = {
             to: tokenAddress,
             value: '0x0',
-            gasLimit: this.toHex0x(effectiveGasLimit, 'gasLimit'),
-            maxFeePerGas: this.toHex0x(maxFeePerGas, 'maxFeePerGas'),
-            maxPriorityFeePerGas: this.toHex0x(
-              maxPriorityFeePerGas,
-              'maxPriorityFeePerGas'
-            ),
+            // @ts-ignore
+            gasLimit: `${effectiveGasLimit.hex}`,
+            // @ts-ignore
+            maxFeePerGas: `${maxFeePerGas.hex}`,
+            // @ts-ignore
+            maxPriorityFeePerGas: `${maxPriorityFeePerGas.hex}`,
             nonce: this.toBigNumber(transactionNonce)._hex,
             chainId: activeNetwork.chainId,
             data: txData,
@@ -2109,7 +2085,6 @@ export class EthereumTransactions implements IEthereumTransactions {
       this.getState();
     const { address: activeAccountAddress } =
       accounts[activeAccountType][activeAccountId];
-    const normalizedTokenId = BigNumber.from(tokenId ?? 0).toBigInt();
 
     const sendERC721Token = async () => {
       let transferMethod;
@@ -2133,7 +2108,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           transferMethod = await _contract.transferFrom.populateTransaction(
             activeAccountAddress,
             receiver,
-            normalizedTokenId,
+            tokenId as number,
             normalizeEthersOverrides(overrides)
           );
         } else {
@@ -2149,7 +2124,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           transferMethod = await _contract.transferFrom.populateTransaction(
             activeAccountAddress,
             receiver,
-            normalizedTokenId,
+            tokenId as number,
             normalizeEthersOverrides(overrides)
           );
         }
@@ -2182,7 +2157,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         const txData = _contract.interface.encodeFunctionData('transferFrom', [
           activeAccountAddress,
           receiver,
-          normalizedTokenId,
+          tokenId,
         ]);
 
         // Use fallback gas limit if not provided (for auto-estimation)
@@ -2260,7 +2235,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         const txData = _contract.interface.encodeFunctionData('transferFrom', [
           activeAccountAddress,
           receiver,
-          normalizedTokenId,
+          tokenId,
         ]);
 
         // Use fallback gas limit if not provided (for auto-estimation)
@@ -2271,8 +2246,10 @@ export class EthereumTransactions implements IEthereumTransactions {
           txToBeSignedByTrezor = {
             to: tokenAddress,
             value: '0x0',
-            gasLimit: this.toHex0x(effectiveGasLimit, 'gasLimit'),
-            gasPrice: this.toHex0x(gasPrice, 'gasPrice'),
+            // @ts-ignore
+            gasLimit: `${effectiveGasLimit.hex}`,
+            // @ts-ignore
+            gasPrice: `${gasPrice}`,
             nonce: this.toBigNumber(transactionNonce)._hex,
             chainId: activeNetwork.chainId,
             data: txData,
@@ -2282,12 +2259,12 @@ export class EthereumTransactions implements IEthereumTransactions {
           txToBeSignedByTrezor = {
             to: tokenAddress,
             value: '0x0',
-            gasLimit: this.toHex0x(effectiveGasLimit, 'gasLimit'),
-            maxFeePerGas: this.toHex0x(maxFeePerGas, 'maxFeePerGas'),
-            maxPriorityFeePerGas: this.toHex0x(
-              maxPriorityFeePerGas,
-              'maxPriorityFeePerGas'
-            ),
+            // @ts-ignore
+            gasLimit: `${effectiveGasLimit.hex}`,
+            // @ts-ignore
+            maxFeePerGas: `${maxFeePerGas.hex}`,
+            // @ts-ignore
+            maxPriorityFeePerGas: `${maxPriorityFeePerGas.hex}`,
             nonce: this.toBigNumber(transactionNonce)._hex,
             chainId: activeNetwork.chainId,
             data: txData,
@@ -2543,8 +2520,10 @@ export class EthereumTransactions implements IEthereumTransactions {
           txToBeSignedByTrezor = {
             to: tokenAddress,
             value: '0x0',
-            gasLimit: this.toHex0x(effectiveGasLimit, 'gasLimit'),
-            gasPrice: this.toHex0x(gasPrice, 'gasPrice'),
+            // @ts-ignore
+            gasLimit: `${effectiveGasLimit.hex}`,
+            // @ts-ignore
+            gasPrice: `${gasPrice}`,
             nonce: this.toBigNumber(transactionNonce)._hex,
             chainId: activeNetwork.chainId,
             data: txData,
@@ -2553,12 +2532,12 @@ export class EthereumTransactions implements IEthereumTransactions {
           txToBeSignedByTrezor = {
             to: tokenAddress,
             value: '0x0',
-            gasLimit: this.toHex0x(effectiveGasLimit, 'gasLimit'),
-            maxFeePerGas: this.toHex0x(maxFeePerGas, 'maxFeePerGas'),
-            maxPriorityFeePerGas: this.toHex0x(
-              maxPriorityFeePerGas,
-              'maxPriorityFeePerGas'
-            ),
+            // @ts-ignore
+            gasLimit: `${effectiveGasLimit.hex}`,
+            // @ts-ignore
+            maxFeePerGas: `${maxFeePerGas.hex}`,
+            // @ts-ignore
+            maxPriorityFeePerGas: `${maxPriorityFeePerGas.hex}`,
             nonce: this.toBigNumber(transactionNonce)._hex,
             chainId: activeNetwork.chainId,
             data: txData,
@@ -2663,7 +2642,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         to: toAddress,
       });
 
-      return Number(BigNumber.from(estimated).toString());
+      return Number(formatUnits(estimated, 'gwei'));
     } catch (error) {
       throw error;
     }

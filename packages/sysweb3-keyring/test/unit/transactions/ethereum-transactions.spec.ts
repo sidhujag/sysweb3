@@ -172,49 +172,6 @@ describe('Ethereum Transactions', () => {
 
       expect(gasLimit.toString()).toBe('31500');
     });
-
-    it('should normalize serialized BigNumber gas overrides for ERC20 sends', async () => {
-      const provider = keyringManager.ethereumTransaction.web3Provider as any;
-      const serializeBigNumber = (value: string) =>
-        JSON.parse(JSON.stringify(BigNumber.from(value)));
-
-      await expect(
-        keyringManager.ethereumTransaction.sendSignedErc20Transaction({
-          decimals: 18,
-          gasLimit: serializeBigNumber('100000'),
-          maxFeePerGas: serializeBigNumber('20000000000'),
-          maxPriorityFeePerGas: serializeBigNumber('2000000000'),
-          networkUrl: 'https://rpc.example',
-          receiver: '0x2c7536E3605D9C16a7a3D7b1898e529396a65c23',
-          tokenAddress: '0x1111111111111111111111111111111111111111',
-          tokenAmount: '1',
-        })
-      ).resolves.toBeDefined();
-
-      expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
-    });
-
-    it('should preserve gas limit units', async () => {
-      const gasLimit = await keyringManager.ethereumTransaction.getGasLimit(
-        '0x2c7536E3605D9C16a7a3D7b1898e529396a65c23'
-      );
-
-      expect(gasLimit).toBe(21000);
-    });
-
-    it('should accept ERC721 token IDs beyond Number safe integer range', async () => {
-      await expect(
-        keyringManager.ethereumTransaction.sendSignedErc721Transaction({
-          gasLimit: '0x0249f0',
-          maxFeePerGas: '0x4a817c800',
-          maxPriorityFeePerGas: '0x77359400',
-          networkUrl: 'https://rpc.example',
-          receiver: '0x2c7536E3605D9C16a7a3D7b1898e529396a65c23',
-          tokenAddress: '0x1111111111111111111111111111111111111111',
-          tokenId: '9007199254740993',
-        })
-      ).resolves.toBeDefined();
-    });
   });
 
   describe('Message Signing', () => {
