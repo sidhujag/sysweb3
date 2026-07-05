@@ -244,15 +244,15 @@ class BaseProvider extends JsonRpcProvider {
     if (this.configuredChainId == null) return;
     if (!this.chainIdVerificationPromise) {
       this.chainIdVerificationPromise =
-        this.fetchAndVerifyConfiguredChainId().catch((error) => {
+        this.fetchAndVerifyConfiguredChainId().finally(() => {
           this.chainIdVerificationPromise = null;
-          throw error;
         });
     }
     return this.chainIdVerificationPromise;
   }
 
   private async fetchAndVerifyConfiguredChainId(): Promise<void> {
+    this.isPossibleGetChainId = true;
     const actualChainId = parseChainId(await this.send('eth_chainId', []));
     if (actualChainId !== this.configuredChainId) {
       throw new Error(
