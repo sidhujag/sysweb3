@@ -1,4 +1,4 @@
-import { Contract } from 'ethers/contract';
+import { Contract } from 'ethers';
 
 import erc1155Abi from './abi/erc1155.json';
 import erc20Abi from './abi/erc20.json';

@@ -1,5 +1,5 @@
 import { Chain, chains } from 'eth-chains';
-import { toBeHex } from 'ethers/utils';
+import { toBeHex } from 'ethers';
 
 import { findCoin } from './coin-utils';
 // import fetch from "node-fetch";
