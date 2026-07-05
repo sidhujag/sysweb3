@@ -2772,7 +2772,8 @@ export class EthereumTransactions implements IEthereumTransactions {
     } else {
       this._web3Provider = new CustomJsonRpcProvider(
         this.abortController.signal,
-        network.url
+        network.url,
+        network.chainId
       );
       this._web3ProviderKey = `${network.chainId}|${network.url ?? ''}`;
     }

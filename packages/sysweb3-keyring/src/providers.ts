@@ -25,6 +25,23 @@ const TRANSACTION_RECEIPT_BIG_NUMBER_FIELDS = new Set([
   'gasUsed',
 ]);
 
+const FEE_DATA_CACHE_TTL_MS = 5000;
+
+const getChainIdFromNetworkish = (network?: Networkish): number | undefined => {
+  if (network == null) return undefined;
+  if (typeof network === 'number') return network;
+  if (typeof network === 'bigint') return Number(network);
+  const chainId = (network as { chainId?: bigint | number | string }).chainId;
+  if (chainId == null) return undefined;
+  return typeof chainId === 'bigint' ? Number(chainId) : Number(chainId);
+};
+
+const parseChainId = (chainId: bigint | number | string): number => {
+  if (typeof chainId === 'number') return chainId;
+  if (typeof chainId === 'bigint') return Number(chainId);
+  return Number(BigInt(chainId));
+};
+
 const defineValue = (target: any, field: string, value: any) => {
   Object.defineProperty(target, field, {
     value,
@@ -133,6 +150,10 @@ class BaseProvider extends JsonRpcProvider {
   private lastRequestTime = 0;
   private currentChainId = '';
   private currentId = 1;
+  private feeDataCache: { expiresAt: number; value: any } | null = null;
+  private feeDataPromise: Promise<any> | null = null;
+  private readonly configuredChainId?: number;
+  private chainIdVerificationPromise: Promise<void> | null = null;
   public isInCooldown = false;
   public errorMessage: any = '';
   public serverHasAnError = false;
@@ -149,7 +170,12 @@ class BaseProvider extends JsonRpcProvider {
     url?: string | { url: string },
     network?: Networkish
   ) {
-    super(typeof url === 'string' ? url : url?.url, network);
+    super(
+      typeof url === 'string' ? url : url?.url,
+      network,
+      network == null ? undefined : { staticNetwork: true }
+    );
+    this.configuredChainId = getChainIdFromNetworkish(network);
     this.signal = signal;
     this._pendingBatchAggregator = null;
     this._pendingBatch = null;
@@ -213,6 +239,27 @@ class BaseProvider extends JsonRpcProvider {
       return true;
     }
   };
+
+  async verifyConfiguredChainId(): Promise<void> {
+    if (this.configuredChainId == null) return;
+    if (!this.chainIdVerificationPromise) {
+      this.chainIdVerificationPromise =
+        this.fetchAndVerifyConfiguredChainId().finally(() => {
+          this.chainIdVerificationPromise = null;
+        });
+    }
+    return this.chainIdVerificationPromise;
+  }
+
+  private async fetchAndVerifyConfiguredChainId(): Promise<void> {
+    this.isPossibleGetChainId = true;
+    const actualChainId = parseChainId(await this.send('eth_chainId', []));
+    if (actualChainId !== this.configuredChainId) {
+      throw new Error(
+        `Configured EVM chainId ${this.configuredChainId} does not match RPC eth_chainId ${actualChainId}`
+      );
+    }
+  }
 
   private cooldown = async () => {
     const now = Date.now();
@@ -371,11 +418,32 @@ class BaseProvider extends JsonRpcProvider {
   }
 
   async getGasPrice() {
-    const feeData = await super.getFeeData();
-    return BigNumber.from(feeData.gasPrice ?? 0n);
+    return BigNumber.from(await this.send('eth_gasPrice', []));
   }
 
   async getFeeData(): Promise<any> {
+    const now = Date.now();
+    if (this.feeDataCache && this.feeDataCache.expiresAt > now) {
+      return this.feeDataCache.value;
+    }
+    if (this.feeDataPromise) {
+      return this.feeDataPromise;
+    }
+
+    this.feeDataPromise = this.fetchFeeData();
+    try {
+      const value = await this.feeDataPromise;
+      this.feeDataCache = {
+        expiresAt: Date.now() + FEE_DATA_CACHE_TTL_MS,
+        value,
+      };
+      return value;
+    } finally {
+      this.feeDataPromise = null;
+    }
+  }
+
+  private async fetchFeeData(): Promise<any> {
     const feeData = await super.getFeeData();
     let maxFeePerGas =
       feeData.maxFeePerGas == null

@@ -175,6 +175,8 @@ export const sendLocalEvmTransaction = async (
     throw new Error('Transaction from does not match EVM private key');
   }
 
+  await provider.verifyConfiguredChainId();
+
   const tx = normalizeTransactionRequest(
     omit(resolved, ['from', 'ccipReadEnabled', 'customData'])
   ) as TransactionRequest;
