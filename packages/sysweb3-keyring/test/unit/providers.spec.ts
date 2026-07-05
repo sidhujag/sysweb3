@@ -105,6 +105,53 @@ describe('CustomJsonRpcProvider', () => {
     }
   });
 
+  it('coalesces concurrent fee data requests and briefly reuses the result', async () => {
+    const parentFeeData = jest
+      .spyOn(JsonRpcProvider.prototype, 'getFeeData')
+      .mockResolvedValue({
+        gasPrice: 7n,
+        maxFeePerGas: 9n,
+        maxPriorityFeePerGas: 2n,
+      });
+    const provider = new CustomJsonRpcProvider(new AbortController().signal);
+
+    try {
+      const [first, second] = await Promise.all([
+        provider.getFeeData(),
+        provider.getFeeData(),
+      ]);
+      const third = await provider.getFeeData();
+
+      expect(parentFeeData).toHaveBeenCalledTimes(1);
+      expect(first).toEqual({
+        gasPrice: BigNumber.from(7),
+        maxFeePerGas: BigNumber.from(9),
+        maxPriorityFeePerGas: BigNumber.from(2),
+      });
+      expect(second).toBe(first);
+      expect(third).toBe(first);
+    } finally {
+      parentFeeData.mockRestore();
+    }
+  });
+
+  it('fetches gas price without running full ethers fee discovery', async () => {
+    const parentFeeData = jest
+      .spyOn(JsonRpcProvider.prototype, 'getFeeData')
+      .mockRejectedValue(new Error('unexpected fee data call'));
+    const provider = new CustomJsonRpcProvider(new AbortController().signal);
+    const providerSend = jest.spyOn(provider, 'send').mockResolvedValue('0x07');
+
+    try {
+      await expect(provider.getGasPrice()).resolves.toEqual(BigNumber.from(7));
+      expect(parentFeeData).not.toHaveBeenCalled();
+      expect(providerSend).toHaveBeenCalledWith('eth_gasPrice', []);
+    } finally {
+      parentFeeData.mockRestore();
+      providerSend.mockRestore();
+    }
+  });
+
   it('forwards block tags for balance requests', async () => {
     const parentGetBalance = jest
       .spyOn(JsonRpcProvider.prototype, 'getBalance')

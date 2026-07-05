@@ -25,6 +25,8 @@ const TRANSACTION_RECEIPT_BIG_NUMBER_FIELDS = new Set([
   'gasUsed',
 ]);
 
+const FEE_DATA_CACHE_TTL_MS = 5000;
+
 const defineValue = (target: any, field: string, value: any) => {
   Object.defineProperty(target, field, {
     value,
@@ -133,6 +135,8 @@ class BaseProvider extends JsonRpcProvider {
   private lastRequestTime = 0;
   private currentChainId = '';
   private currentId = 1;
+  private feeDataCache: { expiresAt: number; value: any } | null = null;
+  private feeDataPromise: Promise<any> | null = null;
   public isInCooldown = false;
   public errorMessage: any = '';
   public serverHasAnError = false;
@@ -149,7 +153,11 @@ class BaseProvider extends JsonRpcProvider {
     url?: string | { url: string },
     network?: Networkish
   ) {
-    super(typeof url === 'string' ? url : url?.url, network);
+    super(
+      typeof url === 'string' ? url : url?.url,
+      network,
+      network == null ? undefined : { staticNetwork: true }
+    );
     this.signal = signal;
     this._pendingBatchAggregator = null;
     this._pendingBatch = null;
@@ -371,11 +379,32 @@ class BaseProvider extends JsonRpcProvider {
   }
 
   async getGasPrice() {
-    const feeData = await super.getFeeData();
-    return BigNumber.from(feeData.gasPrice ?? 0n);
+    return BigNumber.from(await this.send('eth_gasPrice', []));
   }
 
   async getFeeData(): Promise<any> {
+    const now = Date.now();
+    if (this.feeDataCache && this.feeDataCache.expiresAt > now) {
+      return this.feeDataCache.value;
+    }
+    if (this.feeDataPromise) {
+      return this.feeDataPromise;
+    }
+
+    this.feeDataPromise = this.fetchFeeData();
+    try {
+      const value = await this.feeDataPromise;
+      this.feeDataCache = {
+        expiresAt: Date.now() + FEE_DATA_CACHE_TTL_MS,
+        value,
+      };
+      return value;
+    } finally {
+      this.feeDataPromise = null;
+    }
+  }
+
+  private async fetchFeeData(): Promise<any> {
     const feeData = await super.getFeeData();
     let maxFeePerGas =
       feeData.maxFeePerGas == null
