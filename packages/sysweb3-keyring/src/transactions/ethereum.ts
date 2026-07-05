@@ -924,28 +924,48 @@ export class EthereumTransactions implements IEthereumTransactions {
       gasLimit: tx.gasLimit as BigNumber,
     };
 
-    // Only fetch current gas prices if the original tx has exactly 0 or undefined gas
-    // This avoids unnecessary backend calls for legitimate low-gas networks (L2s, testnets)
     if (isLegacy) {
-      if (!oldTxsGasValues.gasPrice || oldTxsGasValues.gasPrice.isZero()) {
-        // Fetch current network gas price for replacement
-        const currentGasPrice = await this.web3Provider.getGasPrice();
+      const currentGasPrice = await this.web3Provider.getGasPrice();
+
+      if (
+        !oldTxsGasValues.gasPrice ||
+        oldTxsGasValues.gasPrice.isZero() ||
+        oldTxsGasValues.gasPrice.lt(currentGasPrice)
+      ) {
         oldTxsGasValues.gasPrice = currentGasPrice;
       }
     } else {
-      // For EIP-1559 transactions
+      const currentGasPrice = await this.web3Provider.getGasPrice();
+      const feeData = await this.getFeeDataWithDynamicMaxPriorityFeePerGas();
+      const currentMaxFeePerGas = BigNumber.from(feeData.maxFeePerGas || 0);
+      const currentPriorityFeePerGas = BigNumber.from(
+        feeData.maxPriorityFeePerGas || 0
+      );
+      const currentMaxPriorityFeePerGas = currentPriorityFeePerGas.gt(
+        currentGasPrice
+      )
+        ? currentPriorityFeePerGas
+        : currentGasPrice;
+
       if (
         !oldTxsGasValues.maxFeePerGas ||
-        oldTxsGasValues.maxFeePerGas.isZero()
+        oldTxsGasValues.maxFeePerGas.isZero() ||
+        oldTxsGasValues.maxFeePerGas.lt(currentMaxFeePerGas)
       ) {
-        // Fetch current network fee data for replacement
-        const feeData = await this.getFeeDataWithDynamicMaxPriorityFeePerGas();
-        oldTxsGasValues.maxFeePerGas = BigNumber.from(
-          feeData.maxFeePerGas || 0
-        );
-        oldTxsGasValues.maxPriorityFeePerGas = BigNumber.from(
-          feeData.maxPriorityFeePerGas || 0
-        );
+        oldTxsGasValues.maxFeePerGas = currentMaxFeePerGas;
+      }
+
+      if (
+        !oldTxsGasValues.maxPriorityFeePerGas ||
+        oldTxsGasValues.maxPriorityFeePerGas.lt(currentMaxPriorityFeePerGas)
+      ) {
+        oldTxsGasValues.maxPriorityFeePerGas = currentMaxPriorityFeePerGas;
+      }
+
+      if (
+        oldTxsGasValues.maxFeePerGas.lt(oldTxsGasValues.maxPriorityFeePerGas)
+      ) {
+        oldTxsGasValues.maxFeePerGas = oldTxsGasValues.maxPriorityFeePerGas;
       }
     }
 
