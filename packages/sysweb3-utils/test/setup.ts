@@ -1,6 +1,13 @@
-// Mock @ethersproject/contracts
-jest.mock('@ethersproject/contracts', () => {
-  const { BigNumber } = jest.requireActual('@ethersproject/bignumber');
+// Mock ethers
+const BigNumber = {
+  from: (value: string | number | bigint) => ({
+    toString: () => String(value),
+    valueOf: () => Number(value),
+  }),
+};
+
+jest.mock('ethers', () => {
+  const actual = jest.requireActual('ethers');
 
   const MockContract = jest.fn().mockImplementation((address: string) => {
     const lowerAddress = address.toLowerCase();
@@ -11,7 +18,12 @@ jest.mock('@ethersproject/contracts', () => {
       '0xd19018f7946d518d316bb10fdff118c28835cf7a',
     ];
     const erc1155Addresses = ['0xaa54a8e8bdea1aa7e2ed7e5f681c798a8ed7e5ab'];
-    const erc20Addresses = ['0xa6fa4fb5f76172d178d61b04b0ecd319c5d1c0aa'];
+    const zeroDecimalErc20Address =
+      '0x0000000000000000000000000000000000000020';
+    const erc20Addresses = [
+      '0xa6fa4fb5f76172d178d61b04b0ecd319c5d1c0aa',
+      zeroDecimalErc20Address,
+    ];
 
     const isERC721 = erc721Addresses.some(
       (a) => a.toLowerCase() === lowerAddress
@@ -27,17 +39,20 @@ jest.mock('@ethersproject/contracts', () => {
       balanceOf: jest.fn().mockImplementation(async () => {
         // For ERC20 type detection, return balance even when checking contract's own balance
         if (isERC20) {
-          return Promise.resolve(BigNumber.from('1000000'));
+          return Promise.resolve(1000000000000000001n);
         }
         // For unknown contracts that don't support any standard, throw error
         if (!isERC721 && !isERC1155 && !isERC20) {
           throw new Error('Contract does not support balanceOf');
         }
+        if (isERC1155) {
+          return Promise.resolve(1000000000000000001n);
+        }
         // Return different balances for NFTs
         if (lowerAddress === '0x0c702f78b889f25e3347fb978345f7ecf4f3861c') {
-          return Promise.resolve(BigNumber.from('0'));
+          return Promise.resolve(0n);
         }
-        return Promise.resolve(BigNumber.from('1'));
+        return Promise.resolve(1n);
       }),
       supportsInterface: jest
         .fn()
@@ -56,109 +71,102 @@ jest.mock('@ethersproject/contracts', () => {
       tokenURI: jest.fn().mockResolvedValue('https://example.com/token/1'),
       symbol: jest.fn().mockResolvedValue('TEST'),
       name: jest.fn().mockResolvedValue('Test Token'),
-      decimals: jest.fn().mockResolvedValue(18),
+      decimals: jest
+        .fn()
+        .mockResolvedValue(lowerAddress === zeroDecimalErc20Address ? 0n : 18),
     };
   });
 
   return {
+    ...actual,
     Contract: MockContract,
-  };
-});
+    JsonRpcProvider: jest
+      .fn()
+      .mockImplementation(function (this: any, _url?: string) {
+        this._isProvider = true;
+        this._network = { chainId: 80001, name: 'mumbai' };
+        this.connection = { url: _url || 'http://localhost:8545' };
+        this._networkPromise = Promise.resolve({
+          chainId: 80001,
+          name: 'mumbai',
+        });
 
-// Mock @ethersproject/providers
-jest.mock('@ethersproject/providers', () => {
-  const { BigNumber } = jest.requireActual('@ethersproject/bignumber');
+        this.getNetwork = async () => ({ chainId: 80001, name: 'mumbai' });
+        this.detectNetwork = async () => ({ chainId: 80001, name: 'mumbai' });
+        this.ready = Promise.resolve({ chainId: 80001, name: 'mumbai' });
 
-  const MockJsonRpcProvider = jest
-    .fn()
-    .mockImplementation(function (this: any, _url?: string) {
-      this._isProvider = true;
-      this._network = { chainId: 80001, name: 'mumbai' };
-      this.connection = { url: _url || 'http://localhost:8545' };
-      this._networkPromise = Promise.resolve({
-        chainId: 80001,
-        name: 'mumbai',
-      });
+        Object.defineProperty(this, 'network', {
+          get: () => ({ chainId: 80001, name: 'mumbai' }),
+        });
 
-      this.getNetwork = async () => ({ chainId: 80001, name: 'mumbai' });
-      this.detectNetwork = async () => ({ chainId: 80001, name: 'mumbai' });
-      this.ready = Promise.resolve({ chainId: 80001, name: 'mumbai' });
+        this.getBalance = async () => {
+          return BigNumber.from('1000000000000000000');
+        };
 
-      Object.defineProperty(this, 'network', {
-        get: () => ({ chainId: 80001, name: 'mumbai' }),
-      });
+        this.getCode = async (address: string) => {
+          // Return contract code for known contract addresses
+          const contracts = [
+            '0x0c702f78b889f25e3347fb978345f7ecf4f3861c',
+            '0xd19018f7946d518d316bb10fdff118c28835cf7a',
+            '0xaa54a8e8bdea1aa7e2ed7e5f681c798a8ed7e5ab',
+            '0x07865c6e87b9f70255377e024ace6630c1eaa37f',
+            '0x1297228a708602b796fa16e9a7683db9cde09436',
+            '0x628a9db47d7aeb6cf80ebf8c441bb72a83ddb08e',
+            '0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45',
+            '0xa6fa4fb5f76172d178d61b04b0ecd319c5d1c0aa',
+          ];
 
-      this.getBalance = async () => {
-        return BigNumber.from('1000000000000000000');
-      };
+          // Handle case-insensitive comparison
+          const normalizedAddress = address.toLowerCase();
+          const isContract = contracts.some(
+            (c) => normalizedAddress === c.toLowerCase()
+          );
 
-      this.getCode = async (address: string) => {
-        // Return contract code for known contract addresses
-        const contracts = [
-          '0x0c702f78b889f25e3347fb978345f7ecf4f3861c',
-          '0xd19018f7946d518d316bb10fdff118c28835cf7a',
-          '0xaa54a8e8bdea1aa7e2ed7e5f681c798a8ed7e5ab',
-          '0x07865c6e87b9f70255377e024ace6630c1eaa37f',
-          '0x1297228a708602b796fa16e9a7683db9cde09436',
-          '0x628a9db47d7aeb6cf80ebf8c441bb72a83ddb08e',
-          '0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45',
-          '0xa6fa4fb5f76172d178d61b04b0ecd319c5d1c0aa',
-        ];
+          return isContract ? '0x608060405234801561001057600080fd5b50' : '0x';
+        };
 
-        // Handle case-insensitive comparison
-        const normalizedAddress = address.toLowerCase();
-        const isContract = contracts.some(
-          (c) => normalizedAddress === c.toLowerCase()
-        );
-
-        return isContract ? '0x608060405234801561001057600080fd5b50' : '0x';
-      };
-
-      this.call = async (transaction: any) => {
-        // Mock contract calls for ERC721 balanceOf
-        if (transaction.data && transaction.data.startsWith('0x70a08231')) {
-          // Return balance based on the contract address
-          if (
-            transaction.to.toLowerCase() ===
-            '0x0c702f78b889f25e3347fb978345f7ecf4f3861c'
-          ) {
-            return '0x0000000000000000000000000000000000000000000000000000000000000000'; // 0
-          } else {
-            return '0x0000000000000000000000000000000000000000000000000000000000000001'; // 1
+        this.call = async (transaction: any) => {
+          // Mock contract calls for ERC721 balanceOf
+          if (transaction.data && transaction.data.startsWith('0x70a08231')) {
+            // Return balance based on the contract address
+            if (
+              transaction.to.toLowerCase() ===
+              '0x0c702f78b889f25e3347fb978345f7ecf4f3861c'
+            ) {
+              return '0x0000000000000000000000000000000000000000000000000000000000000000'; // 0
+            } else {
+              return '0x0000000000000000000000000000000000000000000000000000000000000001'; // 1
+            }
           }
-        }
-        return '0x0000000000000000000000000000000000000000000000000000000000000001';
-      };
+          return '0x0000000000000000000000000000000000000000000000000000000000000001';
+        };
 
-      this.estimateGas = async () => {
-        return BigNumber.from('21000');
-      };
+        this.estimateGas = async () => {
+          return BigNumber.from('21000');
+        };
 
-      // Add send method for JSON-RPC calls
-      this.send = async (method: string, params: any[]) => {
-        if (method === 'eth_chainId') {
-          return '0x13881'; // 80001 in hex
-        }
-        if (method === 'net_version') {
-          return '80001';
-        }
-        if (method === 'eth_getCode') {
-          return this.getCode(params[0]);
-        }
-        return null;
-      };
+        // Add send method for JSON-RPC calls
+        this.send = async (method: string, params: any[]) => {
+          if (method === 'eth_chainId') {
+            return '0x13881'; // 80001 in hex
+          }
+          if (method === 'net_version') {
+            return '80001';
+          }
+          if (method === 'eth_getCode') {
+            return this.getCode(params[0]);
+          }
+          return null;
+        };
 
-      // Add perform method
-      this.perform = async (method: string, params: any) => {
-        if (method === 'getCode') {
-          return this.getCode(params.address);
-        }
-        return null;
-      };
-    });
-
-  return {
-    JsonRpcProvider: MockJsonRpcProvider,
+        // Add perform method
+        this.perform = async (method: string, params: any) => {
+          if (method === 'getCode') {
+            return this.getCode(params.address);
+          }
+          return null;
+        };
+      }),
   };
 });
 

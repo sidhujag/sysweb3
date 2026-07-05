@@ -1,4 +1,4 @@
-import { Contract } from '@ethersproject/contracts';
+import { Contract } from 'ethers';
 
 import erc1155Abi from './abi/erc1155.json';
 import erc20Abi from './abi/erc20.json';
@@ -46,7 +46,7 @@ export const getContractType = async (
         );
         const balanceOf = await contractERC20.balanceOf(contractAddress);
 
-        if (typeof balanceOf === 'object') {
+        if (typeof balanceOf === 'bigint' || typeof balanceOf === 'object') {
           return { type: 'ERC-20' };
         }
         throw new Error('ERC-20');

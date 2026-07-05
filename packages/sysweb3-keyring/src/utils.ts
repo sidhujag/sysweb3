@@ -1,7 +1,28 @@
-import { isHexString } from '@ethersproject/bytes';
-import { Logger } from '@ethersproject/logger';
+import { isHexString } from './ethers-v6';
 
-const logger = new Logger('utils');
+const Logger = {
+  errors: {
+    CALL_EXCEPTION: 'CALL_EXCEPTION',
+    INSUFFICIENT_FUNDS: 'INSUFFICIENT_FUNDS',
+    NONCE_EXPIRED: 'NONCE_EXPIRED',
+    REPLACEMENT_UNDERPRICED: 'REPLACEMENT_UNDERPRICED',
+    SERVER_ERROR: 'SERVER_ERROR',
+    UNPREDICTABLE_GAS_LIMIT: 'UNPREDICTABLE_GAS_LIMIT',
+    UNSUPPORTED_OPERATION: 'UNSUPPORTED_OPERATION',
+  },
+};
+
+const logger = {
+  throwError(message: string, code: string, info?: Record<string, any>): never {
+    const err = new Error(message) as Error & {
+      code?: string;
+      [key: string]: any;
+    };
+    err.code = code;
+    if (info) Object.assign(err, info);
+    throw err;
+  },
+};
 
 const errorGas = ['call', 'estimateGas'];
 

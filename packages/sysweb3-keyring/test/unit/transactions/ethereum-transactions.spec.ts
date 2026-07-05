@@ -1,8 +1,12 @@
-import { BigNumber } from '@ethersproject/bignumber';
-import { encrypt, SignTypedDataVersion } from '@metamask/eth-sig-util';
+import {
+  encrypt,
+  recoverPersonalSignature,
+  SignTypedDataVersion,
+} from '@metamask/eth-sig-util';
 import { INetworkType } from '@sidhujag/sysweb3-network';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
+import { BigNumber } from '../../../src/ethers-v6';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
 import { setupMocks } from '../../helpers/setup';
 
@@ -65,6 +69,25 @@ describe('Ethereum Transactions', () => {
       expect(feeData).toBeDefined();
       expect(feeData.maxFeePerGas).toBeDefined();
       expect(feeData.maxPriorityFeePerGas).toBeDefined();
+    });
+
+    it('should treat zero base fee blocks as EIP-1559 compatible', async () => {
+      const provider = keyringManager.ethereumTransaction.web3Provider as any;
+      provider.getBlock.mockResolvedValueOnce({
+        number: 12345,
+        timestamp: Math.floor(Date.now() / 1000),
+        baseFeePerGas: 0n,
+        gasLimit: BigNumber.from('30000000'),
+        gasUsed: BigNumber.from('21000'),
+        transactions: [],
+        hash: '0x1234567890123456789012345678901234567890123456789012345678901234',
+      });
+
+      const feeData =
+        await keyringManager.ethereumTransaction.getFeeDataWithDynamicMaxPriorityFeePerGas();
+
+      expect(feeData.maxFeePerGas.isZero()).toBe(false);
+      expect(feeData.maxPriorityFeePerGas.isZero()).toBe(false);
     });
 
     it('should estimate gas limit', async () => {
@@ -176,6 +199,21 @@ describe('Ethereum Transactions', () => {
 
       expect(signature).toBeDefined();
       expect(signature.startsWith('0x')).toBe(true);
+    });
+
+    it('should sign malformed 0x-prefixed personal messages as text', async () => {
+      const address = keyringManager.getActiveAccount().activeAccount.address;
+      const signature =
+        await keyringManager.ethereumTransaction.signPersonalMessage([
+          '0xhello',
+          address,
+        ]);
+      const recovered = recoverPersonalSignature({
+        data: '0xhello',
+        signature,
+      });
+
+      expect(recovered.toLowerCase()).toBe(address.toLowerCase());
     });
 
     it('should verify personal message signature', () => {
@@ -371,6 +409,9 @@ describe('Ethereum Transactions', () => {
 
       expect(bigNumber._isBigNumber).toBe(true);
       expect(bigNumber._hex).toBe('0x03e8'); // Updated to match actual format
+      expect(JSON.stringify({ gasLimit: bigNumber })).toBe(
+        '{"gasLimit":{"type":"BigNumber","hex":"0x03e8"}}'
+      );
     });
   });
 

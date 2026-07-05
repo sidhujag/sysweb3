@@ -16,7 +16,6 @@ import { address } from '@trezor/utxo-lib';
 import bitcoinops from 'bitcoin-ops';
 import { Psbt } from 'bitcoinjs-lib';
 import { Buffer } from 'buffer';
-import { stripHexPrefix } from 'ethereumjs-util';
 import * as syscoinjs from 'syscoinjs-lib';
 
 import {
@@ -36,6 +35,8 @@ const { fromBase58Check, fromBech32 } = address;
 
 const initialHDPath = `m/44'/60'/0'/0/0`;
 const DELAY_BETWEEN_POPUPS = 2000; // Increased from 1000ms to 2000ms for more reliable operation
+const stripHexPrefix = (value: string) =>
+  value.startsWith('0x') || value.startsWith('0X') ? value.slice(2) : value;
 
 export interface TrezorControllerState {
   hdPath: string;

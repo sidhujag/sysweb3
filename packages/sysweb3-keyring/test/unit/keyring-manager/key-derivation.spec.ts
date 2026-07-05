@@ -1,7 +1,7 @@
-import { Wallet } from '@ethersproject/wallet';
 import { INetworkType } from '@sidhujag/sysweb3-network';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
+import { privateKeyToAccount } from '../../../src/transactions/evm-local-signer';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
 import { setupMocks } from '../../helpers/setup';
 
@@ -100,7 +100,7 @@ describe('KeyringManager - Key Derivation', () => {
       );
 
       // Verify it derives the correct address
-      const wallet = new Wallet(privateKey0);
+      const wallet = privateKeyToAccount(privateKey0);
       const account = keyringManager.getActiveAccount().activeAccount;
       expect(wallet.address.toLowerCase()).toBe(account.address.toLowerCase());
     });
@@ -438,8 +438,94 @@ describe('KeyringManager - Key Derivation', () => {
       expect(retrievedKey).toBe(privateKey);
 
       // Verify address matches the private key
-      const wallet = new Wallet(privateKey);
+      const wallet = privateKeyToAccount(privateKey);
       expect(imported.address.toLowerCase()).toBe(wallet.address.toLowerCase());
+    });
+
+    it('should normalize EVM private keys without 0x when importing', async () => {
+      currentVaultState = createMockVaultState({
+        activeAccountId: 0,
+        activeAccountType: KeyringAccountType.HDAccount,
+        networkType: INetworkType.Ethereum,
+        chainId: 1,
+      });
+      mockVaultStateGetter = jest.fn(() => currentVaultState);
+
+      keyringManager = await KeyringManager.createInitialized(
+        PEACE_SEED_PHRASE,
+        FAKE_PASSWORD,
+        mockVaultStateGetter
+      );
+
+      const privateKey =
+        '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+      const imported = await keyringManager.importAccount(privateKey);
+
+      currentVaultState.accounts[KeyringAccountType.Imported][imported.id] = {
+        id: imported.id,
+        label: 'Imported 1',
+        address: imported.address,
+        xpub: imported.xpub,
+        xprv: imported.xprv,
+        isImported: true,
+        isTrezorWallet: false,
+        isLedgerWallet: false,
+        balances: { syscoin: 0, ethereum: 0 },
+        assets: { syscoin: [], ethereum: [] },
+      };
+
+      expect(imported.address).toBe(
+        '0xFCAd0B19bB29D4674531d6f115237E16AfCE377c'
+      );
+      await expect(
+        keyringManager.getPrivateKeyByAccountId(
+          imported.id,
+          KeyringAccountType.Imported,
+          FAKE_PASSWORD
+        )
+      ).resolves.toBe(`0x${privateKey}`);
+    });
+
+    it('should reject invalid EVM private key scalars during import', async () => {
+      currentVaultState = createMockVaultState({
+        activeAccountId: 0,
+        activeAccountType: KeyringAccountType.HDAccount,
+        networkType: INetworkType.Ethereum,
+        chainId: 1,
+      });
+      mockVaultStateGetter = jest.fn(() => currentVaultState);
+
+      keyringManager = await KeyringManager.createInitialized(
+        PEACE_SEED_PHRASE,
+        FAKE_PASSWORD,
+        mockVaultStateGetter
+      );
+
+      await expect(
+        keyringManager.importAccount(`0x${'00'.repeat(32)}`)
+      ).rejects.toThrow('Invalid EVM private key');
+    });
+
+    it('should reject EVM private keys on UTXO networks', async () => {
+      currentVaultState = createMockVaultState({
+        activeAccountId: 0,
+        activeAccountType: KeyringAccountType.HDAccount,
+        networkType: INetworkType.Syscoin,
+        chainId: 57,
+      });
+      mockVaultStateGetter = jest.fn(() => currentVaultState);
+
+      keyringManager = await KeyringManager.createInitialized(
+        PEACE_SEED_PHRASE,
+        FAKE_PASSWORD,
+        mockVaultStateGetter
+      );
+
+      await expect(
+        keyringManager.importAccount(
+          '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+        )
+      ).rejects.toThrow('Cannot import EVM private key on UTXO network');
     });
 
     it('should handle imported zprv for UTXO', async () => {

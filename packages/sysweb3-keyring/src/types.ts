@@ -1,8 +1,3 @@
-import { TransactionResponse } from '@ethersproject/abstract-provider';
-import { BigNumber, BigNumberish } from '@ethersproject/bignumber';
-import { BytesLike } from '@ethersproject/bytes';
-import { AccessListish } from '@ethersproject/transactions';
-import { Wallet } from '@ethersproject/wallet';
 import {
   TypedDataV1,
   TypedMessage,
@@ -12,9 +7,20 @@ import { INetwork, INetworkType } from '@sidhujag/sysweb3-network';
 import { ITxid } from '@sidhujag/sysweb3-utils';
 import { CustomJsonRpcProvider } from 'providers';
 
+import {
+  BigNumber,
+  BigNumberish,
+  BytesLike,
+  TransactionResponse,
+} from './ethers-v6';
 import { LedgerKeyring } from './ledger';
 import { SyscoinHDSigner } from './signers';
 import { TrezorKeyring } from './trezor';
+
+export type AccessListish =
+  | Array<{ address: string; storageKeys: string[] }>
+  | Array<[string, string[]]>
+  | Record<string, string[]>;
 
 export type SimpleTransactionRequest = {
   accessList?: AccessListish;
@@ -38,6 +44,12 @@ export type SimpleTransactionRequest = {
   type?: number;
   v?: string;
   value?: BigNumberish;
+};
+
+export type EvmLocalAccount = {
+  address: string;
+  privateKey: string;
+  publicKey: string;
 };
 
 // Version type is now replaced by SignTypedDataVersion from @metamask/eth-sig-util
@@ -72,7 +84,7 @@ export interface IEthereumTransactions {
     version: SignTypedDataVersion
   ) => Promise<string>;
 
-  importAccount: (mnemonicOrPrivKey: string) => Wallet;
+  importAccount: (mnemonicOrPrivKey: string) => EvmLocalAccount;
   parsePersonalMessage: (hexMsg: string) => string;
   sendFormattedTransaction: (
     params: SimpleTransactionRequest,

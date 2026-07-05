@@ -1,17 +1,11 @@
-import {
-  Contract,
-  type ContractFunction,
-  type Event,
-} from '@ethersproject/contracts';
 import { retryableFetch } from '@sidhujag/sysweb3-network';
+import { Contract, type EventLog, type JsonRpcProvider } from 'ethers';
 import * as sys from 'syscoinjs-lib';
 
 import { createContractUsingAbi } from '.';
 import ABI1155 from './abi/erc1155.json';
 import abi20 from './abi/erc20.json';
 import ABI721 from './abi/erc721.json';
-
-import type { JsonRpcProvider } from '@ethersproject/providers';
 
 const COINGECKO_API = 'https://api.coingecko.com/api/v3';
 
@@ -32,6 +26,12 @@ export const isAddress = (value: string): value is Address =>
   /^0x[a-fA-F0-9]{40}$/.test(value);
 
 export const identity = <T = unknown>(arg: T): T => arg;
+
+const toNumber = (value: any): number =>
+  Number(value?.toString ? value.toString() : value);
+
+const toStringValue = (value: any): string =>
+  value?.toString ? value.toString() : String(value);
 
 export const parseNftUrl = (url: string): [string, string] | null => {
   const raribleMatch = RARIBLE_MATCH_RE.exec(url);
@@ -81,20 +81,9 @@ export const ERC20ABI = [
   'event Transfer(address indexed from, address indexed to, uint amount)',
 ];
 
-type NftContract = InstanceType<typeof Contract> & {
-  balanceOf: ContractFunction<number>;
-  ownerOf: ContractFunction<string>;
-  tokenURI: ContractFunction<string>;
-  uri: ContractFunction<string>;
-};
+type NftContract = any;
 
-type TokenContract = InstanceType<typeof Contract> & {
-  Transfer: Event;
-  balanceOf: ContractFunction<number>;
-  decimals: ContractFunction<number>;
-  symbol: ContractFunction<string>;
-  transfer: ContractFunction<any>;
-};
+type TokenContract = any;
 
 export const url = async (
   contract: NftContract,
@@ -125,7 +114,7 @@ export const fetchBalanceOfERC721Contract = async (
 
   const fetchBalanceOfValue = await contract.balanceOf(address);
 
-  return fetchBalanceOfValue;
+  return toNumber(fetchBalanceOfValue);
 };
 
 export const fetchBalanceOfERC1155Contract = async (
@@ -133,7 +122,7 @@ export const fetchBalanceOfERC1155Contract = async (
   address: string,
   provider: JsonRpcProvider,
   tokenId: number
-): Promise<number | undefined> => {
+): Promise<string | undefined> => {
   const contract = new Contract(
     contractAddress,
     ABI1155,
@@ -142,7 +131,7 @@ export const fetchBalanceOfERC1155Contract = async (
 
   const fetchBalanceOfValue = await contract.balanceOf(address, tokenId);
 
-  return fetchBalanceOfValue;
+  return toStringValue(fetchBalanceOfValue);
 };
 
 export const getERC1155StandardBalance = async (
@@ -291,7 +280,7 @@ export const fetchStandardTokenContractData = async (
   contractAddress: Address,
   address: Address,
   provider: JsonRpcProvider
-): Promise<{ balance: number; decimals: number; tokenSymbol: string }> => {
+): Promise<{ balance: string; decimals: number; tokenSymbol: string }> => {
   const contract = new Contract(
     contractAddress,
     ERC20ABI,
@@ -305,8 +294,8 @@ export const fetchStandardTokenContractData = async (
   ]);
 
   return {
-    balance,
-    decimals,
+    balance: toStringValue(balance),
+    decimals: toNumber(decimals),
     tokenSymbol: cleanTokenSymbol(symbol),
   };
 };
@@ -527,13 +516,21 @@ export const validateToken = async (
   try {
     const contract = createContractUsingAbi(abi20, address, web3Provider);
 
-    const [decimals, name, symbol]: IErc20Token[] = await Promise.all([
-      contract.methods.decimals().call(),
-      contract.methods.name().call(),
-      contract.methods.symbol().call(),
-    ]);
+    const methods = (contract as any).methods;
+    const [decimals, name, symbol]: IErc20Token[] = methods
+      ? await Promise.all([
+          methods.decimals().call(),
+          methods.name().call(),
+          methods.symbol().call(),
+        ])
+      : await Promise.all([
+          (contract as any).decimals(),
+          (contract as any).name(),
+          (contract as any).symbol(),
+        ]);
 
-    const validToken = decimals && name && symbol;
+    const validToken =
+      decimals !== null && decimals !== undefined && name && symbol;
 
     if (validToken) {
       return {
@@ -809,7 +806,7 @@ export type NftResultError = {
   status: 'error';
 };
 
-export type IQueryFilterResult = Promise<Array<Event>>;
+export type IQueryFilterResult = Promise<Array<EventLog>>;
 
 export type NftResult = NftResultLoading | NftResultError | NftResultDone;
 

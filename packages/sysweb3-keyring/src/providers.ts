@@ -1,13 +1,108 @@
-import { BigNumber } from '@ethersproject/bignumber';
-import { Logger } from '@ethersproject/logger';
-import { Networkish } from '@ethersproject/networks';
-import { shallowCopy } from '@ethersproject/properties';
-import { JsonRpcProvider } from '@ethersproject/providers';
-
 import { handleStatusCodeError } from './errorUtils';
-import { checkError } from './utils';
+import {
+  BigNumber,
+  JsonRpcProvider,
+  normalizeTransactionRequest,
+  type Networkish,
+} from './ethers-v6';
 
-const logger = new Logger('sysweb3-keyring/providers');
+const TRANSACTION_RESPONSE_BIG_NUMBER_FIELDS = new Set([
+  'gasLimit',
+  'gasPrice',
+  'maxFeePerGas',
+  'maxPriorityFeePerGas',
+  'value',
+]);
+
+const TRANSACTION_RESPONSE_NUMBER_FIELDS = new Set(['chainId']);
+
+const TRANSACTION_RECEIPT_BIG_NUMBER_FIELDS = new Set([
+  'blobGasPrice',
+  'blobGasUsed',
+  'cumulativeGasUsed',
+  'effectiveGasPrice',
+  'gasPrice',
+  'gasUsed',
+]);
+
+const defineValue = (target: any, field: string, value: any) => {
+  Object.defineProperty(target, field, {
+    value,
+    configurable: true,
+    enumerable: true,
+    writable: true,
+  });
+};
+
+const wrapBigNumberFields = (
+  source: any,
+  fields: Set<string>,
+  omittedFields: Set<string> = fields
+) => {
+  if (!source) return source;
+  const wrapped = Object.create(Object.getPrototypeOf(source));
+  const descriptors = Object.getOwnPropertyDescriptors(source);
+  for (const field of omittedFields) {
+    delete descriptors[field];
+  }
+  Object.defineProperties(wrapped, descriptors);
+
+  for (const field of fields) {
+    if (source[field] != null) {
+      defineValue(wrapped, field, BigNumber.from(source[field]));
+    }
+  }
+
+  return wrapped;
+};
+
+export const wrapTransactionReceipt = (receipt: any) => {
+  const wrapped = wrapBigNumberFields(
+    receipt,
+    TRANSACTION_RECEIPT_BIG_NUMBER_FIELDS
+  );
+  if (!wrapped) return wrapped;
+
+  return new Proxy(wrapped, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === 'function' ? value.bind(receipt) : value;
+    },
+  });
+};
+
+export const wrapTransactionResponse = (transaction: any) => {
+  if (!transaction) return transaction;
+  const omittedFields = new Set([
+    ...TRANSACTION_RESPONSE_BIG_NUMBER_FIELDS,
+    ...TRANSACTION_RESPONSE_NUMBER_FIELDS,
+    'wait',
+  ]);
+  const wrapped = wrapBigNumberFields(
+    transaction,
+    TRANSACTION_RESPONSE_BIG_NUMBER_FIELDS,
+    omittedFields
+  );
+
+  for (const field of TRANSACTION_RESPONSE_NUMBER_FIELDS) {
+    if (transaction[field] != null) {
+      defineValue(wrapped, field, Number(transaction[field]));
+    }
+  }
+
+  if (typeof transaction.wait === 'function') {
+    defineValue(wrapped, 'wait', async (...args: any[]) =>
+      wrapTransactionReceipt(await transaction.wait(...args))
+    );
+  }
+
+  return new Proxy(wrapped, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === 'function' ? value.bind(transaction) : value;
+    },
+  });
+};
 
 // Preserve JSON-RPC error details (code, revert data) on thrown errors so
 // consumers can decode custom contract errors instead of only seeing
@@ -54,7 +149,7 @@ class BaseProvider extends JsonRpcProvider {
     url?: string | { url: string },
     network?: Networkish
   ) {
-    super(url, network);
+    super(typeof url === 'string' ? url : url?.url, network);
     this.signal = signal;
     this._pendingBatchAggregator = null;
     this._pendingBatch = null;
@@ -134,44 +229,6 @@ class BaseProvider extends JsonRpcProvider {
     };
   };
 
-  async perform(method: string, params: any): Promise<any> {
-    // Legacy networks do not like the type field being passed along (which
-    // is fair), so we delete type if it is 0 and a non-EIP-1559 network
-    if (method === 'call' || method === 'estimateGas') {
-      const tx = params.transaction;
-      if (tx && tx.type != null && BigNumber.from(tx.type).isZero()) {
-        // If there are no EIP-1559 properties, it might be non-EIP-1559
-        if (tx.maxFeePerGas == null && tx.maxPriorityFeePerGas == null) {
-          const feeData = await this.getFeeData();
-          if (
-            feeData.maxFeePerGas == null &&
-            feeData.maxPriorityFeePerGas == null
-          ) {
-            // Network doesn't know about EIP-1559 (and hence type)
-            params = shallowCopy(params);
-            params.transaction = shallowCopy(tx);
-            delete params.transaction.type;
-          }
-        }
-      }
-    }
-
-    const args = this.prepareRequest(method, params);
-
-    if (args == null) {
-      logger.throwError(
-        method + ' not implemented',
-        Logger.errors.NOT_IMPLEMENTED,
-        { operation: method }
-      );
-    }
-    try {
-      return await this.send(args[0], args[1]);
-    } catch (error) {
-      return checkError(method, error, params);
-    }
-  }
-
   override send = async (method: string, params: any[]) => {
     if (!this.isPossibleGetChainId && method === 'eth_chainId') {
       return this.currentChainId;
@@ -194,7 +251,7 @@ class BaseProvider extends JsonRpcProvider {
     };
 
     const result = await this.throttledRequest(() =>
-      fetch(this.connection.url, options)
+      fetch(this._getConnection().url, options)
         .then(async (response) => {
           if (!response.ok) {
             let errorBody = {
@@ -272,7 +329,7 @@ class BaseProvider extends JsonRpcProvider {
     };
 
     const results = await this.throttledRequest(() =>
-      fetch(this.connection.url, options)
+      fetch(this._getConnection().url, options)
         .then(async (response) => {
           if (!response.ok) {
             let errorBody = {
@@ -311,6 +368,109 @@ class BaseProvider extends JsonRpcProvider {
     );
 
     return results;
+  }
+
+  async getGasPrice() {
+    const feeData = await super.getFeeData();
+    return BigNumber.from(feeData.gasPrice ?? 0n);
+  }
+
+  async getFeeData(): Promise<any> {
+    const feeData = await super.getFeeData();
+    let maxFeePerGas =
+      feeData.maxFeePerGas == null
+        ? null
+        : BigNumber.from(feeData.maxFeePerGas);
+    let maxPriorityFeePerGas =
+      feeData.maxPriorityFeePerGas == null
+        ? null
+        : BigNumber.from(feeData.maxPriorityFeePerGas);
+
+    if (maxFeePerGas == null || maxPriorityFeePerGas == null) {
+      const block = await super.getBlock('latest');
+      if (block?.baseFeePerGas != null) {
+        const baseFeePerGas = BigNumber.from(block.baseFeePerGas);
+
+        if (maxPriorityFeePerGas == null) {
+          try {
+            maxPriorityFeePerGas = BigNumber.from(
+              await super.send('eth_maxPriorityFeePerGas', [])
+            );
+          } catch {
+            maxPriorityFeePerGas =
+              feeData.gasPrice == null
+                ? BigNumber.from(0)
+                : BigNumber.from(feeData.gasPrice);
+          }
+        }
+
+        maxFeePerGas =
+          maxFeePerGas ?? baseFeePerGas.mul(2).add(maxPriorityFeePerGas);
+      }
+    }
+
+    return {
+      gasPrice:
+        feeData.gasPrice == null ? null : BigNumber.from(feeData.gasPrice),
+      maxFeePerGas,
+      maxPriorityFeePerGas,
+    };
+  }
+
+  async getBalance(address: string, blockTag?: any): Promise<any> {
+    return BigNumber.from(await super.getBalance(address, blockTag));
+  }
+
+  private async normalizeLegacyCallRequest(transaction: any) {
+    const normalized = normalizeTransactionRequest(transaction);
+
+    // Some legacy/non-EIP-1559 RPCs reject a type field on call/estimateGas.
+    // Preserve the old provider behavior by stripping explicit type 0 only
+    // when the network does not expose EIP-1559 fee fields.
+    if (
+      normalized?.type === 0 &&
+      normalized.maxFeePerGas == null &&
+      normalized.maxPriorityFeePerGas == null
+    ) {
+      const feeData = await super.getFeeData();
+      if (
+        feeData.maxFeePerGas == null &&
+        feeData.maxPriorityFeePerGas == null
+      ) {
+        delete normalized.type;
+      }
+    }
+
+    return normalized;
+  }
+
+  async call(transaction: any, blockTag?: any): Promise<any> {
+    const normalized = await this.normalizeLegacyCallRequest(transaction);
+    if (blockTag != null) {
+      normalized.blockTag = blockTag;
+    }
+
+    return await super.call(normalized);
+  }
+
+  async estimateGas(transaction: any): Promise<any> {
+    const normalized = await this.normalizeLegacyCallRequest(transaction);
+
+    return BigNumber.from(await super.estimateGas(normalized));
+  }
+
+  async getBlock(blockHashOrBlockTag: any): Promise<any> {
+    return await super.getBlock(blockHashOrBlockTag);
+  }
+
+  async getTransaction(hash: string): Promise<any> {
+    return wrapTransactionResponse(await super.getTransaction(hash));
+  }
+
+  async sendTransaction(signedTransaction: string) {
+    return wrapTransactionResponse(
+      await this.broadcastTransaction(signedTransaction)
+    );
   }
 }
 
