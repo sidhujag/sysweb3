@@ -1,18 +1,20 @@
-import { Contract as EthersContract } from 'ethers/contract';
-import { Signature, keccak256 } from 'ethers/crypto';
-import { JsonRpcProvider, type Networkish } from 'ethers/providers';
-import { Transaction } from 'ethers/transaction';
 import {
-  dataSlice,
-  formatEther as formatEtherBase,
-  formatUnits as formatUnitsBase,
+  Contract as EthersContract,
+  JsonRpcProvider,
+  Transaction,
   getAddress,
+  dataSlice,
   hexlify,
   isHexString,
   parseEther as ethersParseEther,
   parseUnits as ethersParseUnits,
+  formatEther as formatEtherBase,
+  formatUnits as formatUnitsBase,
+  keccak256,
+  Signature,
   type BytesLike,
-} from 'ethers/utils';
+  type Networkish,
+} from 'ethers';
 
 export {
   JsonRpcProvider,
