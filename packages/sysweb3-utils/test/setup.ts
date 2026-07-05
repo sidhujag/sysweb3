@@ -170,6 +170,26 @@ jest.mock('ethers', () => {
   };
 });
 
+jest.mock('ethers/contract', () => {
+  const actual = jest.requireActual('ethers/contract');
+  const ethers = jest.requireMock('ethers');
+
+  return {
+    ...actual,
+    Contract: ethers.Contract,
+  };
+});
+
+jest.mock('ethers/providers', () => {
+  const actual = jest.requireActual('ethers/providers');
+  const ethers = jest.requireMock('ethers');
+
+  return {
+    ...actual,
+    JsonRpcProvider: ethers.JsonRpcProvider,
+  };
+});
+
 // Mock fetch for any remaining network calls
 global.fetch = jest.fn().mockImplementation((url) => {
   if (url.includes('coingecko')) {
