@@ -1204,13 +1204,13 @@ export class EthereumTransactions implements IEthereumTransactions {
       if (!params.gasPrice) {
         params.gasPrice = await this.web3Provider.getGasPrice();
       }
-    } else if (!params.maxFeePerGas || !params.maxPriorityFeePerGas) {
+    } else if (!params.maxFeePerGas || params.maxPriorityFeePerGas == null) {
       const feeData = await this.web3Provider.getFeeData();
       params.maxFeePerGas =
         params.maxFeePerGas || feeData.maxFeePerGas || feeData.gasPrice;
       params.maxPriorityFeePerGas =
-        params.maxPriorityFeePerGas || feeData.maxPriorityFeePerGas;
-      if (!params.maxFeePerGas || !params.maxPriorityFeePerGas) {
+        params.maxPriorityFeePerGas ?? feeData.maxPriorityFeePerGas;
+      if (!params.maxFeePerGas || params.maxPriorityFeePerGas == null) {
         isLegacy = true;
         params.gasPrice =
           feeData.gasPrice || (await this.web3Provider.getGasPrice());

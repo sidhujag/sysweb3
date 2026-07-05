@@ -215,6 +215,26 @@ describe('Ethereum Transactions', () => {
         })
       ).resolves.toBeDefined();
     });
+
+    it('should preserve explicit zero priority fee on formatted transactions', async () => {
+      const provider = keyringManager.ethereumTransaction.web3Provider as any;
+      const tx = {
+        from: keyringManager.getActiveAccount().activeAccount.address,
+        to: '0x2c7536E3605D9C16a7a3D7b1898e529396a65c23',
+        value: '0x0',
+        gasLimit: '0x5208',
+        maxFeePerGas: '0x4a817c800',
+        maxPriorityFeePerGas: 0,
+        nonce: '0x0',
+        chainId: 1,
+      };
+
+      await keyringManager.ethereumTransaction.sendFormattedTransaction(tx);
+
+      const signedTx = provider.sendTransaction.mock.calls.at(-1)?.[0];
+      expect(signedTx).toBeDefined();
+      expect(signedTx).toContain('02');
+    });
   });
 
   describe('Message Signing', () => {
