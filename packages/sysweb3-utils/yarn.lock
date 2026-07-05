@@ -553,10 +553,10 @@
   resolved "https://registry.yarnpkg.com/@scure/base/-/base-1.2.6.tgz#ca917184b8231394dd8847509c67a0be522e59f6"
   integrity sha512-g/nm5FgUa//MCj1gV09zTJTaM6KBAHqLN907YVQqf7zC49+DcO4B1so4ZX07Ef10Twr6nuqYEH9GEggFXA4Fmg==
 
-"@sidhujag/sysweb3-network@^1.0.109":
-  version "1.0.109"
-  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-network/-/sysweb3-network-1.0.109.tgz#dc25e4e0938403ef18661d7874d2d8186be7ee98"
-  integrity sha512-ivHoiFMNeCeOIqMofDF0o9+zrEP1Zgq+IoIXGLdqltUoZluQb78ga63mKTeGivZjy3GZ6niMBFVIeSSSFswDog==
+"@sidhujag/sysweb3-network@^1.0.108":
+  version "1.0.108"
+  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-network/-/sysweb3-network-1.0.108.tgz#859d2c1d797b9e50fd5642fad2fc34b91e4e1d4c"
+  integrity sha512-bbx5S8HVmn70Xa72iDyg9iVkIIRlWlirAvQjB/+l0sy+GMb/oqhHKTdAvpPFgcvx0bGXf/HN3rMz7agc0bgLbQ==
   dependencies:
     eth-chains "^1.0.0"
     ethers "^6.17.0"
@@ -3068,10 +3068,10 @@ supports-preserve-symlinks-flag@^1.0.0:
   resolved "https://registry.yarnpkg.com/supports-preserve-symlinks-flag/-/supports-preserve-symlinks-flag-1.0.0.tgz#6eda4bd344a3c94aea376d4cc31bc77311039e09"
   integrity sha512-ot0WnXS9fgdkgIcePe6RHNk1WA8+muPa6cSjeR3V8K27q9BB1rTE3R1p7Hv0z1ZyAc8s6Vvv8DIyWf681MAt0w==
 
-syscoinjs-lib@^1.0.271:
-  version "1.0.271"
-  resolved "https://registry.yarnpkg.com/syscoinjs-lib/-/syscoinjs-lib-1.0.271.tgz#629ac00e56c73ad019fc1398e9f36fe648751f40"
-  integrity sha512-WzFhVgTYSskCsV+61BunaarIhZZnx/YqBF+FRvKEd3T12XPCWwSzXMhnb09WrYq8IyZnR28x78m3ykZlAnAMwA==
+syscoinjs-lib@^1.0.270:
+  version "1.0.270"
+  resolved "https://registry.yarnpkg.com/syscoinjs-lib/-/syscoinjs-lib-1.0.270.tgz#a4a64a95d24ed956b8744c9195eca17c5b328507"
+  integrity sha512-eTnThoGHw5Pz6bxxiZjTDmq5y8MktSYyopXCDAzVXtxxsMDBX/raHsoCPI7qlddHHp8oiViwEq1WnAuzUqGxcQ==
   dependencies:
     "@bitcoinerlab/secp256k1" "^1.2.0"
     axios "^1.18.1"
