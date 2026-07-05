@@ -2,6 +2,10 @@ declare module 'ethers/contract' {
   export { Contract } from 'ethers';
 }
 
+declare module 'ethers/address' {
+  export { getAddress } from 'ethers';
+}
+
 declare module 'ethers/crypto' {
   export { Signature, keccak256 } from 'ethers';
 }
@@ -20,7 +24,6 @@ declare module 'ethers/utils' {
     dataSlice,
     formatEther,
     formatUnits,
-    getAddress,
     hexlify,
     isHexString,
     parseEther,

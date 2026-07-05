@@ -1,3 +1,4 @@
+import { getAddress } from 'ethers/address';
 import { Contract as EthersContract } from 'ethers/contract';
 import { Signature, keccak256 } from 'ethers/crypto';
 import { JsonRpcProvider, type Networkish } from 'ethers/providers';
@@ -6,7 +7,6 @@ import {
   dataSlice,
   formatEther as formatEtherBase,
   formatUnits as formatUnitsBase,
-  getAddress,
   hexlify,
   isHexString,
   parseEther as ethersParseEther,
