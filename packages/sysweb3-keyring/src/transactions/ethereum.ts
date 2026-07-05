@@ -591,6 +591,50 @@ export class EthereumTransactions implements IEthereumTransactions {
     }
   };
 
+  private resolveEvmFeeParams = async ({
+    gasPrice,
+    isLegacy = false,
+    maxFeePerGas,
+    maxPriorityFeePerGas,
+  }: {
+    gasPrice?: any;
+    isLegacy?: boolean;
+    maxFeePerGas?: any;
+    maxPriorityFeePerGas?: any;
+  }) => {
+    if (isLegacy) {
+      return {
+        gasPrice: gasPrice || (await this.web3Provider.getGasPrice()),
+        isLegacy: true,
+        maxFeePerGas: undefined,
+        maxPriorityFeePerGas: undefined,
+      };
+    }
+
+    if (!maxFeePerGas || maxPriorityFeePerGas == null) {
+      const feeData = await this.web3Provider.getFeeData();
+      maxFeePerGas = maxFeePerGas || feeData.maxFeePerGas || feeData.gasPrice;
+      maxPriorityFeePerGas =
+        maxPriorityFeePerGas ?? feeData.maxPriorityFeePerGas;
+
+      if (!maxFeePerGas || maxPriorityFeePerGas == null) {
+        return {
+          gasPrice: feeData.gasPrice || (await this.web3Provider.getGasPrice()),
+          isLegacy: true,
+          maxFeePerGas: undefined,
+          maxPriorityFeePerGas: undefined,
+        };
+      }
+    }
+
+    return {
+      gasPrice: undefined,
+      isLegacy: false,
+      maxFeePerGas,
+      maxPriorityFeePerGas,
+    };
+  };
+
   getData = ({
     contractAddress,
     receivingAddress,
@@ -1826,6 +1870,13 @@ export class EthereumTransactions implements IEthereumTransactions {
       this.getState();
     const { address: activeAccountAddress } =
       accounts[activeAccountType][activeAccountId];
+    ({ gasPrice, isLegacy, maxFeePerGas, maxPriorityFeePerGas } =
+      await this.resolveEvmFeeParams({
+        gasPrice,
+        isLegacy,
+        maxFeePerGas,
+        maxPriorityFeePerGas,
+      }));
 
     const sendERC20Token = async () => {
       try {
@@ -2109,6 +2160,13 @@ export class EthereumTransactions implements IEthereumTransactions {
       this.getState();
     const { address: activeAccountAddress } =
       accounts[activeAccountType][activeAccountId];
+    ({ gasPrice, isLegacy, maxFeePerGas, maxPriorityFeePerGas } =
+      await this.resolveEvmFeeParams({
+        gasPrice,
+        isLegacy,
+        maxFeePerGas,
+        maxPriorityFeePerGas,
+      }));
     const normalizedTokenId = BigNumber.from(tokenId ?? 0).toBigInt();
 
     const sendERC721Token = async () => {
@@ -2378,6 +2436,13 @@ export class EthereumTransactions implements IEthereumTransactions {
       this.getState();
     const { address: activeAccountAddress } =
       accounts[activeAccountType][activeAccountId];
+    ({ gasPrice, isLegacy, maxFeePerGas, maxPriorityFeePerGas } =
+      await this.resolveEvmFeeParams({
+        gasPrice,
+        isLegacy,
+        maxFeePerGas,
+        maxPriorityFeePerGas,
+      }));
 
     const sendERC1155Token = async () => {
       let transferMethod;
