@@ -1,11 +1,13 @@
 import { retryableFetch } from '@sidhujag/sysweb3-network';
-import { Contract, type EventLog, type JsonRpcProvider } from 'ethers';
+import { Contract, type EventLog } from 'ethers/contract';
 import * as sys from 'syscoinjs-lib';
 
 import { createContractUsingAbi } from '.';
 import ABI1155 from './abi/erc1155.json';
 import abi20 from './abi/erc20.json';
 import ABI721 from './abi/erc721.json';
+
+import type { JsonRpcProvider } from 'ethers/providers';
 
 const COINGECKO_API = 'https://api.coingecko.com/api/v3';
 
