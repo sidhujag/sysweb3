@@ -216,6 +216,19 @@ describe('Ethereum Transactions', () => {
       ).resolves.toBeDefined();
     });
 
+    it('should reject ERC721 sends without a token ID', async () => {
+      await expect(
+        keyringManager.ethereumTransaction.sendSignedErc721Transaction({
+          gasLimit: '0x0249f0',
+          maxFeePerGas: '0x4a817c800',
+          maxPriorityFeePerGas: '0x77359400',
+          networkUrl: 'https://rpc.example',
+          receiver: '0x2c7536E3605D9C16a7a3D7b1898e529396a65c23',
+          tokenAddress: '0x1111111111111111111111111111111111111111',
+        })
+      ).rejects.toThrow('ERC721 tokenId is required');
+    });
+
     it('should preserve explicit zero priority fee on formatted transactions', async () => {
       const provider = keyringManager.ethereumTransaction.web3Provider as any;
       const tx = {
@@ -234,6 +247,26 @@ describe('Ethereum Transactions', () => {
       const signedTx = provider.sendTransaction.mock.calls.at(-1)?.[0];
       expect(signedTx).toBeDefined();
       expect(signedTx).toContain('02');
+    });
+
+    it('should strip gasPrice before estimating EIP-1559 formatted transactions', async () => {
+      const provider = keyringManager.ethereumTransaction.web3Provider as any;
+      const tx = {
+        from: keyringManager.getActiveAccount().activeAccount.address,
+        to: '0x2c7536E3605D9C16a7a3D7b1898e529396a65c23',
+        value: '0x0',
+        gasPrice: '0x01',
+        maxFeePerGas: '0x4a817c800',
+        maxPriorityFeePerGas: '0x77359400',
+        nonce: '0x0',
+        chainId: 1,
+      };
+
+      await keyringManager.ethereumTransaction.sendFormattedTransaction(tx);
+
+      expect(provider.estimateGas).toHaveBeenLastCalledWith(
+        expect.not.objectContaining({ gasPrice: expect.anything() })
+      );
     });
   });
 

@@ -1193,10 +1193,21 @@ export class EthereumTransactions implements IEthereumTransactions {
       }
     }
 
-    const txForEstimation = {
-      ...params,
-      from: params.from || activeAccount.address,
-    };
+    const txForEstimation = isLegacy
+      ? omit(
+          {
+            ...params,
+            from: params.from || activeAccount.address,
+          },
+          ['maxFeePerGas', 'maxPriorityFeePerGas']
+        )
+      : omit(
+          {
+            ...params,
+            from: params.from || activeAccount.address,
+          },
+          ['gasPrice']
+        );
     if (!params.gasLimit) {
       params.gasLimit = await this.web3Provider.estimateGas(txForEstimation);
     }
@@ -2160,6 +2171,9 @@ export class EthereumTransactions implements IEthereumTransactions {
       this.getState();
     const { address: activeAccountAddress } =
       accounts[activeAccountType][activeAccountId];
+    if (tokenId === undefined || tokenId === null) {
+      throw new Error('ERC721 tokenId is required');
+    }
     ({ gasPrice, isLegacy, maxFeePerGas, maxPriorityFeePerGas } =
       await this.resolveEvmFeeParams({
         gasPrice,
@@ -2167,7 +2181,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         maxFeePerGas,
         maxPriorityFeePerGas,
       }));
-    const normalizedTokenId = BigNumber.from(tokenId ?? 0).toBigInt();
+    const normalizedTokenId = BigNumber.from(tokenId).toBigInt();
 
     const sendERC721Token = async () => {
       let transferMethod;
