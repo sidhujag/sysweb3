@@ -27,6 +27,21 @@ const TRANSACTION_RECEIPT_BIG_NUMBER_FIELDS = new Set([
 
 const FEE_DATA_CACHE_TTL_MS = 5000;
 
+const getChainIdFromNetworkish = (network?: Networkish): number | undefined => {
+  if (network == null) return undefined;
+  if (typeof network === 'number') return network;
+  if (typeof network === 'bigint') return Number(network);
+  const chainId = (network as { chainId?: bigint | number | string }).chainId;
+  if (chainId == null) return undefined;
+  return typeof chainId === 'bigint' ? Number(chainId) : Number(chainId);
+};
+
+const parseChainId = (chainId: bigint | number | string): number => {
+  if (typeof chainId === 'number') return chainId;
+  if (typeof chainId === 'bigint') return Number(chainId);
+  return Number(BigInt(chainId));
+};
+
 const defineValue = (target: any, field: string, value: any) => {
   Object.defineProperty(target, field, {
     value,
@@ -137,6 +152,8 @@ class BaseProvider extends JsonRpcProvider {
   private currentId = 1;
   private feeDataCache: { expiresAt: number; value: any } | null = null;
   private feeDataPromise: Promise<any> | null = null;
+  private readonly configuredChainId?: number;
+  private chainIdVerificationPromise: Promise<void> | null = null;
   public isInCooldown = false;
   public errorMessage: any = '';
   public serverHasAnError = false;
@@ -158,6 +175,7 @@ class BaseProvider extends JsonRpcProvider {
       network,
       network == null ? undefined : { staticNetwork: true }
     );
+    this.configuredChainId = getChainIdFromNetworkish(network);
     this.signal = signal;
     this._pendingBatchAggregator = null;
     this._pendingBatch = null;
@@ -221,6 +239,27 @@ class BaseProvider extends JsonRpcProvider {
       return true;
     }
   };
+
+  async verifyConfiguredChainId(): Promise<void> {
+    if (this.configuredChainId == null) return;
+    if (!this.chainIdVerificationPromise) {
+      this.chainIdVerificationPromise =
+        this.fetchAndVerifyConfiguredChainId().catch((error) => {
+          this.chainIdVerificationPromise = null;
+          throw error;
+        });
+    }
+    return this.chainIdVerificationPromise;
+  }
+
+  private async fetchAndVerifyConfiguredChainId(): Promise<void> {
+    const actualChainId = parseChainId(await this.send('eth_chainId', []));
+    if (actualChainId !== this.configuredChainId) {
+      throw new Error(
+        `Configured EVM chainId ${this.configuredChainId} does not match RPC eth_chainId ${actualChainId}`
+      );
+    }
+  }
 
   private cooldown = async () => {
     const now = Date.now();
