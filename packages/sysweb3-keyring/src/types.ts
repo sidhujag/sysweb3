@@ -397,7 +397,7 @@ export interface ISendSignedErcTransactionProps {
   saveTrezorTx?: (tx: any) => void;
   tokenAddress: string;
   tokenAmount?: string;
-  tokenId?: number;
+  tokenId?: bigint | number | string;
 }
 
 export interface IResponseFromSendErcSignedTransaction {
