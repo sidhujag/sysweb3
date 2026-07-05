@@ -268,6 +268,26 @@ describe('Ethereum Transactions', () => {
         expect.not.objectContaining({ gasPrice: expect.anything() })
       );
     });
+
+    it('should clear type before estimating legacy fallback transactions', async () => {
+      const provider = keyringManager.ethereumTransaction.web3Provider as any;
+      const tx = {
+        from: keyringManager.getActiveAccount().activeAccount.address,
+        to: '0x2c7536E3605D9C16a7a3D7b1898e529396a65c23',
+        value: '0x0',
+        maxFeePerGas: '0x0',
+        maxPriorityFeePerGas: '0x0',
+        nonce: '0x0',
+        chainId: 1,
+        type: 2,
+      };
+
+      await keyringManager.ethereumTransaction.sendFormattedTransaction(tx);
+
+      expect(provider.estimateGas).toHaveBeenLastCalledWith(
+        expect.not.objectContaining({ type: expect.anything() })
+      );
+    });
   });
 
   describe('Message Signing', () => {

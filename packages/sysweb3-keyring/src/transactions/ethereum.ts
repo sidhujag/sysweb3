@@ -1199,7 +1199,7 @@ export class EthereumTransactions implements IEthereumTransactions {
             ...params,
             from: params.from || activeAccount.address,
           },
-          ['maxFeePerGas', 'maxPriorityFeePerGas']
+          ['maxFeePerGas', 'maxPriorityFeePerGas', 'type']
         )
       : omit(
           {
