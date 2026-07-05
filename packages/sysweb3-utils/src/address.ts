@@ -1,6 +1,6 @@
 import { findCoin } from '@sidhujag/sysweb3-network';
 import { bech32 } from 'bech32';
-import { isAddress } from 'ethers';
+import { isAddress } from 'ethers/address';
 
 import { isContractAddress } from '.';
 
