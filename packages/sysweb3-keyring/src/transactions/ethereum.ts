@@ -941,11 +941,9 @@ export class EthereumTransactions implements IEthereumTransactions {
       const currentPriorityFeePerGas = BigNumber.from(
         feeData.maxPriorityFeePerGas || 0
       );
-      const currentMaxPriorityFeePerGas = currentPriorityFeePerGas.gt(
-        currentGasPrice
-      )
-        ? currentPriorityFeePerGas
-        : currentGasPrice;
+      const currentMaxPriorityFeePerGas = currentPriorityFeePerGas.isZero()
+        ? currentGasPrice
+        : currentPriorityFeePerGas;
 
       if (
         !oldTxsGasValues.maxFeePerGas ||
