@@ -2516,7 +2516,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           receiver,
           tokenId as number,
           amount.toBigInt(),
-          [],
+          '0x',
           normalizeEthersOverrides(overrides)
         );
         return await sendLocalEvmTransaction(
@@ -2549,7 +2549,7 @@ export class EthereumTransactions implements IEthereumTransactions {
 
         const txData = _contract.interface.encodeFunctionData(
           'safeTransferFrom',
-          [activeAccountAddress, receiver, tokenId, amount.toBigInt(), []]
+          [activeAccountAddress, receiver, tokenId, amount.toBigInt(), '0x']
         );
 
         // Use fallback gas limit if not provided (for auto-estimation)
@@ -2629,7 +2629,7 @@ export class EthereumTransactions implements IEthereumTransactions {
 
         const txData = _contract.interface.encodeFunctionData(
           'safeTransferFrom',
-          [activeAccountAddress, receiver, tokenId, amount.toBigInt(), []]
+          [activeAccountAddress, receiver, tokenId, amount.toBigInt(), '0x']
         );
 
         // Use fallback gas limit if not provided (for auto-estimation)
