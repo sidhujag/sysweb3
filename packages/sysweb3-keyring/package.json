@@ -36,7 +36,7 @@
     "@metamask/eth-sig-util": "^8.2.0",
     "@sidhujag/sysweb3-core": "^1.0.28",
     "@sidhujag/sysweb3-network": "^1.0.109",
-    "@sidhujag/sysweb3-utils": "^1.1.277",
+    "@sidhujag/sysweb3-utils": "^1.1.278",
     "@trezor/connect-web": "^9.7.1",
     "@trezor/connect-webextension": "^9.7.1",
     "@trezor/utxo-lib": "^1.0.12",
