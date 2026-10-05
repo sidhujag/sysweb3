@@ -55,6 +55,40 @@ describe('Ethereum Transactions', () => {
       expect(result.hash).toBeDefined();
     });
 
+    it('returns the broadcast hash when a pending block is unavailable', async () => {
+      const provider = keyringManager.ethereumTransaction.web3Provider as any;
+      const hash =
+        '0x1234567890123456789012345678901234567890123456789012345678901234';
+      provider.sendTransaction.mockResolvedValueOnce({
+        hash,
+        blockNumber: null,
+      });
+      provider.getTransaction.mockResolvedValueOnce({
+        hash,
+        blockNumber: null,
+      });
+      provider.getBlock.mockRejectedValueOnce(
+        new Error('pruned history unavailable: requested 0')
+      );
+
+      const tx = {
+        from: keyringManager.getActiveAccount().activeAccount.address,
+        to: '0x2c7536E3605D9C16a7a3D7b1898e529396a65c23',
+        value: '0x0',
+        gasLimit: '0x5208',
+        maxFeePerGas: '0x4a817c800',
+        maxPriorityFeePerGas: '0x77359400',
+        nonce: '0x0',
+        chainId: 1,
+      };
+
+      await expect(
+        keyringManager.ethereumTransaction.sendFormattedTransaction(tx)
+      ).resolves.toMatchObject({ hash, blockNumber: null });
+      expect(provider.getTransaction).not.toHaveBeenCalled();
+      expect(provider.getBlock).not.toHaveBeenCalled();
+    });
+
     it('should get recommended nonce', async () => {
       const nonce =
         await keyringManager.ethereumTransaction.getRecommendedNonce(
