@@ -1437,15 +1437,10 @@ export class EthereumTransactions implements IEthereumTransactions {
           decryptedPrivateKey,
           tx
         );
-        const response = await this.web3Provider.getTransaction(
-          transaction.hash
-        );
-        //TODO: more precisely on this lines
-        if (!response) {
-          return await this.getTransactionTimestamp(transaction);
-        } else {
-          return await this.getTransactionTimestamp(response);
-        }
+        // The broadcast response already has the hash. Pending transactions
+        // have no block number, so a block lookup can fail after a successful
+        // broadcast and incorrectly report the send as failed.
+        return transaction;
       } catch (error) {
         throw error;
       }
@@ -2856,19 +2851,6 @@ export class EthereumTransactions implements IEthereumTransactions {
     } catch (error) {
       throw error;
     }
-  };
-
-  private getTransactionTimestamp = async (
-    transaction: TransactionResponse
-  ) => {
-    const { timestamp } = await this.web3Provider.getBlock(
-      Number(transaction.blockNumber)
-    );
-
-    return {
-      ...transaction,
-      timestamp,
-    } as TransactionResponse;
   };
 
   public setWeb3Provider(network: INetwork) {
