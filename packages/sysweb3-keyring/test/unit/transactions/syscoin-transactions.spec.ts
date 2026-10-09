@@ -41,6 +41,14 @@ describe('Syscoin Transactions', () => {
 
   beforeEach(async () => {
     setupMocks();
+    // Keep real PSBT getters and signatures through the public return path.
+    // The shared mock spreads the object and loses prototype fields such as
+    // txInputs, so use the real HD signing method for these integration cases.
+    jest
+      .spyOn((sjs.utils as any).HDSigner.prototype, 'sign')
+      .mockImplementation(
+        jest.requireActual('syscoinjs-lib').utils.HDSigner.prototype.sign
+      );
     // Set up vault-keys that would normally be created by Pali's MainController
     await setupTestVault(FAKE_PASSWORD);
 
@@ -59,6 +67,8 @@ describe('Syscoin Transactions', () => {
       mockVaultStateGetter
     );
   });
+
+  afterEach(() => jest.restoreAllMocks());
 
   describe('Fee Estimation', () => {
     it('should get recommended fee from network', async () => {
@@ -194,10 +204,7 @@ describe('Syscoin Transactions', () => {
       ).signPSBTWithMethod;
       (keyringManager.syscoinTransaction as any).signPSBTWithMethod = jest
         .fn()
-        .mockResolvedValue({
-          txid: 'mock_trezor_txid',
-          transaction: 'mock_trezor_transaction',
-        });
+        .mockImplementation(async (psbt) => psbt);
 
       // Mock a proper PSBT object with required methods for Trezor conversion
       PsbtUtils.fromPali = jest.fn().mockReturnValue(scopedPsbtFixture());
