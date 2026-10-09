@@ -13,10 +13,8 @@ describe('KeyringManager Initialization', () => {
   let mockVaultStateGetter: jest.Mock;
   let currentVaultState: any;
 
-  beforeEach(async () => {
+  beforeEach(() => {
     setupMocks();
-    // Set up vault-keys
-    await setupTestVault(FAKE_PASSWORD);
   });
 
   afterEach(async () => {
@@ -155,6 +153,9 @@ describe('KeyringManager Initialization', () => {
       );
 
       // Second EVM keyring with same seed
+      const storage = (keyring1 as any).storage;
+      await storage.deleteItem('vault');
+      await storage.deleteItem('vault-keys');
       const mockVaultStateGetter2 = jest.fn(() => currentVaultState);
       const keyring2 = await KeyringManager.createInitialized(
         PEACE_SEED_PHRASE,

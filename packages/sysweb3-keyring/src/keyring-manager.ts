@@ -2918,50 +2918,86 @@ export class KeyringManager implements IKeyringManager {
       throw new Error('Invalid Seed');
     }
 
-    let foundVaultKeys = true;
-    let salt = '';
-    const vaultKeys = await this.storage.get('vault-keys');
-    if (!vaultKeys || !vaultKeys.salt) {
-      foundVaultKeys = false;
-      salt = crypto.randomBytes(16).toString('hex');
-    } else {
-      salt = vaultKeys.salt;
-    }
+    const [vault, vaultKeys] = await Promise.all([
+      this.storage.get('vault'),
+      this.storage.get('vault-keys'),
+    ]);
+    const hasVault = vault !== undefined && vault !== null;
+    const hasVaultKeys = vaultKeys !== undefined && vaultKeys !== null;
+    const livePassword = this.sessionPassword;
+    const liveMnemonic = this.sessionMnemonic;
 
-    // v4 stores only the salt on disk (vault-keys.salt).
-    // The derived session encryption key must remain in memory only.
-    const sessionPasswordSaltedHash = await this.deriveStoredSessionKey(
-      password,
-      foundVaultKeys ? vaultKeys : { salt }
-    );
-
-    // Check if already initialized with the same password (idempotent behavior)
-    if (this.sessionPassword) {
-      if (sessionPasswordSaltedHash === this.getSessionPasswordString()) {
+    // Only an already-unlocked, matching session may repeat initialization.
+    // Restoring any existing wallet must use unlock(), never rewrite its vault.
+    if (
+      livePassword &&
+      liveMnemonic &&
+      !livePassword.isCleared() &&
+      !liveMnemonic.isCleared()
+    ) {
+      if (!hasVault || !hasVaultKeys || !vaultKeys.salt) {
+        throw new Error(
+          'Cannot initialize a new vault over existing wallet storage'
+        );
+      }
+      const sessionPasswordSaltedHash = await this.deriveStoredSessionKey(
+        password,
+        vaultKeys
+      );
+      if (
+        livePassword === this.sessionPassword &&
+        liveMnemonic === this.sessionMnemonic &&
+        sessionPasswordSaltedHash === this.getSessionPasswordString()
+      ) {
         // Same password - check if it's the same mnemonic to ensure full idempotency
+        let currentMnemonic: string | undefined;
         try {
-          const currentMnemonic = this.withSecureData(
+          currentMnemonic = this.withSecureData(
             (sessionPwd, sessionMnemonic) => {
               return CryptoJS.AES.decrypt(sessionMnemonic, sessionPwd).toString(
                 CryptoJS.enc.Utf8
               );
             }
           );
-
-          if (currentMnemonic === seedPhrase) {
-            // Same mnemonic and password - already initialized
-            return;
-          }
         } catch (error) {
           // If we can't decrypt, fall through to error
+        }
+        if (currentMnemonic === seedPhrase) {
+          const storedVault = await getDecryptedVault(
+            sessionPasswordSaltedHash
+          );
+          if (
+            livePassword === this.sessionPassword &&
+            liveMnemonic === this.sessionMnemonic &&
+            !livePassword.isCleared() &&
+            !liveMnemonic.isCleared() &&
+            storedVault?.mnemonic === seedPhrase
+          ) {
+            // This is a read-only identity check, not a second vault write.
+            return;
+          }
         }
       }
 
       // Different password or mnemonic - this is not a simple re-initialization
       throw new Error(
-        'Wallet already initialized with different parameters. Create a new keyring instance for different parameters.'
+        'Wallet already initialized with different parameters. Unlock the existing wallet or explicitly remove it before starting setup.'
       );
     }
+
+    if (hasVault || hasVaultKeys) {
+      throw new Error(
+        'Cannot initialize a new vault over existing wallet storage'
+      );
+    }
+
+    const salt = crypto.randomBytes(16).toString('hex');
+    // v4 stores only the salt on disk. A genuinely fresh initialization always
+    // commits its own salt and ciphertext together under the vault mutex.
+    const sessionPasswordSaltedHash = await this.deriveStoredSessionKey(
+      password,
+      { salt }
+    );
 
     // Encrypt and store vault (mnemonic storage) - now uses single vault for all networks
     await setEncryptedVault(
@@ -2970,7 +3006,7 @@ export class KeyringManager implements IKeyringManager {
       },
       // v4 vault is encrypted with the derived session password key (PBKDF2 output)
       sessionPasswordSaltedHash,
-      foundVaultKeys ? undefined : { salt }
+      { salt }
     );
 
     await this.recreateSessionFromVault(sessionPasswordSaltedHash);

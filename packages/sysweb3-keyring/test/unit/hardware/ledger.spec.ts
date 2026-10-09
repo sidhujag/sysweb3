@@ -2,7 +2,7 @@ import { INetworkType } from '@sidhujag/sysweb3-network';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
-import { setupMocks } from '../../helpers/setup';
+import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
 
 // Use global createMockVaultState
 const createMockVaultState = (global as any).createMockVaultState;
@@ -25,7 +25,7 @@ describe('Ledger Hardware Wallet', () => {
     });
     mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-    keyringManager = await KeyringManager.createInitialized(
+    keyringManager = await createFreshTestKeyring(
       PEACE_SEED_PHRASE,
       FAKE_PASSWORD,
       mockVaultStateGetter
@@ -109,7 +109,7 @@ describe('Ledger Hardware Wallet', () => {
       const evmVaultStateGetter = jest.fn(() => evmVaultState);
 
       // Create EVM keyring
-      const evmKeyring = await KeyringManager.createInitialized(
+      const evmKeyring = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         evmVaultStateGetter
@@ -479,7 +479,7 @@ describe('Ledger Hardware Wallet', () => {
       const evmVaultStateGetter = jest.fn(() => evmVaultState);
 
       // Create EVM keyring with Ledger
-      const evmKeyring = await KeyringManager.createInitialized(
+      const evmKeyring = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         evmVaultStateGetter
@@ -573,7 +573,7 @@ describe('Ledger Hardware Wallet', () => {
       const evmVaultStateGetter = jest.fn(() => evmVaultState);
 
       // Create EVM keyring with Ledger
-      const evmKeyring = await KeyringManager.createInitialized(
+      const evmKeyring = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         evmVaultStateGetter
@@ -665,7 +665,7 @@ describe('Ledger Hardware Wallet', () => {
       const testnetVaultStateGetter = jest.fn(() => testnetVaultState);
 
       // Test on testnet
-      const testnetKeyring = await KeyringManager.createInitialized(
+      const testnetKeyring = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         testnetVaultStateGetter
@@ -732,7 +732,7 @@ describe('Ledger Hardware Wallet', () => {
       const testnetVaultStateGetter = jest.fn(() => testnetVaultState);
 
       // Create testnet keyring
-      const testnetKeyring = await KeyringManager.createInitialized(
+      const testnetKeyring = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         testnetVaultStateGetter

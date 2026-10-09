@@ -2,7 +2,7 @@ import { INetworkType } from '@sidhujag/sysweb3-network';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
-import { setupMocks } from '../../helpers/setup';
+import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
 
 describe('KeyringManager - Account Management', () => {
   let keyringManager: KeyringManager;
@@ -27,7 +27,7 @@ describe('KeyringManager - Account Management', () => {
     mockVaultStateGetter = jest.fn(() => currentVaultState);
 
     // Create keyring manager with vault getter
-    keyringManager = await KeyringManager.createInitialized(
+    keyringManager = await createFreshTestKeyring(
       PEACE_SEED_PHRASE,
       FAKE_PASSWORD,
       mockVaultStateGetter
@@ -188,7 +188,7 @@ describe('KeyringManager - Account Management', () => {
       });
       const mainnetVaultStateGetter = jest.fn(() => mainnetVaultState);
 
-      const mainnetKeyring = await KeyringManager.createInitialized(
+      const mainnetKeyring = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mainnetVaultStateGetter
@@ -225,7 +225,7 @@ describe('KeyringManager - Account Management', () => {
 
       const testnetVaultStateGetter = jest.fn(() => testnetVaultState);
 
-      const testnetKeyring = await KeyringManager.createInitialized(
+      const testnetKeyring = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         testnetVaultStateGetter
@@ -279,7 +279,7 @@ describe('KeyringManager - Account Management', () => {
 
       const vaultStateGetter = jest.fn(() => testnetVaultState);
 
-      const keyringManager = await KeyringManager.createInitialized(
+      const keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         vaultStateGetter
@@ -856,7 +856,7 @@ describe('KeyringManager - Account Management', () => {
       const nevmTestnetVaultGetter = jest.fn(() => nevmTestnetVaultState);
 
       // Create keyring on NEVM Testnet
-      const nevmKeyring = await KeyringManager.createInitialized(
+      const nevmKeyring = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         nevmTestnetVaultGetter
@@ -932,7 +932,7 @@ describe('KeyringManager - Account Management', () => {
       const sysTestnetVaultGetter = jest.fn(() => sysTestnetVaultState);
 
       // Create keyring - this should call createFirstAccount internally
-      const sysKeyring = await KeyringManager.createInitialized(
+      const sysKeyring = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         sysTestnetVaultGetter

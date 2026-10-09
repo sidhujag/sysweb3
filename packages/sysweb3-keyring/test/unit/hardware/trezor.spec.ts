@@ -2,7 +2,7 @@ import { INetworkType } from '@sidhujag/sysweb3-network';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
-import { setupMocks } from '../../helpers/setup';
+import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
 
 describe('Trezor Hardware Wallet', () => {
   let keyringManager: KeyringManager;
@@ -27,7 +27,7 @@ describe('Trezor Hardware Wallet', () => {
     });
     mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-    keyringManager = await KeyringManager.createInitialized(
+    keyringManager = await createFreshTestKeyring(
       PEACE_SEED_PHRASE,
       FAKE_PASSWORD,
       mockVaultStateGetter
@@ -160,7 +160,7 @@ describe('Trezor Hardware Wallet', () => {
       const evmVaultStateGetter = jest.fn(() => evmVaultState);
 
       // Create EVM keyring
-      const evmKeyring = await KeyringManager.createInitialized(
+      const evmKeyring = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         evmVaultStateGetter
@@ -449,7 +449,7 @@ describe('Trezor Hardware Wallet', () => {
       const evmVaultStateGetter = jest.fn(() => evmVaultState);
 
       // Create EVM keyring with Trezor
-      const evmKeyring = await KeyringManager.createInitialized(
+      const evmKeyring = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         evmVaultStateGetter
@@ -513,7 +513,7 @@ describe('Trezor Hardware Wallet', () => {
       const testnetVaultStateGetter = jest.fn(() => testnetVaultState);
 
       // Test on testnet
-      const testnetKeyring = await KeyringManager.createInitialized(
+      const testnetKeyring = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         testnetVaultStateGetter
@@ -541,7 +541,7 @@ describe('Trezor Hardware Wallet', () => {
       const testnetVaultStateGetter = jest.fn(() => testnetVaultState);
 
       // Create testnet keyring
-      const testnetKeyring = await KeyringManager.createInitialized(
+      const testnetKeyring = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         testnetVaultStateGetter

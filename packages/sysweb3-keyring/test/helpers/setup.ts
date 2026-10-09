@@ -3,7 +3,7 @@ import { INetworkType } from '@sidhujag/sysweb3-network';
 import { webcrypto } from 'crypto';
 import CryptoJS from 'crypto-js';
 
-import { KeyringAccountType } from '../../src';
+import { KeyringAccountType, KeyringManager } from '../../src';
 import { getDecryptedVault, setEncryptedVault } from '../../src/storage';
 
 const getTestIters = (envKey: string, fallback: number) => {
@@ -723,5 +723,39 @@ export const setupMocks = () => {
   // Reset vault data if it exists
   if ((global as any).storedVaultData) {
     (global as any).storedVaultData = null;
+  }
+};
+
+// Each fixture factory call represents a separate, intentionally fresh wallet.
+// Production initialization must never replace a persisted wallet; restoration
+// tests use unlock() explicitly instead of this helper.
+export const createFreshTestKeyring = async (
+  seed: string,
+  password: string,
+  vaultStateGetter: () => any
+): Promise<KeyringManager> => {
+  const { sysweb3Di } = jest.requireMock('@sidhujag/sysweb3-core');
+  const storage = sysweb3Di.getStateStorageDb();
+  await storage.deleteItem('vault');
+  await storage.deleteItem('vault-keys');
+  // The account fixture above was encrypted with this public deterministic
+  // salt. Keep its wrapping key aligned; GCM's independent IV stays random.
+  const crypto = require('crypto');
+  const originalRandomBytes = crypto.randomBytes;
+  const randomBytes = jest
+    .spyOn(crypto, 'randomBytes')
+    .mockImplementation((size: number) =>
+      size === 16
+        ? Buffer.from('0123456789abcdef0123456789abcdef', 'hex')
+        : originalRandomBytes(size)
+    );
+  try {
+    return await KeyringManager.createInitialized(
+      seed,
+      password,
+      vaultStateGetter
+    );
+  } finally {
+    randomBytes.mockRestore();
   }
 };

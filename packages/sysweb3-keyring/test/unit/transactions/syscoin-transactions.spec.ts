@@ -3,7 +3,7 @@ import * as sjs from 'syscoinjs-lib';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
-import { setupMocks } from '../../helpers/setup';
+import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
 
 describe('Syscoin Transactions', () => {
   let keyringManager: KeyringManager;
@@ -61,7 +61,7 @@ describe('Syscoin Transactions', () => {
     });
     mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-    keyringManager = await KeyringManager.createInitialized(
+    keyringManager = await createFreshTestKeyring(
       PEACE_SEED_PHRASE,
       FAKE_PASSWORD,
       mockVaultStateGetter
@@ -484,7 +484,7 @@ describe('Syscoin Transactions', () => {
       const mainnetVaultStateGetter = jest.fn(() => mainnetVaultState);
 
       // Create mainnet keyring
-      const mainnetKeyring = await KeyringManager.createInitialized(
+      const mainnetKeyring = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mainnetVaultStateGetter

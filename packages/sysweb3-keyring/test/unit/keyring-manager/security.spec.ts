@@ -2,7 +2,7 @@ import { INetworkType } from '@sidhujag/sysweb3-network';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
-import { setupMocks } from '../../helpers/setup';
+import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
 
 describe('KeyringManager - Security', () => {
   let keyringManager: KeyringManager;
@@ -26,7 +26,7 @@ describe('KeyringManager - Security', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -65,7 +65,7 @@ describe('KeyringManager - Security', () => {
       expect(weakPasswords.length).toBeGreaterThan(0); // Placeholder assertion
       // for (const weakPassword of weakPasswords) {
       //   await expect(
-      //     KeyringManager.createInitialized(PEACE_SEED_PHRASE, weakPassword, INetworkType.Ethereum, mockVaultStateGetter)
+      //     createFreshTestKeyring(PEACE_SEED_PHRASE, weakPassword, INetworkType.Ethereum, mockVaultStateGetter)
       //   ).rejects.toThrow('Password too weak');
       // }
     });
@@ -92,7 +92,7 @@ describe('KeyringManager - Security', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -177,7 +177,7 @@ describe('KeyringManager - Security', () => {
       const evmVaultStateGetter = jest.fn(() => evmVaultState);
 
       // EVM should use BIP44 m/44'/60'/0'/0/x
-      const evmKeyring = await KeyringManager.createInitialized(
+      const evmKeyring = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         evmVaultStateGetter
@@ -193,7 +193,7 @@ describe('KeyringManager - Security', () => {
       const utxoVaultStateGetter = jest.fn(() => utxoVaultState);
 
       // UTXO should use BIP84 m/84'/57'/0'/0/x for Syscoin
-      const utxoKeyring = await KeyringManager.createInitialized(
+      const utxoKeyring = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         utxoVaultStateGetter
@@ -218,7 +218,7 @@ describe('KeyringManager - Security', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -252,6 +252,10 @@ describe('KeyringManager - Security', () => {
       mockVaultStateGetter = jest.fn(() => currentVaultState);
       keyringManager.setVaultStateGetter(mockVaultStateGetter);
 
+      // This case exercises creation, so discard the provisioned test wallet.
+      const storage = (keyringManager as any).storage;
+      await storage.deleteItem('vault');
+      await storage.deleteItem('vault-keys');
       await keyringManager.initializeWalletSecurely(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD
@@ -280,7 +284,7 @@ describe('KeyringManager - Security', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -307,7 +311,7 @@ describe('KeyringManager - Security', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -341,7 +345,7 @@ describe('KeyringManager - Security', () => {
       cleanVaultState.accounts[KeyringAccountType.Imported] = {};
       const cleanVaultStateGetter = jest.fn(() => cleanVaultState);
 
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         cleanVaultStateGetter
@@ -400,7 +404,7 @@ describe('KeyringManager - Security', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -461,7 +465,7 @@ describe('KeyringManager - Security', () => {
       currentVaultState.accounts[KeyringAccountType.Imported] = {};
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter

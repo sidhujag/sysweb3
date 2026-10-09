@@ -154,15 +154,15 @@ describe('production KDF compatibility through the real core adapter', () => {
   );
 
   it('uses 900k PBKDF2/SHA-512 for a new wallet and stores only authenticated encryption', async () => {
+    await ring.initializeSession(mnemonic, password);
+    const freshSalt = data['sysweb3-vault-keys'].salt;
     const expected = pbkdf2Sync(
       password,
-      Buffer.from(salt, 'hex'),
+      Buffer.from(freshSalt, 'hex'),
       900_000,
       32,
       'sha512'
     ).toString('hex');
-    data['sysweb3-vault-keys'] = { salt };
-    await ring.initializeSession(mnemonic, password);
     expect(ring.getSessionPasswordString()).toBe(expected);
     expect(expected).not.toBe(legacyKey);
     expect(JSON.parse(data['sysweb3-vault']).alg).toBe('A256GCM');
@@ -228,12 +228,99 @@ describe('production KDF compatibility through the real core adapter', () => {
     expect(client.set).not.toHaveBeenCalled();
   });
 
-  it('does not replace an orphaned existing ciphertext when fresh keys are absent', async () => {
-    data['sysweb3-vault'] = 'pre-existing ciphertext';
-    await expect(ring.initializeSession(mnemonic, password)).rejects.toThrow(
+  it.each([
+    {
+      'sysweb3-vault': 'pre-existing ciphertext',
+      'sysweb3-vault-keys': { salt },
+    },
+    { 'sysweb3-vault': 'pre-existing ciphertext' },
+    { 'sysweb3-vault-keys': { salt } },
+    { 'sysweb3-vault': '' },
+    { 'sysweb3-vault-keys': false },
+  ])(
+    'does not replace existing or incomplete wallet storage %p',
+    async (stored) => {
+      Object.assign(data, stored);
+      const before = { ...data };
+      const derive = jest.spyOn(webcrypto.subtle, 'deriveBits');
+      const encrypt = jest.spyOn(webcrypto.subtle, 'encrypt');
+      await expect(ring.initializeSession(mnemonic, password)).rejects.toThrow(
+        'Cannot initialize a new vault over existing wallet storage'
+      );
+      expect(data).toEqual(before);
+      expect(derive).not.toHaveBeenCalled();
+      expect(encrypt).not.toHaveBeenCalled();
+      expect(client.set).not.toHaveBeenCalled();
+      expect(ring.isUnlocked()).toBe(false);
+    }
+  );
+
+  it('rechecks malformed existing records inside the fresh-vault mutex', async () => {
+    data['sysweb3-vault'] = false;
+    await expect(
+      setEncryptedVault({ mnemonic }, '42'.repeat(32), { salt })
+    ).rejects.toThrow(
       'Cannot initialize a new vault over existing wallet storage'
     );
-    expect(data).toEqual({ 'sysweb3-vault': 'pre-existing ciphertext' });
+    expect(data).toEqual({ 'sysweb3-vault': false });
+    expect(client.set).not.toHaveBeenCalled();
+  });
+
+  it('allows only one concurrent initializer to publish a fresh wallet', async () => {
+    const entered = deferred();
+    const release = deferred();
+    const secondDerived = deferred();
+    const other = createRing();
+    const derive = other.deriveStoredSessionKey.bind(other);
+    jest
+      .spyOn(other, 'deriveStoredSessionKey')
+      .mockImplementation(async (...args: any[]) => {
+        const key = await derive(...args);
+        secondDerived.resolve();
+        return key;
+      });
+    client.set.mockImplementation(async (value: any) => {
+      if (!('sysweb3-vault' in value)) {
+        Object.assign(data, value);
+        return;
+      }
+      entered.resolve();
+      await release.promise;
+      Object.assign(data, value);
+    });
+    try {
+      const first = ring.initializeSession(mnemonic, password);
+      await entered.promise;
+      const second = other.initializeSession(
+        'legal winner thank year wave sausage worth useful legal winner thank yellow',
+        'different fixture password'
+      );
+      const rejected = expect(second).rejects.toThrow(
+        'Cannot initialize a new vault over existing wallet storage'
+      );
+      await secondDerived.promise;
+      release.resolve();
+      await first;
+      await rejected;
+      expect(
+        client.set.mock.calls.filter(([value]) => 'sysweb3-vault' in value)
+      ).toHaveLength(1);
+      expect(await ring.getSeed(password)).toBe(mnemonic);
+      expect(other.isUnlocked()).toBe(false);
+    } finally {
+      release.resolve();
+      await other.destroy();
+    }
+  });
+
+  it('keeps matching live-session initialization read-only', async () => {
+    await ring.initializeSession(mnemonic, password);
+    const before = { ...data };
+    client.set.mockClear();
+    await expect(
+      ring.initializeSession(mnemonic, password)
+    ).resolves.toBeUndefined();
+    expect(data).toEqual(before);
     expect(client.set).not.toHaveBeenCalled();
   });
 
@@ -290,12 +377,19 @@ describe('production KDF compatibility through the real core adapter', () => {
     });
   });
 
-  it('uses the persisted compatibility profile when initializing an existing session', async () => {
+  it('rejects initialization over a persisted compatibility wallet and restores it through unlock', async () => {
     installLegacy();
     await ring.unlock(password);
     await ring.lockWallet();
     ring = createRing();
-    await ring.initializeSession(mnemonic, password);
+    const before = { ...data };
+    client.set.mockClear();
+    await expect(ring.initializeSession(mnemonic, password)).rejects.toThrow(
+      'Cannot initialize a new vault over existing wallet storage'
+    );
+    expect(data).toEqual(before);
+    expect(client.set).not.toHaveBeenCalled();
+    await expect(ring.unlock(password)).resolves.toEqual({ canLogin: true });
     expect(await ring.getPrivateKeyByAccountId(0, 'HDAccount', password)).toBe(
       accountSecret
     );
