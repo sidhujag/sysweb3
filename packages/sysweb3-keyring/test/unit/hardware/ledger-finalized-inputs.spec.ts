@@ -19,6 +19,13 @@ const activeNetwork = {
   url: 'https://offline.invalid',
 };
 
+const removeNonWitnessUtxo = (psbt: Psbt, index: number) => {
+  // bitcoinjs installs a non-configurable cache accessor on the original input.
+  const input = { ...psbt.data.inputs[index] };
+  delete input.nonWitnessUtxo;
+  psbt.data.inputs[index] = input;
+};
+
 const fixture = (scriptType = 'p2wpkh', sameWallet = false) => {
   const actual = jest.requireActual('syscoinjs-lib');
   const makeHd = (seed: string) =>
@@ -176,6 +183,86 @@ const fixture = (scriptType = 'p2wpkh', sameWallet = false) => {
 };
 
 describe('Ledger finalized external inputs with real PSBT data', () => {
+  it.each(['p2wpkh', 'p2sh-p2wpkh'])(
+    'signs with finalized external %s witness data when the backend is unavailable',
+    async (scriptType) => {
+      const test = fixture(scriptType);
+      removeNonWitnessUtxo(test.psbt, 1);
+      const getRawTransaction = jest
+        .fn()
+        .mockRejectedValue(new Error('Blockbook unavailable'));
+      jest
+        .spyOn(test.tx, 'txUtilsFunctions')
+        .mockReturnValue({ getRawTransaction });
+
+      const signed = PsbtUtils.fromPali(
+        await test.tx.signPSBT({ psbt: PsbtUtils.toPali(test.psbt) }),
+        activeNetwork
+      );
+
+      expect(getRawTransaction).not.toHaveBeenCalled();
+      expect(test.signPsbt).toHaveBeenCalledTimes(1);
+      const devicePsbt = test.signPsbt.mock.calls[0][0];
+      expect(devicePsbt.getInputNonWitnessUtxo(1)).toBeUndefined();
+      expect(devicePsbt.getInputWitnessUtxo(1)).toEqual({
+        amount: 100000,
+        scriptPubKey: Buffer.from(test.psbt.data.inputs[1].witnessUtxo!.script),
+      });
+      expect(signed.data.inputs[0].finalScriptWitness).toBeDefined();
+      expect(
+        signed.data.inputs[1].finalScriptSig
+          ? Buffer.from(signed.data.inputs[1].finalScriptSig)
+          : undefined
+      ).toEqual(test.finalScriptSig);
+      expect(Buffer.from(signed.data.inputs[1].finalScriptWitness!)).toEqual(
+        test.finalScriptWitness
+      );
+      expect(signed.data.inputs[1].partialSig).toBeUndefined();
+      expect(signed.extractTransaction().ins).toHaveLength(2);
+    }
+  );
+
+  it('still fetches a missing previous transaction for an unfinished input', async () => {
+    const test = fixture();
+    removeNonWitnessUtxo(test.psbt, 0);
+    const getRawTransaction = jest
+      .fn()
+      .mockRejectedValue(new Error('Blockbook unavailable'));
+    jest
+      .spyOn(test.tx, 'txUtilsFunctions')
+      .mockReturnValue({ getRawTransaction });
+    await expect(
+      test.tx.signPSBT({ psbt: PsbtUtils.toPali(test.psbt) })
+    ).rejects.toThrow('Failed to enrich 1 of 2 inputs with nonWitnessUtxo');
+    expect(getRawTransaction).toHaveBeenCalledTimes(1);
+    expect(getRawTransaction).toHaveBeenCalledWith(
+      activeNetwork.url,
+      Buffer.from(test.psbt.txInputs[0].hash).reverse().toString('hex')
+    );
+    expect(test.signPsbt).not.toHaveBeenCalled();
+  });
+
+  it('still requires previous-output data for a finalized legacy input', async () => {
+    const test = fixture('p2pkh');
+    removeNonWitnessUtxo(test.psbt, 1);
+    delete test.psbt.data.inputs[1].witnessUtxo;
+    const getRawTransaction = jest
+      .fn()
+      .mockRejectedValue(new Error('Blockbook unavailable'));
+    jest
+      .spyOn(test.tx, 'txUtilsFunctions')
+      .mockReturnValue({ getRawTransaction });
+    await expect(
+      test.tx.signPSBT({ psbt: PsbtUtils.toPali(test.psbt) })
+    ).rejects.toThrow('Failed to enrich 1 of 2 inputs with nonWitnessUtxo');
+    expect(getRawTransaction).toHaveBeenCalledTimes(1);
+    expect(getRawTransaction).toHaveBeenCalledWith(
+      activeNetwork.url,
+      Buffer.from(test.psbt.txInputs[1].hash).reverse().toString('hex')
+    );
+    expect(test.signPsbt).not.toHaveBeenCalled();
+  });
+
   it.each(['p2wpkh', 'p2pkh', 'p2sh-p2wpkh'])(
     'preserves finalized %s scripts through device serialization and signing',
     async (scriptType) => {

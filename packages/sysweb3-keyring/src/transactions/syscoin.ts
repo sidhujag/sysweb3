@@ -378,12 +378,17 @@ export class SyscoinTransactions implements ISyscoinTransactions {
         Array.isArray(txInputs) &&
         txInputs.length > 0
       ) {
-        // Fetch and add nonWitnessUtxo for all inputs
+        // Fetch and add nonWitnessUtxo where Ledger still needs it.
         const txFetchPromises = txInputs.map(async (_txInput, index) => {
           try {
-            // Scope validation has already checked this previous transaction.
-            // bitcoinjs rejects adding the same nonWitnessUtxo field twice.
-            if (inputMetas[index]?.nonWitnessUtxo)
+            // Keep existing previous transactions, and finalized witness
+            // inputs that already carry the prevout data needed by Ledger.
+            const input = inputMetas[index];
+            if (
+              input?.nonWitnessUtxo ||
+              (input?.witnessUtxo &&
+                (input.finalScriptSig || input.finalScriptWitness))
+            )
               return { index, success: true };
             const tx = txInputs[index];
             const prevTxId = Buffer.from(tx.hash).reverse().toString('hex');
