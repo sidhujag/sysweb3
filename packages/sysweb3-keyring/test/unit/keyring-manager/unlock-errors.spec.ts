@@ -21,6 +21,7 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
   let Keyring: typeof KeyringManager;
   let getDecryptedVault: typeof import('../../../src/storage').getDecryptedVault;
   let setEncryptedVault: typeof import('../../../src/storage').setEncryptedVault;
+  let sourceCrypto: typeof CryptoJS;
   let keyring: KeyringManager;
   let internals: any;
   let cryptoDescriptor: PropertyDescriptor | undefined;
@@ -47,6 +48,7 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
         getDecryptedVault,
         setEncryptedVault,
       } = require('../../../src/storage'));
+      sourceCrypto = require('crypto-js');
     });
   });
 
@@ -145,6 +147,21 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
     await expect(keyring.unlock('correct')).rejects.toBe(error);
   });
 
+  it.each(['storage', 'kdf'])(
+    'does not classify an arbitrary %s error code as vault authentication',
+    async (origin) => {
+      const error = Object.assign(new Error('service unavailable'), {
+        code: 'INVALID_PASSWORD',
+      });
+      if (origin === 'storage') {
+        jest.spyOn(storage, 'get').mockRejectedValueOnce(error);
+      } else {
+        internals.encryptSHA512Async.mockRejectedValueOnce(error);
+      }
+      await expect(keyring.unlock('correct')).rejects.toBe(error);
+    }
+  );
+
   it('cleans up if the vault read after authentication fails', async () => {
     const error = new Error('vault read interrupted after authentication');
     const originalGet = storage.get;
@@ -193,6 +210,27 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
       code: 'INVALID_PASSWORD',
     });
     expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(keyring.isUnlocked()).toBe(false);
+  });
+
+  it('clears restored secrets even if the platform random source is unavailable', async () => {
+    const error = new Error('account state not ready');
+    let passwordBuffer: any;
+    let mnemonicBuffer: any;
+    keyring.setVaultStateGetter(() => {
+      passwordBuffer = internals.sessionPassword;
+      mnemonicBuffer = internals.sessionMnemonic;
+      jest
+        .spyOn(require('crypto'), 'randomFillSync')
+        .mockImplementationOnce(() => {
+          throw new Error('platform random source unavailable');
+        });
+      throw error;
+    });
+
+    await expect(keyring.unlock('correct')).rejects.toBe(error);
+    expect(passwordBuffer.isCleared()).toBe(true);
+    expect(mnemonicBuffer.isCleared()).toBe(true);
     expect(keyring.isUnlocked()).toBe(false);
   });
 
@@ -274,13 +312,116 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
     );
     const error = new Error('migration storage write unavailable');
     const originalSet = storage.set;
+    let failMetadataWrite = true;
     jest.spyOn(storage, 'set').mockImplementation(async (name, value) => {
-      if (name === 'vault-keys') throw error;
+      if (name === 'vault-keys' && failMetadataWrite) {
+        failMetadataWrite = false;
+        throw error;
+      }
       return originalSet(name, value);
     });
     const cleanup = jest.spyOn(keyring, 'lockWallet');
     await expect(keyring.unlock('correct')).rejects.toBe(error);
     expect(cleanup).toHaveBeenCalledTimes(1);
     expect(keyring.isUnlocked()).toBe(false);
+    await expect(keyring.unlock('correct')).resolves.toEqual({
+      canLogin: true,
+    });
+    await expect(storage.get('vault-keys')).resolves.toEqual({
+      salt: '33'.repeat(16),
+    });
+  });
+
+  it.each(['password', 'session'])(
+    'migrates a double-encrypted legacy mnemonic using its %s key',
+    async (keyType) => {
+      const currentSessionSalt = '44'.repeat(16);
+      await storage.set('vault-keys', {
+        salt: '33'.repeat(16),
+        currentSessionSalt,
+      });
+      const innerKey =
+        keyType === 'password'
+          ? 'correct'
+          : internals.encryptSHA512('correct', currentSessionSalt);
+      const encryptedMnemonic = CryptoJS.AES.encrypt(
+        mnemonic,
+        innerKey
+      ).toString();
+      await storage.set(
+        'vault',
+        CryptoJS.AES.encrypt(
+          JSON.stringify({ mnemonic: encryptedMnemonic }),
+          'correct'
+        ).toString()
+      );
+      if (keyType === 'session') {
+        const originalDecrypt = sourceCrypto.AES.decrypt;
+        jest
+          .spyOn(sourceCrypto.AES, 'decrypt')
+          .mockImplementation((ciphertext, pwd, config) => {
+            // A wrong CBC key may return empty text instead of throwing.
+            if (ciphertext === encryptedMnemonic && pwd === 'correct') {
+              return sourceCrypto.enc.Utf8.parse('');
+            }
+            return originalDecrypt(ciphertext, pwd, config);
+          });
+      }
+
+      await expect(keyring.unlock('correct')).resolves.toEqual({
+        canLogin: true,
+      });
+      await expect(getDecryptedVault(key)).resolves.toEqual({ mnemonic });
+      await expect(storage.get('vault-keys')).resolves.toEqual({
+        salt: '33'.repeat(16),
+      });
+    }
+  );
+
+  it.each([undefined, '', 'not a mnemonic', 'abandon '.repeat(11) + 'abandon'])(
+    'preserves both stored records when a legacy secret cannot be recovered: %s',
+    async (legacySecret) => {
+      const vaultKeys = {
+        salt: '33'.repeat(16),
+        currentSessionSalt: '44'.repeat(16),
+      };
+      const originalVault = CryptoJS.AES.encrypt(
+        JSON.stringify({ mnemonic: legacySecret }),
+        'correct'
+      ).toString();
+      await storage.set('vault-keys', vaultKeys);
+      await storage.set('vault', originalVault);
+      const writes = jest.spyOn(storage, 'set');
+
+      await expect(keyring.unlock('correct')).rejects.toThrow(
+        'Existing vault preserved'
+      );
+      expect(writes).not.toHaveBeenCalled();
+      await expect(storage.get('vault')).resolves.toBe(originalVault);
+      await expect(storage.get('vault-keys')).resolves.toEqual(vaultKeys);
+      expect(keyring.isUnlocked()).toBe(false);
+    }
+  );
+
+  it('preserves a valid imported extended private key during legacy migration', async () => {
+    const extendedKey =
+      'zprvAdGDwa3WySqQoVwVSbYRMKxDhSXpK2wW6wDjekCMdm7TaQ3igf52xRRjYghTvnFurtMm6CMgQivEDJs5ixGSnTtv8usFmkAoTe6XCF5hnpR';
+    await storage.set('vault-keys', {
+      salt: '33'.repeat(16),
+      currentSessionSalt: '44'.repeat(16),
+    });
+    await storage.set(
+      'vault',
+      CryptoJS.AES.encrypt(
+        JSON.stringify({ mnemonic: extendedKey }),
+        'correct'
+      ).toString()
+    );
+    await expect(keyring.unlock('correct')).resolves.toEqual({
+      canLogin: true,
+    });
+    await expect(getDecryptedVault(key)).resolves.toEqual({
+      mnemonic: extendedKey,
+    });
   });
 });

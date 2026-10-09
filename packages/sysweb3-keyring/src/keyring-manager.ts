@@ -35,7 +35,11 @@ import {
 } from './initial-state';
 import { LedgerKeyring } from './ledger';
 import { getSyscoinSigners, SyscoinHDSigner } from './signers';
-import { getDecryptedVault, setEncryptedVault } from './storage';
+import {
+  getDecryptedVault,
+  setEncryptedVault,
+  VaultAuthenticationError,
+} from './storage';
 import { EthereumTransactions, SyscoinTransactions } from './transactions';
 import {
   deriveEvmAccountFromMnemonic,
@@ -98,9 +102,7 @@ class SecureBuffer {
 
   clear(): void {
     if (!this._isCleared && this.buffer) {
-      // Overwrite with random data first
-      crypto.randomFillSync(this.buffer);
-      // Then fill with zeros
+      // Zeroing must not depend on a working platform random source.
       this.buffer.fill(0);
       this.buffer = null;
       this._isCleared = true;
@@ -470,50 +472,61 @@ export class KeyringManager implements IKeyringManager {
           vaultKeys.currentSessionSalt
         );
 
-        // Get the vault (v3 vault is encrypted with raw password)
-        const { mnemonic } = await getDecryptedVault(password);
+        // v3 CBC vaults use the raw password; migrated GCM vaults use the
+        // derived key. Selecting by stored format also permits a safe retry
+        // if the vault write succeeded but the metadata write was interrupted.
+        const { mnemonic } = await getDecryptedVault(
+          sessionPasswordKey,
+          password
+        );
         authenticated = true;
 
-        if (mnemonic) {
-          // Check if mnemonic is double-encrypted (old format behavior)
-          const isLikelyPlainMnemonic =
-            mnemonic.includes(' ') &&
-            (mnemonic.split(' ').length === 12 ||
-              mnemonic.split(' ').length === 24);
+        const isValidSecret = (value: unknown): value is string => {
+          if (typeof value !== 'string' || !value) return false;
+          if (this.isSeedValid(value)) return true;
+          // Imported extended private keys can also be stored as the secret.
+          if (!/^(xprv|yprv|zprv|tprv|uprv|vprv)/.test(value)) return false;
+          try {
+            const decoded = bs58check.decode(value);
+            return (
+              decoded.length === 78 &&
+              decoded[45] === 0 &&
+              ecc.isPrivate(decoded.subarray(46))
+            );
+          } catch {
+            return false;
+          }
+        };
 
-          let decryptedMnemonic = mnemonic;
-          if (!isLikelyPlainMnemonic) {
+        let decryptedMnemonic = mnemonic;
+        if (!isValidSecret(decryptedMnemonic) && typeof mnemonic === 'string') {
+          for (const legacyKey of [password, oldSessionPassword]) {
             try {
-              // Try to decrypt with raw password first (as vault stores it)
-              decryptedMnemonic = CryptoJS.AES.decrypt(
+              const candidate = CryptoJS.AES.decrypt(
                 mnemonic,
-                password
+                legacyKey
               ).toString(CryptoJS.enc.Utf8);
-            } catch (e) {
-              console.warn(
-                '[KeyringManager] Failed to decrypt mnemonic with password, trying old session password'
-              );
-              // If that fails, try with old session password
-              try {
-                decryptedMnemonic = CryptoJS.AES.decrypt(
-                  mnemonic,
-                  oldSessionPassword
-                ).toString(CryptoJS.enc.Utf8);
-              } catch (e2) {
-                // If both fail, assume it's already decrypted
-                decryptedMnemonic = mnemonic;
+              if (isValidSecret(candidate)) {
+                decryptedMnemonic = candidate;
+                break;
               }
+            } catch (error) {
+              if (error?.message !== 'Malformed UTF-8 data') throw error;
             }
           }
-
-          // Re-save the vault with properly formatted mnemonic (single encryption)
-          // v4 vault is encrypted with the derived session password key (PBKDF2 output)
-          await setEncryptedVault(
-            { mnemonic: decryptedMnemonic },
-            sessionPasswordKey
-          );
-          console.log('[KeyringManager] Vault mnemonic format normalized');
         }
+        if (!isValidSecret(decryptedMnemonic)) {
+          throw new Error(
+            'Legacy vault secret could not be recovered. Existing vault preserved.'
+          );
+        }
+
+        // Do not change either stored record until a valid secret is recovered.
+        await setEncryptedVault(
+          { mnemonic: decryptedMnemonic },
+          sessionPasswordKey
+        );
+        console.log('[KeyringManager] Vault mnemonic format normalized');
 
         // Remove currentSessionSalt from vault-keys (v4 keeps only the salt on disk)
         const migratedVaultKeys = {
@@ -579,7 +592,7 @@ export class KeyringManager implements IKeyringManager {
         canLogin: true,
       };
     } catch (error) {
-      if (!authenticated && error?.code === 'INVALID_PASSWORD') {
+      if (!authenticated && error instanceof VaultAuthenticationError) {
         return { canLogin: false };
       }
       if (authenticated) {

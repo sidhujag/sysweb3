@@ -112,11 +112,16 @@ const encryptVaultWebCrypto = async (
   };
 };
 
-const invalidPasswordError = () =>
-  Object.assign(
-    new Error('Failed to decrypt vault - invalid password or corrupted data'),
-    { code: 'INVALID_PASSWORD' }
-  );
+export class VaultAuthenticationError extends Error {
+  readonly code = 'INVALID_PASSWORD';
+
+  constructor() {
+    super('Failed to decrypt vault - invalid password or corrupted data');
+    this.name = 'VaultAuthenticationError';
+  }
+}
+
+const invalidPasswordError = () => new VaultAuthenticationError();
 
 const decryptVaultWebCrypto = async (
   envelope: VaultGcmEnvelopeV4,
@@ -190,7 +195,10 @@ export const setEncryptedVault = async (decryptedVault: any, pwd: string) => {
   });
 };
 
-export const getDecryptedVault = async (pwd: string) => {
+export const getDecryptedVault = async (
+  pwd: string,
+  legacyPassword?: string
+) => {
   return vaultMutex.runExclusive(async () => {
     // Always use single 'vault' key
     const vault = await storage.get('vault');
@@ -216,9 +224,10 @@ export const getDecryptedVault = async (pwd: string) => {
     } else {
       // Legacy CryptoJS passphrase-AES vault (v3 and older v4 canary).
       try {
-        decryptedVault = CryptoJS.AES.decrypt(vault, pwd).toString(
-          CryptoJS.enc.Utf8
-        );
+        decryptedVault = CryptoJS.AES.decrypt(
+          vault,
+          legacyPassword ?? pwd
+        ).toString(CryptoJS.enc.Utf8);
       } catch (error) {
         if (error?.message === 'Malformed UTF-8 data') {
           throw invalidPasswordError();
