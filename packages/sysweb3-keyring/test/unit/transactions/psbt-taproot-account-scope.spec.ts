@@ -1,6 +1,6 @@
-import { verifySchnorr } from '@bitcoinerlab/secp256k1';
+import { signSchnorr, verifySchnorr } from '@bitcoinerlab/secp256k1';
 import { getNetworkConfig, INetworkType } from '@sidhujag/sysweb3-network';
-import { payments, Psbt, Transaction } from 'bitcoinjs-lib';
+import { opcodes, payments, Psbt, script, Transaction } from 'bitcoinjs-lib';
 
 import { SyscoinTransactions } from '../../../src/transactions/syscoin';
 import { KeyringAccountType } from '../../../src/types';
@@ -235,6 +235,51 @@ describe('Taproot key-path PSBT approved-account boundary with the real HD signe
     await expect(sign(psbt)).rejects.toThrow(/approved account/);
     expect(privateSign).not.toHaveBeenCalled();
   });
+
+  it.each(['BIP371 leaf hashes', 'a script-path signature'])(
+    'does not infer an internal key for a PSBT carrying %s without leaf scripts',
+    async (metadata) => {
+      const { hd, sign, makePsbt, approved } = fixture();
+      const leafScript = script.compile([
+        approved.publicKey.slice(1),
+        opcodes.OP_CHECKSIG,
+      ]);
+      const payment = payments.p2tr({
+        internalPubkey: approved.publicKey.slice(1),
+        scriptTree: { output: leafScript },
+        network: bitcoinNetwork,
+      });
+      // A single-leaf tree root is that leaf's actual BIP341 hash.
+      const leafHash = Buffer.from(payment.hash!);
+      const { psbt, spent } = makePsbt([{ bip371: true, root: leafHash }]);
+      if (metadata === 'BIP371 leaf hashes') {
+        psbt.data.inputs[0].tapBip32Derivation![0].leafHashes = [leafHash];
+      } else {
+        const transaction = Transaction.fromBuffer(
+          psbt.data.globalMap.unsignedTx.toBuffer()
+        );
+        const digest = transaction.hashForWitnessV1(
+          0,
+          spent.map((output) => output.output!),
+          [100000n],
+          Transaction.SIGHASH_DEFAULT,
+          leafHash
+        );
+        const signature = signSchnorr(digest, approved.privateKey);
+        expect(
+          verifySchnorr(digest, approved.publicKey.slice(1), signature)
+        ).toBe(true);
+        psbt.data.inputs[0].tapScriptSig = [
+          { pubkey: approved.publicKey.slice(1), leafHash, signature },
+        ];
+      }
+      expect(psbt.data.inputs[0].tapInternalKey).toBeUndefined();
+      expect(psbt.data.inputs[0].tapLeafScript).toBeUndefined();
+      const privateSign = jest.spyOn(hd, 'sign');
+      await expect(sign(psbt)).rejects.toThrow(/approved account/);
+      expect(privateSign).not.toHaveBeenCalled();
+    }
+  );
 
   it.each([false, true])(
     'leaves a joint foreign Taproot input unsigned (forged path: %s)',

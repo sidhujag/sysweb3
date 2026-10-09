@@ -283,7 +283,12 @@ export function assertPsbtAccountScope(
         // explicit internal key.
         if (
           input.tapInternalKey === undefined
-            ? !ordinary && !input.tapLeafScript?.length
+            ? !ordinary &&
+              !input.tapLeafScript?.length &&
+              !input.tapScriptSig?.length &&
+              !input.tapBip32Derivation?.some(
+                (derivation) => derivation.leafHashes.length > 0
+              )
             : equal(input.tapInternalKey, publicKey.slice(1))
         ) {
           const p2tr = payments.p2tr({
