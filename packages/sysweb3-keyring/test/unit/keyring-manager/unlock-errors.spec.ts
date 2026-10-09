@@ -120,6 +120,18 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
     });
   });
 
+  it('preserves CBC decrypt platform exceptions as operational failures', async () => {
+    await storage.set(
+      'vault',
+      CryptoJS.AES.encrypt(JSON.stringify({ mnemonic }), key).toString()
+    );
+    const error = new SyntaxError('CBC platform temporarily unavailable');
+    jest.spyOn(sourceCrypto.AES, 'decrypt').mockImplementationOnce(() => {
+      throw error;
+    });
+    await expect(keyring.unlock('correct')).rejects.toBe(error);
+  });
+
   it('propagates a temporary storage failure and allows a later retry', async () => {
     const error = new Error('storage temporarily unavailable');
     jest.spyOn(storage, 'get').mockRejectedValueOnce(error);
@@ -301,36 +313,67 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
     await expect(keyring.unlock('correct')).rejects.toBeInstanceOf(SyntaxError);
   });
 
-  it('propagates a migration write failure after successful legacy authentication', async () => {
-    await storage.set('vault-keys', {
-      salt: '33'.repeat(16),
-      currentSessionSalt: '44'.repeat(16),
-    });
-    await storage.set(
-      'vault',
-      CryptoJS.AES.encrypt(JSON.stringify({ mnemonic }), 'correct').toString()
-    );
-    const error = new Error('migration storage write unavailable');
-    const originalSet = storage.set;
-    let failMetadataWrite = true;
-    jest.spyOn(storage, 'set').mockImplementation(async (name, value) => {
-      if (name === 'vault-keys' && failMetadataWrite) {
-        failMetadataWrite = false;
-        throw error;
+  it.each([true, false])(
+    'recovers an interrupted migration with WebCrypto available: %s',
+    async (webCryptoAvailable) => {
+      if (!webCryptoAvailable) {
+        Object.defineProperty(globalThis, 'crypto', {
+          configurable: true,
+          value: { getRandomValues: webcrypto.getRandomValues.bind(webcrypto) },
+        });
       }
-      return originalSet(name, value);
-    });
-    const cleanup = jest.spyOn(keyring, 'lockWallet');
-    await expect(keyring.unlock('correct')).rejects.toBe(error);
-    expect(cleanup).toHaveBeenCalledTimes(1);
-    expect(keyring.isUnlocked()).toBe(false);
-    await expect(keyring.unlock('correct')).resolves.toEqual({
-      canLogin: true,
-    });
-    await expect(storage.get('vault-keys')).resolves.toEqual({
-      salt: '33'.repeat(16),
-    });
-  });
+      await storage.set('vault-keys', {
+        salt: '33'.repeat(16),
+        currentSessionSalt: '44'.repeat(16),
+      });
+      await storage.set(
+        'vault',
+        CryptoJS.AES.encrypt(JSON.stringify({ mnemonic }), 'correct').toString()
+      );
+      const error = new Error('migration storage write unavailable');
+      const originalSet = storage.set;
+      let failMetadataWrite = true;
+      jest.spyOn(storage, 'set').mockImplementation(async (name, value) => {
+        if (name === 'vault-keys' && failMetadataWrite) {
+          failMetadataWrite = false;
+          throw error;
+        }
+        return originalSet(name, value);
+      });
+      const cleanup = jest.spyOn(keyring, 'lockWallet');
+      await expect(keyring.unlock('correct')).rejects.toBe(error);
+      expect(cleanup).toHaveBeenCalledTimes(1);
+      expect(keyring.isUnlocked()).toBe(false);
+      const migratedVault = await storage.get('vault');
+      if (!webCryptoAvailable) {
+        expect(migratedVault.startsWith('U2FsdGVkX1')).toBe(true);
+        const originalDecrypt = sourceCrypto.AES.decrypt;
+        jest
+          .spyOn(sourceCrypto.AES, 'decrypt')
+          .mockImplementation((ciphertext, pwd, config) => {
+            // CBC with the old key can return empty text rather than throw.
+            if (ciphertext === migratedVault && pwd === 'correct') {
+              return sourceCrypto.enc.Utf8.parse('');
+            }
+            return originalDecrypt(ciphertext, pwd, config);
+          });
+      }
+      await expect(keyring.unlock('wrong')).resolves.toEqual({
+        canLogin: false,
+      });
+      await expect(storage.get('vault')).resolves.toBe(migratedVault);
+      await expect(storage.get('vault-keys')).resolves.toEqual({
+        salt: '33'.repeat(16),
+        currentSessionSalt: '44'.repeat(16),
+      });
+      await expect(keyring.unlock('correct')).resolves.toEqual({
+        canLogin: true,
+      });
+      await expect(storage.get('vault-keys')).resolves.toEqual({
+        salt: '33'.repeat(16),
+      });
+    }
+  );
 
   it.each(['password', 'session'])(
     'migrates a double-encrypted legacy mnemonic using its %s key',

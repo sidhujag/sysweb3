@@ -223,32 +223,34 @@ export const getDecryptedVault = async (
       decryptedVault = await decryptVaultWebCrypto(maybeEnvelope, pwd);
     } else {
       // Legacy CryptoJS passphrase-AES vault (v3 and older v4 canary).
-      try {
-        decryptedVault = CryptoJS.AES.decrypt(
-          vault,
-          legacyPassword ?? pwd
-        ).toString(CryptoJS.enc.Utf8);
-      } catch (error) {
-        if (error?.message === 'Malformed UTF-8 data') {
-          throw invalidPasswordError();
+      // An interrupted migration can already have written CBC with the
+      // derived key while the metadata still selects the legacy password.
+      for (const candidateKey of new Set([legacyPassword ?? pwd, pwd])) {
+        let plaintext: string;
+        try {
+          plaintext = CryptoJS.AES.decrypt(vault, candidateKey).toString(
+            CryptoJS.enc.Utf8
+          );
+        } catch (error) {
+          if (error?.message === 'Malformed UTF-8 data') continue;
+          throw error;
         }
-        throw error;
+        if (!plaintext) continue;
+        try {
+          return JSON.parse(plaintext);
+        } catch (error) {
+          // CBC has no authentication tag; invalid plaintext is the only
+          // available indication of a bad password/ciphertext.
+          if (!(error instanceof SyntaxError)) throw error;
+        }
       }
+      throw invalidPasswordError();
     }
 
     if (!decryptedVault) {
       throw invalidPasswordError();
     }
 
-    try {
-      return JSON.parse(decryptedVault);
-    } catch (error) {
-      // Legacy CBC vaults have no authentication tag; invalid plaintext is
-      // the only available indication of a bad password/ciphertext.
-      if (!maybeEnvelope && error instanceof SyntaxError) {
-        throw invalidPasswordError();
-      }
-      throw error;
-    }
+    return JSON.parse(decryptedVault);
   });
 };
