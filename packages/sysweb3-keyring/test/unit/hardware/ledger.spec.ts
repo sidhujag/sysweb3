@@ -435,7 +435,7 @@ describe('Ledger Hardware Wallet', () => {
       (
         keyringManager.ledgerSigner.convertToLedgerFormat as jest.Mock
       ).mockImplementation(async (prepared) => {
-        jest.spyOn(prepared, 'finalizeAllInputs').mockReturnValue(prepared);
+        jest.spyOn(prepared, 'finalizeInput').mockReturnValue(prepared);
         return prepared;
       });
       (

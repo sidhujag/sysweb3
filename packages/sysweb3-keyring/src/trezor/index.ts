@@ -12,7 +12,7 @@ import TrezorConnect, {
   EthereumTransactionEIP1559,
   // @ts-ignore
 } from '@trezor/connect-webextension';
-import { address } from '@trezor/utxo-lib';
+import { address, bufferutils } from '@trezor/utxo-lib';
 import bitcoinops from 'bitcoin-ops';
 import { Psbt } from 'bitcoinjs-lib';
 import { Buffer } from 'buffer';
@@ -37,6 +37,28 @@ const initialHDPath = `m/44'/60'/0'/0/0`;
 const DELAY_BETWEEN_POPUPS = 2000; // Increased from 1000ms to 2000ms for more reliable operation
 const stripHexPrefix = (value: string) =>
   value.startsWith('0x') || value.startsWith('0X') ? value.slice(2) : value;
+const serializeWitness = (witness: readonly Uint8Array[]): Buffer => {
+  const stack = witness.map((item) => Buffer.from(item));
+  const size =
+    bufferutils.varIntSize(stack.length) +
+    stack.reduce(
+      (total, item) =>
+        total + bufferutils.varIntSize(item.length) + item.length,
+      0
+    );
+  const writer = new bufferutils.BufferWriter(Buffer.alloc(size));
+  writer.writeVector(stack);
+  return writer.buffer;
+};
+const finalizedFields = (input: any) => {
+  if (!input.finalScriptSig && !input.finalScriptWitness) return null;
+  return {
+    scriptSig: Buffer.from(input.finalScriptSig || []).toString('hex'),
+    witness: input.finalScriptWitness
+      ? Buffer.from(input.finalScriptWitness).toString('hex')
+      : '00',
+  };
+};
 
 export interface TrezorControllerState {
   hdPath: string;
@@ -406,6 +428,7 @@ export class TrezorKeyring {
         ),
       });
     const approvedTransaction = unsignedSnapshot(psbt);
+    const approvedFinalInputs = psbt.data.inputs.map(finalizedFields);
     const payload = await this.executeWithRetry(async () => {
       const response = await TrezorConnect.signTransaction(utxoTransaction);
       if (!response.success) {
@@ -421,7 +444,27 @@ export class TrezorKeyring {
     ) {
       throw new Error('Trezor returned a different unsigned transaction');
     }
+    // Finalized inputs belong to another signer. Neither the device response
+    // nor concurrent code may replace their approved scripts or witnesses.
+    if (
+      approvedFinalInputs.some((approved, index) => {
+        const current = finalizedFields(psbt.data.inputs[index]);
+        if (!approved) return current !== null;
+        return (
+          !current ||
+          current.scriptSig !== approved.scriptSig ||
+          current.witness !== approved.witness ||
+          Buffer.from(tx.ins[index].script).toString('hex') !==
+            approved.scriptSig ||
+          serializeWitness(tx.ins[index].witness || []).toString('hex') !==
+            approved.witness
+        );
+      })
+    ) {
+      throw new Error('Trezor changed an already-finalized input');
+    }
     for (const i of this.range(psbt.data.inputs.length)) {
+      if (approvedFinalInputs[i]) continue;
       if (tx.ins[i].witness == null || tx.ins[i].witness.length !== 2) {
         throw new Error(
           'Please move your funds to a Segwit address: https://wiki.trezor.io/Account'
@@ -554,6 +597,46 @@ export class TrezorKeyring {
       if (input.sequence !== undefined) inputItem.sequence = input.sequence;
 
       const dataInput = psbt.data.inputs[i];
+
+      if (dataInput.finalScriptSig || dataInput.finalScriptWitness) {
+        // A finalized co-signer input is supplied as public transaction data,
+        // never as a private derivation request to this device.
+        let prevout = dataInput.witnessUtxo;
+        if (dataInput.nonWitnessUtxo) {
+          const previous = bitcoinjs.Transaction.fromBuffer(
+            Buffer.from(dataInput.nonWitnessUtxo)
+          );
+          const output = previous.outs[input.index];
+          if (
+            !Buffer.from(previous.getHash()).equals(Buffer.from(input.hash)) ||
+            !output ||
+            (prevout &&
+              (!Buffer.from(prevout.script).equals(
+                Buffer.from(output.script)
+              ) ||
+                prevout.value.toString() !== output.value.toString()))
+          ) {
+            throw new Error('Trezor external input has an invalid prevout');
+          }
+          prevout = output;
+        }
+        if (!prevout || prevout.value === undefined || !prevout.script) {
+          throw new Error('Trezor external input is missing its prevout');
+        }
+        inputItem.script_type = 'EXTERNAL';
+        inputItem.amount = prevout.value.toString();
+        inputItem.script_pubkey = Buffer.from(prevout.script).toString('hex');
+        if (dataInput.finalScriptSig)
+          inputItem.script_sig = Buffer.from(dataInput.finalScriptSig).toString(
+            'hex'
+          );
+        if (dataInput.finalScriptWitness)
+          inputItem.witness = Buffer.from(
+            dataInput.finalScriptWitness
+          ).toString('hex');
+        trezortx.inputs.push(inputItem);
+        continue;
+      }
 
       // Resolve derivation path for this input
       let resolvedPath: string | null = null;

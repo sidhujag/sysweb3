@@ -518,7 +518,8 @@ export class PsbtV2 {
     if (psbtObj.locktime !== undefined)
       this.setGlobalFallbackLocktime(psbtObj.locktime);
     psbtObj.data.inputs.forEach((input, index) => {
-      if (isTaprootInput(input))
+      const finalized = input.finalScriptSig || input.finalScriptWitness;
+      if (!finalized && isTaprootInput(input))
         throw new Error(`Taproot inputs not supported`);
       this.setInputPreviousTxId(
         index,
@@ -542,7 +543,17 @@ export class PsbtV2 {
         this.setInputWitnessScript(index, Buffer.from(input.witnessScript));
       if (input.redeemScript)
         this.setInputRedeemScript(index, Buffer.from(input.redeemScript));
-      psbtObj.data.inputs[index].bip32Derivation.forEach((derivation) => {
+      if (input.finalScriptSig)
+        this.setInputFinalScriptsig(index, Buffer.from(input.finalScriptSig));
+      if (input.finalScriptWitness)
+        this.setInputFinalScriptwitness(
+          index,
+          Buffer.from(input.finalScriptWitness)
+        );
+      // Finalized external entries have no signing hints, even if a caller
+      // reattached them after finalization. Keep only their completed scripts.
+      if (finalized) return;
+      (input.bip32Derivation || []).forEach((derivation) => {
         if (!/^m\//i.test(derivation.path))
           throw new Error(`Invalid input bip32 derivation`);
         const pathArray = derivation.path

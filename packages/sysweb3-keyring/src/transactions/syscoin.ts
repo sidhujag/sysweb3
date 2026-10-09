@@ -517,13 +517,29 @@ export class SyscoinTransactions implements ISyscoinTransactions {
       assertCurrent();
 
       signatureEntries.forEach(([inputIndex, partialSig]) => {
+        const input = enhancedPsbt.data.inputs[inputIndex];
+        if (
+          !input ||
+          input.finalScriptSig ||
+          input.finalScriptWitness ||
+          !input.bip32Derivation?.some((derivation) =>
+            Buffer.from(derivation.pubkey).equals(
+              Buffer.from(partialSig.pubkey)
+            )
+          )
+        ) {
+          throw new Error('PSBT input is outside the approved account');
+        }
         enhancedPsbt.updateInput(inputIndex, {
           partialSig: [partialSig],
         });
       });
 
-      // Finalize all inputs
-      enhancedPsbt.finalizeAllInputs();
+      // Preserve external inputs that were finalized before device signing.
+      enhancedPsbt.data.inputs.forEach((input, index) => {
+        if (!input.finalScriptSig && !input.finalScriptWitness)
+          enhancedPsbt.finalizeInput(index);
+      });
 
       return enhancedPsbt;
     } else if (isTrezor) {
