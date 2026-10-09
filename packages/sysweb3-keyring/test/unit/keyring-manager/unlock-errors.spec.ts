@@ -177,6 +177,25 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
     expect(keyring.isUnlocked()).toBe(false);
   });
 
+  it('propagates a later authentication failure after the password was accepted', async () => {
+    const originalGet = storage.get;
+    const envelope = JSON.parse(await storage.get('vault'));
+    envelope.ct = '00'.repeat(envelope.ct.length / 2);
+    let vaultReads = 0;
+    jest.spyOn(storage, 'get').mockImplementation(async (name) => {
+      if (name === 'vault' && ++vaultReads === 2) {
+        return JSON.stringify(envelope);
+      }
+      return originalGet(name);
+    });
+    const cleanup = jest.spyOn(keyring, 'lockWallet');
+    await expect(keyring.unlock('correct')).rejects.toMatchObject({
+      code: 'INVALID_PASSWORD',
+    });
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(keyring.isUnlocked()).toBe(false);
+  });
+
   it('propagates a non-authentication WebCrypto decrypt failure', async () => {
     const error = new DOMException(
       'crypto service unavailable',
@@ -201,6 +220,16 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
       const envelope = JSON.parse(await storage.get('vault'));
       envelope[field] = value;
       await storage.set('vault', JSON.stringify(envelope));
+      await expect(keyring.unlock('correct')).rejects.toThrow(
+        'Invalid encrypted vault format'
+      );
+    }
+  );
+
+  it.each(['{"v":4', '{"v":4,"alg":"A256GCM","ct":"11"}'])(
+    'keeps malformed JSON-shaped vault records operational: %s',
+    async (vault) => {
+      await storage.set('vault', vault);
       await expect(keyring.unlock('correct')).rejects.toThrow(
         'Invalid encrypted vault format'
       );

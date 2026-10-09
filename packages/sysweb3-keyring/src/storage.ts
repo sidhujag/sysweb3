@@ -201,6 +201,15 @@ export const getDecryptedVault = async (pwd: string) => {
 
     // Prefer WebCrypto AES-GCM when the stored vault is in v4 envelope format.
     const maybeEnvelope = maybeParseGcmEnvelope(vault);
+    if (
+      !maybeEnvelope &&
+      typeof vault === 'string' &&
+      vault.trim().startsWith('{')
+    ) {
+      // Legacy CBC vaults are base64. A JSON-shaped record must be a valid
+      // GCM envelope rather than being misreported as a password failure.
+      throw new Error('Invalid encrypted vault format');
+    }
     let decryptedVault: string;
     if (maybeEnvelope) {
       decryptedVault = await decryptVaultWebCrypto(maybeEnvelope, pwd);

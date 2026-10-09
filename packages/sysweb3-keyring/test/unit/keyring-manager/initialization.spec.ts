@@ -380,8 +380,9 @@ describe('KeyringManager Initialization', () => {
 
       // After forgetting, wallet should be locked and empty
       expect(keyringManager.isUnlocked()).toBe(false);
-      const unlockResult = await keyringManager.unlock(FAKE_PASSWORD);
-      expect(unlockResult.canLogin).toBe(false); // No vault to unlock
+      await expect(keyringManager.unlock(FAKE_PASSWORD)).rejects.toThrow(
+        'Vault keys not found'
+      ); // No vault exists; this is not a failed password attempt.
     });
 
     it('should reject forget wallet with wrong password', async () => {
