@@ -112,6 +112,12 @@ const encryptVaultWebCrypto = async (
   };
 };
 
+const invalidPasswordError = () =>
+  Object.assign(
+    new Error('Failed to decrypt vault - invalid password or corrupted data'),
+    { code: 'INVALID_PASSWORD' }
+  );
+
 const decryptVaultWebCrypto = async (
   envelope: VaultGcmEnvelopeV4,
   keyHex: string
@@ -131,11 +137,25 @@ const decryptVaultWebCrypto = async (
 
   const ivBytes = hexToBytes(envelope.iv);
   const ctBytes = hexToBytes(envelope.ct);
-  const pt = await subtle.decrypt(
-    { name: 'AES-GCM', iv: ivBytes as unknown as BufferSource },
-    key,
-    ctBytes as unknown as BufferSource
-  );
+  if (ivBytes.length !== 12 || ctBytes.length < 16) {
+    throw new Error('Invalid encrypted vault format');
+  }
+
+  let pt: ArrayBuffer;
+  try {
+    pt = await subtle.decrypt(
+      { name: 'AES-GCM', iv: ivBytes as unknown as BufferSource },
+      key,
+      ctBytes as unknown as BufferSource
+    );
+  } catch (error) {
+    // Only a failed authentication tag is a password/ciphertext failure.
+    // Key import and other platform exceptions must remain operational.
+    if (error?.name === 'OperationError') {
+      throw invalidPasswordError();
+    }
+    throw error;
+  }
   return new TextDecoder().decode(pt);
 };
 
@@ -183,26 +203,34 @@ export const getDecryptedVault = async (pwd: string) => {
     const maybeEnvelope = maybeParseGcmEnvelope(vault);
     let decryptedVault: string;
     if (maybeEnvelope) {
-      try {
-        decryptedVault = await decryptVaultWebCrypto(maybeEnvelope, pwd);
-      } catch {
-        throw new Error(
-          'Failed to decrypt vault - invalid password or corrupted data'
-        );
-      }
+      decryptedVault = await decryptVaultWebCrypto(maybeEnvelope, pwd);
     } else {
       // Legacy CryptoJS passphrase-AES vault (v3 and older v4 canary).
-      decryptedVault = CryptoJS.AES.decrypt(vault, pwd).toString(
-        CryptoJS.enc.Utf8
-      );
+      try {
+        decryptedVault = CryptoJS.AES.decrypt(vault, pwd).toString(
+          CryptoJS.enc.Utf8
+        );
+      } catch (error) {
+        if (error?.message === 'Malformed UTF-8 data') {
+          throw invalidPasswordError();
+        }
+        throw error;
+      }
     }
 
     if (!decryptedVault) {
-      throw new Error(
-        'Failed to decrypt vault - invalid password or corrupted data'
-      );
+      throw invalidPasswordError();
     }
 
-    return JSON.parse(decryptedVault);
+    try {
+      return JSON.parse(decryptedVault);
+    } catch (error) {
+      // Legacy CBC vaults have no authentication tag; invalid plaintext is
+      // the only available indication of a bad password/ciphertext.
+      if (!maybeEnvelope && error instanceof SyntaxError) {
+        throw invalidPasswordError();
+      }
+      throw error;
+    }
   });
 };

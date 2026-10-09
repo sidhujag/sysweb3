@@ -432,17 +432,23 @@ export class KeyringManager implements IKeyringManager {
     };
   };
 
+  /**
+   * Returns canLogin:false only when the first vault authentication fails.
+   * Storage, platform and session restoration failures reject so callers do
+   * not charge a failed password attempt for an operational error.
+   */
   public async unlock(password: string): Promise<{
     canLogin: boolean;
     needsAccountCreation?: boolean;
   }> {
+    let authenticated = false;
     try {
       const vaultKeys = await this.storage.get('vault-keys');
 
       if (!vaultKeys) {
-        return {
-          canLogin: false,
-        };
+        throw new Error(
+          'Vault keys not found. Reload the wallet and try again.'
+        );
       }
       // v4: Validate password by deriving the session key once and decrypting the vault with it.
       // This avoids an extra KDF pass just for a stored verifier.
@@ -466,6 +472,7 @@ export class KeyringManager implements IKeyringManager {
 
         // Get the vault (v3 vault is encrypted with raw password)
         const { mnemonic } = await getDecryptedVault(password);
+        authenticated = true;
 
         if (mnemonic) {
           // Check if mnemonic is double-encrypted (old format behavior)
@@ -519,6 +526,7 @@ export class KeyringManager implements IKeyringManager {
       // v4 vault is encrypted with the derived session password key (PBKDF2 output).
       // If the password is wrong, this will throw and we return canLogin:false below.
       await getDecryptedVault(sessionPasswordKey);
+      authenticated = true;
 
       // If session data missing or corrupted, recreate from vault
       if (!this.sessionMnemonic) {
@@ -571,12 +579,15 @@ export class KeyringManager implements IKeyringManager {
         canLogin: true,
       };
     } catch (error) {
-      console.log('ERROR unlock', {
-        error,
-      });
-      return {
-        canLogin: false,
-      };
+      if (!authenticated && error?.code === 'INVALID_PASSWORD') {
+        return { canLogin: false };
+      }
+      if (authenticated) {
+        // lockWallet clears secret buffers synchronously; hardware cleanup
+        // is best effort and must not hide the original operational error.
+        void this.lockWallet().catch(() => undefined);
+      }
+      throw error;
     }
   }
 
