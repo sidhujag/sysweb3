@@ -1,6 +1,8 @@
 import { pbkdf2Sync, webcrypto } from 'crypto';
 import CryptoJS from 'crypto-js';
 
+import { installNativeStorageTestClient } from '../../helpers/native-storage-locks';
+
 const password = 'synthetic compatibility password';
 const salt = '33'.repeat(16);
 const mnemonic =
@@ -29,6 +31,7 @@ describe('production KDF compatibility through the real core adapter', () => {
   let getDecryptedVault: any;
   let ring: any;
   let client: any;
+  let nativeStorage: ReturnType<typeof installNativeStorageTestClient>;
   let originalCrypto: PropertyDescriptor | undefined;
   let originalNodeEnv: string | undefined;
   let originalIterations: string | undefined;
@@ -98,6 +101,7 @@ describe('production KDF compatibility through the real core adapter', () => {
         delete data[key];
       }),
     };
+    nativeStorage = installNativeStorageTestClient(client);
     db.setClient(client);
     ring = createRing();
     client.set.mockClear();
@@ -109,6 +113,7 @@ describe('production KDF compatibility through the real core adapter', () => {
     await ring.lockWallet();
     jest.restoreAllMocks();
     db.setClient();
+    nativeStorage.restore();
     if (originalCrypto)
       Object.defineProperty(globalThis, 'crypto', originalCrypto);
     if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
@@ -332,7 +337,7 @@ describe('production KDF compatibility through the real core adapter', () => {
     };
     db.setClient(sequential);
     await expect(ring.initializeSession(mnemonic, password)).rejects.toThrow(
-      'Storage adapter does not support atomic batch writes'
+      'Storage adapter does not support atomic creation'
     );
     expect(sequential.setItem).not.toHaveBeenCalled();
   });

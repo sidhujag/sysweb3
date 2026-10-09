@@ -31,6 +31,14 @@ KDF profiles or parameters are rejected.
 
 Storage clients must return their asynchronous write/delete promises. The core
 adapter preserves them so rejected writes do not silently advance vault migration.
+Fresh wallet creation additionally requires conditional batch creation. Native
+`chrome.storage.local` and `browser.storage.local` use a prefix-scoped Web Lock
+around the absence check and awaited write, coordinating contexts in the same
+extension origin and storage partition. Custom clients must provide an atomic
+`createItemsIfAbsent(items)` backend operation over prefixed, JSON-serialized
+values; the built-in memory client provides this operation synchronously.
+There is no sequential or unlocked fallback. A backend shared across storage
+partitions needs its own atomic implementation or a single owner.
 
 ### Release order for 1.0.613
 
@@ -218,7 +226,7 @@ Main class for keyring operations:
 ## Security
 
 - `initializeSession`, `initializeWalletSecurely`, and the initialization factories create a new wallet only when both vault records are absent. Use `unlock()` to restore an existing wallet. Repeating initialization on a matching live session verifies the stored wallet without rewriting it.
-- Fresh vault salt and ciphertext are committed together through native `set(items)` or an explicitly atomic `setItems` storage adapter. Sequential-only adapters are rejected before writing. Existing or incomplete records are preserved.
+- Fresh vault salt and ciphertext are created together only if both are absent, through the core conditional-creation operation. Native extension contexts sharing an origin/storage partition are coordinated by Web Locks; custom backends must provide atomic `createItemsIfAbsent`. Unsupported adapters are rejected before writing. Existing or incomplete records are preserved.
 - UTXO signing authenticates the selected account's paths, public keys and spent scripts. A joint PSBT may include unfinished inputs for another signer: their HD/path hints are removed before the selected private signer runs, then their public metadata is restored to the returned partial PSBT. Another account in the same wallet remains unsigned. At least one unfinished input must authenticate to the selected account; a wholly finalized PSBT retains its existing handling. Standard P2WSH, wrapped P2WSH and P2SH multisig preserve external cosigner signatures and continuation. Hardware paths and single-address imports can reject unsupported joint inputs rather than widening signing authority.
 - Hardware signing preserves already-finalized external inputs without requesting their private derivations. Trezor receives them as `EXTERNAL` inputs; Ledger retains their final scripts in PSBTv2 and skips signing/finalizing them again. Unfinished foreign hardware inputs remain unsupported.
 - Persisted wallet and account secrets are encrypted; plaintext signing material is used in memory

@@ -6,6 +6,10 @@ interface IStateStorageClient {
   setItem(key: string, value: string): void | Promise<void>;
   // Optional all-or-nothing batch for clients without a native set(items).
   setItems?(items: Record<string, string>): void | Promise<void>;
+  // Backend-enforced atomic creation: false means at least one key exists.
+  createItemsIfAbsent?(
+    items: Record<string, string>
+  ): boolean | Promise<boolean>;
 }
 
 export interface IKeyValueDb {
@@ -13,6 +17,7 @@ export interface IKeyValueDb {
   get(key: string): any;
   set(key: string, value: any): void | Promise<void>;
   setMany(items: Record<string, any>): void | Promise<void>;
+  createManyIfAbsent(items: Record<string, any>): Promise<boolean>;
   setClient(client?: IStateStorageClient): void;
   setPrefix(prefix: string): void;
 }
@@ -70,6 +75,66 @@ const StateStorageDb = (
     throw new Error('Storage adapter does not support atomic batch writes');
   };
 
+  const createManyIfAbsent = async (
+    items: Record<string, any>
+  ): Promise<boolean> => {
+    // Capture the target before waiting so a later setClient/setPrefix cannot
+    // move the check and write to different storage namespaces.
+    const client = storageClient;
+    const prefix = keyPrefix;
+    const entries = Object.entries(items).map(([key, value]) => [
+      prefix + key,
+      value,
+    ]);
+    if (client && typeof client.createItemsIfAbsent === 'function') {
+      const serialized = Object.fromEntries(
+        entries.map(([key, value]) => [key, JSON.stringify(value)])
+      );
+      const created = await client.createItemsIfAbsent(serialized);
+      if (typeof created !== 'boolean')
+        throw new Error('Atomic storage creation returned an invalid result');
+      return created;
+    }
+
+    const globals = globalThis as any;
+    const nativeLocal =
+      client &&
+      (client === globals.chrome?.storage?.local ||
+        client === globals.browser?.storage?.local);
+    const locks = globals.navigator?.locks;
+    if (
+      !nativeLocal ||
+      typeof client.get !== 'function' ||
+      typeof client.set !== 'function' ||
+      typeof locks?.request !== 'function'
+    ) {
+      throw new Error('Storage adapter does not support atomic creation');
+    }
+
+    // Web Locks coordinate extension contexts in the same origin/storage
+    // partition. Custom/shared backends must supply their own atomic method.
+    return locks.request(
+      `sysweb3:create:${prefix}`,
+      { mode: 'exclusive' },
+      async () => {
+        const keys = entries.map(([key]) => key);
+        const existing = await client.get(keys);
+        if (!existing || typeof existing !== 'object')
+          throw new Error(
+            'Atomic storage creation could not read existing keys'
+          );
+        if (
+          keys.some(
+            (key) => existing[key] !== undefined && existing[key] !== null
+          )
+        )
+          return false;
+        await client.set(Object.fromEntries(entries));
+        return true;
+      }
+    );
+  };
+
   const get = async (key: string): Promise<any> => {
     if (!storageClient) return;
 
@@ -102,6 +167,7 @@ const StateStorageDb = (
     setPrefix,
     set,
     setMany,
+    createManyIfAbsent,
     get,
     deleteItem,
   };
@@ -118,6 +184,17 @@ const MemoryStorageClient = (): IStateStorageClient => {
     Object.assign(memory, items);
   };
 
+  const createItemsIfAbsent = (items: Record<string, string>) => {
+    if (
+      Object.keys(items).some(
+        (key) => memory[key] !== undefined && memory[key] !== null
+      )
+    )
+      return false;
+    Object.assign(memory, items);
+    return true;
+  };
+
   const getItem = (key: string): any => memory[key];
 
   const removeItem = (key: string) => {
@@ -127,6 +204,7 @@ const MemoryStorageClient = (): IStateStorageClient => {
   return {
     setItem,
     setItems,
+    createItemsIfAbsent,
     getItem,
     removeItem,
   };

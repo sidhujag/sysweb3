@@ -178,24 +178,6 @@ export const setEncryptedVault = async (
   return vaultMutex.runExclusive(async () => {
     const plaintext = JSON.stringify(decryptedVault);
 
-    if (freshVaultKeys) {
-      // Both records must be absent, including malformed/falsy stored values.
-      // Recheck under the mutex so concurrent initializers cannot replace the
-      // wallet committed by the first one, or erase an existing mismatch.
-      const [existingVault, existingKeys] = await Promise.all([
-        storage.get('vault'),
-        storage.get('vault-keys'),
-      ]);
-      if (
-        (existingVault !== undefined && existingVault !== null) ||
-        (existingKeys !== undefined && existingKeys !== null)
-      ) {
-        throw new Error(
-          'Cannot initialize a new vault over existing wallet storage'
-        );
-      }
-    }
-
     // Writes never downgrade to unauthenticated passphrase AES. Legacy CBC
     // remains readable below, but missing WebCrypto is an operational failure.
     const canUseWebCrypto =
@@ -211,8 +193,16 @@ export const setEncryptedVault = async (
     const toStore = JSON.stringify(envelope);
 
     if (freshVaultKeys) {
-      // A failed fresh creation must not strand a salt without its ciphertext.
-      await storage.setMany({ 'vault-keys': freshVaultKeys, vault: toStore });
+      // The backend primitive (or native storage Web Lock) covers both the
+      // absence check and batch commit across independently bundled contexts.
+      const created = await storage.createManyIfAbsent({
+        'vault-keys': freshVaultKeys,
+        vault: toStore,
+      });
+      if (!created)
+        throw new Error(
+          'Cannot initialize a new vault over existing wallet storage'
+        );
     } else {
       // Existing vault updates retain their migration-specific write ordering.
       await storage.set('vault', toStore);

@@ -219,6 +219,15 @@ jest.mock('@sidhujag/sysweb3-core', () => ({
         );
         return Promise.resolve();
       }),
+      createManyIfAbsent: jest.fn((items: Record<string, any>) => {
+        // No await between the shared map's absence check and complete write.
+        if (Object.keys(items).some((key) => mockStorage.get(key) != null))
+          return Promise.resolve(false);
+        Object.entries(items).forEach(([key, value]) =>
+          mockStorage.set(key, value)
+        );
+        return Promise.resolve(true);
+      }),
       deleteItem: jest.fn((key: string) => {
         mockStorage.delete(key);
         return Promise.resolve();
