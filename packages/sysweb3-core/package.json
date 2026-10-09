@@ -1,6 +1,6 @@
 {
   "name": "@sidhujag/sysweb3-core",
-  "version": "1.0.28",
+  "version": "1.0.29",
   "description": "The localStorage Manager For PrivKeys",
   "main": "cjs/index.js",
   "types": "types/index.d.ts",

@@ -127,7 +127,12 @@ const decryptVaultWebCrypto = async (
   envelope: VaultGcmEnvelopeV4,
   keyHex: string
 ): Promise<string> => {
-  const subtle = (globalThis as any).crypto.subtle as SubtleCrypto;
+  const subtle = (globalThis as any)?.crypto?.subtle as
+    | SubtleCrypto
+    | undefined;
+  if (!subtle) {
+    throw new Error('WebCrypto is required to decrypt this vault');
+  }
   const keyBytes = hexToBytes(keyHex);
   if (keyBytes.length !== 32) {
     throw new Error('Vault key must be 32 bytes (hex length 64)');
@@ -169,26 +174,19 @@ export const setEncryptedVault = async (decryptedVault: any, pwd: string) => {
   return vaultMutex.runExclusive(async () => {
     const plaintext = JSON.stringify(decryptedVault);
 
-    // Prefer WebCrypto AES-GCM when available.
-    // For v4, callers pass a PBKDF2-derived hex key (32 bytes).
-    // Fallback to CryptoJS passphrase-AES if WebCrypto is unavailable.
-    let toStore: string;
+    // Writes never downgrade to unauthenticated passphrase AES. Legacy CBC
+    // remains readable below, but missing WebCrypto is an operational failure.
     const canUseWebCrypto =
       !!(globalThis as any)?.crypto?.subtle &&
       !!(globalThis as any)?.crypto?.getRandomValues;
-
-    if (
-      canUseWebCrypto &&
-      typeof pwd === 'string' &&
-      isHex(pwd) &&
-      pwd.length === 64
-    ) {
-      const envelope = await encryptVaultWebCrypto(plaintext, pwd);
-      toStore = JSON.stringify(envelope);
-    } else {
-      const encryptedVault = CryptoJS.AES.encrypt(plaintext, pwd);
-      toStore = encryptedVault.toString();
+    if (!canUseWebCrypto) {
+      throw new Error('WebCrypto is required for vault encryption');
     }
+    if (typeof pwd !== 'string' || !isHex(pwd) || pwd.length !== 64) {
+      throw new Error('Vault key must be 32 bytes (hex length 64)');
+    }
+    const envelope = await encryptVaultWebCrypto(plaintext, pwd);
+    const toStore = JSON.stringify(envelope);
 
     // Always use single 'vault' key for all networks
     await storage.set('vault', toStore);

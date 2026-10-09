@@ -390,40 +390,82 @@ describe('Ledger Hardware Wallet', () => {
         });
     });
 
-    it('should prepare PSBT for Ledger signing', async () => {
-      // Mock the PSBT parsing to avoid base64 validation issues
-      const mockSyscoinjs = require('syscoinjs-lib');
-      const originalImportPsbtFromJson = mockSyscoinjs.utils.importPsbtFromJson;
-      mockSyscoinjs.utils.importPsbtFromJson = jest.fn().mockReturnValue({
-        psbt: {
-          toBase64: jest
-            .fn()
-            .mockReturnValue(
-              'cHNidP8BAHECAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAfgAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=='
-            ),
-          extractTransaction: jest.fn().mockReturnValue({
-            getId: jest.fn().mockReturnValue('mock_transaction_id'),
+    it('should prepare a scoped PSBT for Ledger signing', async () => {
+      const bitcoinjs = require('syscoinjs-lib').utils.bitcoinjs;
+      const PsbtUtils = require('../../../src/utils/psbt').PsbtUtils;
+      const signer = (keyringManager as any).createOnDemandUTXOSigner(0);
+      const root = signer.getRootNode();
+      const path = `m/84'/${currentVaultState.activeNetwork.slip44}'/0'/0/0`;
+      const child = root.derivePath(path);
+      const network = signer.Signer.network;
+      const payment = bitcoinjs.payments.p2wpkh({
+        pubkey: child.publicKey,
+        network,
+      });
+      const account = currentVaultState.accounts[KeyringAccountType.Ledger][0];
+      account.xpub = signer.getAccountXpub();
+      account.address = payment.address;
+      const previous = new bitcoinjs.Transaction();
+      previous.addInput(Buffer.alloc(32), 0xffffffff);
+      previous.addOutput(payment.output, 100000n);
+      const psbt = new bitcoinjs.Psbt({ network });
+      psbt.addInput({
+        hash: previous.getId(),
+        index: 0,
+        nonWitnessUtxo: previous.toBuffer(),
+        bip32Derivation: [
+          {
+            masterFingerprint: root.fingerprint,
+            path,
+            pubkey: child.publicKey,
+          },
+        ],
+      });
+      psbt.addOutput({ script: payment.output, value: 99000n });
+      const tx = keyringManager.syscoinTransaction as any;
+      const originalUtils = tx.txUtilsFunctions();
+      const rawTransaction = jest
+        .spyOn(tx, 'txUtilsFunctions')
+        .mockReturnValue({
+          ...originalUtils,
+          getRawTransaction: jest.fn().mockResolvedValue(previous.toHex()),
+        });
+      // This test covers preparation, not device signatures. Preserve the real
+      // input data through every scope check, then skip signature finalization.
+      (
+        keyringManager.ledgerSigner.convertToLedgerFormat as jest.Mock
+      ).mockImplementation(async (prepared) => {
+        jest.spyOn(prepared, 'finalizeAllInputs').mockReturnValue(prepared);
+        return prepared;
+      });
+      (
+        keyringManager.ledgerSigner.ledgerUtxoClient.signPsbt as jest.Mock
+      ).mockResolvedValue([]);
+      try {
+        const result = await keyringManager.syscoinTransaction.signPSBT({
+          psbt: PsbtUtils.toPali(psbt),
+          isTrezor: false,
+          isLedger: true,
+        });
+        expect(result).toBeDefined();
+        expect(tx.txUtilsFunctions().getRawTransaction).not.toHaveBeenCalled();
+        expect(
+          keyringManager.ledgerSigner.ledgerUtxoClient.signPsbt
+        ).toHaveBeenCalledTimes(1);
+        expect(
+          keyringManager.ledgerSigner.convertToLedgerFormat
+        ).toHaveBeenCalledWith(
+          expect.objectContaining({
+            data: expect.objectContaining({ inputs: expect.any(Array) }),
           }),
-          updateInput: jest.fn(),
-          finalizeAllInputs: jest.fn(),
-        },
-      });
-
-      const psbtData = {
-        psbt: 'valid_psbt_data',
-        assets: [],
-      };
-
-      const result = await keyringManager.syscoinTransaction.signPSBT({
-        psbt: psbtData,
-        isTrezor: false,
-        isLedger: true,
-      });
-
-      expect(result).toBeDefined();
-      // Verify Ledger-specific handling was applied
-      // Restore original function
-      mockSyscoinjs.utils.importPsbtFromJson = originalImportPsbtFromJson;
+          account.xpub,
+          0,
+          currentVaultState.activeNetwork.currency,
+          currentVaultState.activeNetwork.slip44
+        );
+      } finally {
+        rawTransaction.mockRestore();
+      }
     });
 
     it('should reconnect to Ledger when connection is lost during EVM transaction signing', async () => {

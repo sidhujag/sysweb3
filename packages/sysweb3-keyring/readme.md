@@ -14,6 +14,32 @@ The sysweb3-keyring provides a unified interface for managing accounts, transact
 - **Secure Session Management**: Encrypted private key handling with session transfer
 - **Transaction Management**: Full transaction lifecycle support for both network types
 
+## Vault encryption compatibility
+
+New vaults require WebCrypto and use PBKDF2-HMAC-SHA-512 (900,000 production
+iterations) with AES-256-GCM. Missing WebCrypto rejects the operation without
+writing a weaker fallback vault. Restore WebCrypto availability before retrying
+an unmarked legacy vault.
+
+Historical fallback vaults used a 20,000-iteration key that also encrypted their
+persisted account keys. After authenticating such a CBC vault, the keyring records
+the explicit `pbkdf2-sha512-20000` compatibility profile and rewraps the vault with
+AES-GCM. This preserves existing account access across restart; it is **not** a
+full rekey of those account records to 900,000 iterations. The profile is written
+before rewrapping, so interruption of either write remains recoverable. Arbitrary
+KDF profiles or parameters are rejected.
+
+Storage clients must return their asynchronous write/delete promises. The core
+adapter preserves them so rejected writes do not silently advance vault migration.
+
+### Release order for 1.0.613
+
+Publish `@sidhujag/sysweb3-core@1.0.29` before `@sidhujag/sysweb3-keyring@1.0.613`.
+The updated lock entry describes that intended dependency; its integrity is
+intentionally absent until publication. Regenerate and verify the lockfile from
+the published registry artifacts before a clean registry installation. Local
+validation uses the built package tarballs and does not establish publication.
+
 ## Installation
 
 ```bash

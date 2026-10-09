@@ -1,6 +1,6 @@
 // Test setup file
 import { INetworkType } from '@sidhujag/sysweb3-network';
-import { randomBytes } from 'crypto';
+import { webcrypto } from 'crypto';
 import CryptoJS from 'crypto-js';
 
 import { KeyringAccountType } from '../../src';
@@ -23,14 +23,8 @@ declare global {
   const mockVaultState: any;
 }
 
-// Polyfill crypto.getRandomValues for Node.js
-global.crypto = {
-  getRandomValues: (arr: Uint8Array) => {
-    const bytes = randomBytes(arr.length);
-    arr.set(bytes);
-    return arr;
-  },
-} as any;
+// Exercise the production WebCrypto path; fallback CBC is read-only.
+global.crypto = webcrypto as any;
 
 // Mock browser globals that Trezor expects
 global.self = global as any;

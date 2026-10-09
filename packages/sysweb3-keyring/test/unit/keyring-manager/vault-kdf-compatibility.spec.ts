@@ -1,0 +1,338 @@
+import { pbkdf2Sync, webcrypto } from 'crypto';
+import CryptoJS from 'crypto-js';
+
+const password = 'synthetic compatibility password';
+const salt = '33'.repeat(16);
+const mnemonic =
+  'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+const accountSecret = '0x' + '42'.repeat(32);
+const legacyProfile = 'pbkdf2-sha512-20000';
+const legacyKey = CryptoJS.PBKDF2(password, CryptoJS.enc.Hex.parse(salt), {
+  keySize: 8,
+  iterations: 20_000,
+  hasher: CryptoJS.algo.SHA512,
+}).toString();
+
+const deferred = () => {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+};
+
+describe('production KDF compatibility through the real core adapter', () => {
+  const data: Record<string, any> = {};
+  let Keyring: any;
+  let db: any;
+  let setEncryptedVault: any;
+  let getDecryptedVault: any;
+  let ring: any;
+  let client: any;
+  let originalCrypto: PropertyDescriptor | undefined;
+  let originalNodeEnv: string | undefined;
+  let originalIterations: string | undefined;
+  let originalLocation: PropertyDescriptor | undefined;
+
+  const installLegacy = () => {
+    data['sysweb3-vault-keys'] = { salt };
+    data['sysweb3-vault'] = CryptoJS.AES.encrypt(
+      JSON.stringify({ mnemonic }),
+      legacyKey
+    ).toString();
+  };
+  const createRing = () => {
+    const result = new Keyring();
+    result.setVaultStateGetter(() => ({
+      activeAccount: { id: 0, type: 'HDAccount' },
+      activeNetwork: { kind: 'ethereum' },
+      accounts: {
+        HDAccount: {
+          0: {
+            xprv: CryptoJS.AES.encrypt(accountSecret, legacyKey).toString(),
+          },
+        },
+      },
+    }));
+    return result;
+  };
+
+  beforeAll(() => {
+    originalLocation = Object.getOwnPropertyDescriptor(globalThis, 'location');
+    Object.defineProperty(globalThis, 'location', {
+      configurable: true,
+      value: { href: 'https://wallet.test/' },
+    });
+    jest.resetModules();
+    jest.doMock('@sidhujag/sysweb3-core', () =>
+      jest.requireActual('@sidhujag/sysweb3-core')
+    );
+    jest.isolateModules(() => {
+      Keyring = require('../../../src').KeyringManager;
+      db = require('@sidhujag/sysweb3-core').sysweb3Di.getStateStorageDb();
+      ({
+        setEncryptedVault,
+        getDecryptedVault,
+      } = require('../../../src/storage'));
+    });
+  });
+  beforeEach(() => {
+    Object.keys(data).forEach((key) => delete data[key]);
+    originalCrypto = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+    Object.defineProperty(globalThis, 'crypto', {
+      configurable: true,
+      value: webcrypto,
+    });
+    originalNodeEnv = process.env.NODE_ENV;
+    originalIterations = process.env.SYSWEB3_PBKDF2_ENC_ITERS;
+    process.env.NODE_ENV = 'production';
+    delete process.env.SYSWEB3_PBKDF2_ENC_ITERS;
+    client = {
+      get: jest.fn(async (keys: string[]) =>
+        Object.fromEntries(keys.map((key) => [key, data[key]]))
+      ),
+      set: jest.fn(async (value: any) => {
+        Object.assign(data, value);
+      }),
+      remove: jest.fn(async (key: string) => {
+        delete data[key];
+      }),
+    };
+    db.setClient(client);
+    ring = createRing();
+    client.set.mockClear();
+    delete data['sysweb3-utf8Error'];
+    jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    jest.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+  afterEach(async () => {
+    await ring.lockWallet();
+    jest.restoreAllMocks();
+    db.setClient();
+    if (originalCrypto)
+      Object.defineProperty(globalThis, 'crypto', originalCrypto);
+    if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = originalNodeEnv;
+    if (originalIterations === undefined)
+      delete process.env.SYSWEB3_PBKDF2_ENC_ITERS;
+    else process.env.SYSWEB3_PBKDF2_ENC_ITERS = originalIterations;
+  });
+
+  afterAll(() => {
+    if (originalLocation)
+      Object.defineProperty(globalThis, 'location', originalLocation);
+    else delete (globalThis as any).location;
+  });
+
+  it.each([false, true])(
+    'ignores rejected best-effort diagnostics (synchronous: %s)',
+    async (synchronous) => {
+      installLegacy();
+      const unhandled = jest.fn();
+      process.on('unhandledRejection', unhandled);
+      client.set.mockImplementation((value: any) => {
+        if ('sysweb3-utf8Error' in value) {
+          const error = new Error('diagnostic storage offline');
+          if (synchronous) throw error;
+          return Promise.reject(error);
+        }
+        Object.assign(data, value);
+        return Promise.resolve();
+      });
+      try {
+        ring = createRing();
+        ring.validateAndHandleErrorByMessage('Malformed UTF-8 data');
+        await expect(ring.unlock(password)).resolves.toEqual({
+          canLogin: true,
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(unhandled).not.toHaveBeenCalled();
+      } finally {
+        process.off('unhandledRejection', unhandled);
+      }
+    }
+  );
+
+  it('uses 900k PBKDF2/SHA-512 for a new wallet and stores only authenticated encryption', async () => {
+    const expected = pbkdf2Sync(
+      password,
+      Buffer.from(salt, 'hex'),
+      900_000,
+      32,
+      'sha512'
+    ).toString('hex');
+    data['sysweb3-vault-keys'] = { salt };
+    await ring.initializeSession(mnemonic, password);
+    expect(ring.getSessionPasswordString()).toBe(expected);
+    expect(expected).not.toBe(legacyKey);
+    expect(JSON.parse(data['sysweb3-vault']).alg).toBe('A256GCM');
+    expect(await getDecryptedVault(expected)).toEqual({ mnemonic });
+  });
+
+  it('retains legacy account access after WebCrypto appears and after restarting', async () => {
+    installLegacy();
+    await expect(ring.unlock(password)).resolves.toEqual({ canLogin: true });
+    expect(data['sysweb3-vault-keys']).toEqual({
+      salt,
+      keyDerivation: legacyProfile,
+    });
+    expect(JSON.parse(data['sysweb3-vault']).alg).toBe('A256GCM');
+    expect(await ring.getSeed(password)).toBe(mnemonic);
+    expect(await ring.getPrivateKeyByAccountId(0, 'HDAccount', password)).toBe(
+      accountSecret
+    );
+    await ring.lockWallet();
+    ring = createRing();
+    await expect(ring.unlock(password)).resolves.toEqual({ canLogin: true });
+    expect(await ring.getSeed(password)).toBe(mnemonic);
+    expect(await ring.getPrivateKeyByAccountId(0, 'HDAccount', password)).toBe(
+      accountSecret
+    );
+    await expect(ring.unlock('wrong password')).resolves.toEqual({
+      canLogin: false,
+    });
+  });
+
+  it('uses the persisted compatibility profile when initializing an existing session', async () => {
+    installLegacy();
+    await ring.unlock(password);
+    await ring.lockWallet();
+    ring = createRing();
+    await ring.initializeSession(mnemonic, password);
+    expect(await ring.getPrivateKeyByAccountId(0, 'HDAccount', password)).toBe(
+      accountSecret
+    );
+    expect(await ring.getSeed(password)).toBe(mnemonic);
+  });
+
+  it('requires WebCrypto without changing an unmarked legacy vault, then recovers when restored', async () => {
+    installLegacy();
+    const before = { ...data };
+    Object.defineProperty(globalThis, 'crypto', {
+      configurable: true,
+      value: { getRandomValues: webcrypto.getRandomValues.bind(webcrypto) },
+    });
+    await expect(ring.unlock(password)).rejects.toThrow(
+      'WebCrypto is required'
+    );
+    expect(data).toEqual(before);
+    expect(client.set).not.toHaveBeenCalled();
+    Object.defineProperty(globalThis, 'crypto', {
+      configurable: true,
+      value: webcrypto,
+    });
+    await expect(ring.unlock(password)).resolves.toEqual({ canLogin: true });
+  });
+
+  it('never creates a CBC vault or metadata when WebCrypto is unavailable', async () => {
+    Object.defineProperty(globalThis, 'crypto', {
+      configurable: true,
+      value: {},
+    });
+    await expect(ring.initializeSession(mnemonic, password)).rejects.toThrow(
+      'WebCrypto is required'
+    );
+    await expect(setEncryptedVault({ mnemonic }, legacyKey)).rejects.toThrow(
+      'WebCrypto is required'
+    );
+    expect(client.set).not.toHaveBeenCalled();
+    expect(data).toEqual({});
+  });
+
+  it('does not let metadata specify arbitrary KDF parameters', async () => {
+    installLegacy();
+    data['sysweb3-vault-keys'].keyDerivation = { iterations: 1 };
+    const derive = jest.spyOn(webcrypto.subtle, 'deriveBits');
+    await expect(ring.unlock(password)).rejects.toThrow(
+      'Unsupported vault key derivation profile'
+    );
+    expect(derive).not.toHaveBeenCalled();
+    expect(client.set).not.toHaveBeenCalled();
+  });
+
+  it('does not try the legacy KDF for a corrupted modern GCM vault', async () => {
+    data['sysweb3-vault-keys'] = { salt };
+    await setEncryptedVault({ mnemonic }, legacyKey);
+    const derive = jest.spyOn(webcrypto.subtle, 'deriveBits');
+    await expect(ring.unlock(password)).resolves.toEqual({ canLogin: false });
+    expect(derive).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['profile', 'ciphertext'])(
+    'keeps legacy recovery possible after a rejected %s write',
+    async (failure) => {
+      installLegacy();
+      const originalVault = data['sysweb3-vault'];
+      const error = new Error('asynchronous storage rejection');
+      const save = client.set.getMockImplementation();
+      client.set.mockImplementationOnce(async (value: any) => {
+        if (failure === 'profile') throw error;
+        return save(value);
+      });
+      if (failure === 'ciphertext') client.set.mockRejectedValueOnce(error);
+      await expect(ring.unlock(password)).rejects.toBe(error);
+      expect(data['sysweb3-vault']).toBe(originalVault);
+      expect(data['sysweb3-vault-keys']).toEqual(
+        failure === 'profile'
+          ? { salt }
+          : { salt, keyDerivation: legacyProfile }
+      );
+      await expect(ring.unlock(password)).resolves.toEqual({ canLogin: true });
+      expect(JSON.parse(data['sysweb3-vault']).alg).toBe('A256GCM');
+      expect(
+        await ring.getPrivateKeyByAccountId(0, 'HDAccount', password)
+      ).toBe(accountSecret);
+    }
+  );
+
+  it('awaits the actual Chrome vault write before removing the legacy session salt', async () => {
+    const oldSalt = '44'.repeat(16);
+    const oldKey = CryptoJS.PBKDF2(password, CryptoJS.enc.Hex.parse(oldSalt), {
+      keySize: 8,
+      iterations: 20_000,
+      hasher: CryptoJS.algo.SHA512,
+    }).toString();
+    const encryptedMnemonic = CryptoJS.AES.encrypt(mnemonic, oldKey).toString();
+    data['sysweb3-vault-keys'] = { salt, currentSessionSalt: oldSalt };
+    data['sysweb3-vault'] = CryptoJS.AES.encrypt(
+      JSON.stringify({ mnemonic: encryptedMnemonic }),
+      password
+    ).toString();
+    const entered = deferred();
+    const release = deferred();
+    client.set.mockImplementation(async (value: any) => {
+      if ('sysweb3-vault' in value) {
+        entered.resolve();
+        await release.promise;
+      }
+      Object.assign(data, value);
+    });
+    let settled = false;
+    const unlock = ring.unlock(password).finally(() => {
+      settled = true;
+    });
+    await entered.promise;
+    expect(data['sysweb3-vault-keys']).toEqual({
+      salt,
+      currentSessionSalt: oldSalt,
+    });
+    expect(settled).toBe(false);
+    release.resolve();
+    await expect(unlock).resolves.toEqual({ canLogin: true });
+    expect(data['sysweb3-vault-keys']).toEqual({ salt });
+  });
+
+  it('preserves old migration records when the real adapter rejects the vault write', async () => {
+    data['sysweb3-vault-keys'] = { salt, currentSessionSalt: '44'.repeat(16) };
+    data['sysweb3-vault'] = CryptoJS.AES.encrypt(
+      JSON.stringify({ mnemonic }),
+      password
+    ).toString();
+    const before = { ...data };
+    const error = new Error('Chrome quota write failure');
+    client.set.mockRejectedValueOnce(error);
+    await expect(ring.unlock(password)).rejects.toBe(error);
+    expect(data).toEqual(before);
+    await expect(ring.unlock(password)).resolves.toEqual({ canLogin: true });
+  });
+});

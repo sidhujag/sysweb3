@@ -19,6 +19,7 @@ import * as BIP84 from 'syscoinjs-lib/bip84-replacement';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const bjs: any = (syscoinjs.utils as any).bitcoinjs;
 
+const LEGACY_ENCRYPTION_KDF = 'pbkdf2-sha512-20000';
 const SLH_DSA_DERIVATION_VERSION = 1;
 // Preserve Pali v1 SLH derivation: first 32 bytes of the account-scoped HMAC.
 // Pali expands this setup secret into the 48-byte SLH skSeed/skPrf/pkSeed tuple.
@@ -60,6 +61,10 @@ import {
   isEvmCoin,
   convertExtendedKeyVersion,
 } from './utils/derivation-paths';
+import {
+  assertPsbtAccountScope,
+  createPsbtDerivationGuard,
+} from './utils/psbt-account-scope';
 
 export interface ISysAccount {
   address: string;
@@ -206,9 +211,7 @@ export class KeyringManager implements IKeyringManager {
   constructor(sharedHardwareWalletManager?: HardwareWalletManager) {
     this.storage = sysweb3.sysweb3Di.getStateStorageDb();
     // Don't initialize secure buffers in constructor - they're created on unlock
-    this.storage.set('utf8Error', {
-      hasUtf8Error: false,
-    });
+    this.writeUtf8Diagnostic(false);
 
     // NOTE: activeChain is now derived from vault state, not stored locally
     // NOTE: No more persistent signers - use getSigner() for fresh on-demand signers
@@ -233,7 +236,8 @@ export class KeyringManager implements IKeyringManager {
       this.getAccountsState,
       this.getAddress,
       this.ledgerSigner,
-      this.trezorSigner
+      this.trezorSigner,
+      this.capturePsbtSigningContext
     );
     this.ethereumTransaction = new EthereumTransactions(
       this.getNetwork,
@@ -458,7 +462,10 @@ export class KeyringManager implements IKeyringManager {
 
       // Derive session encryption key (in-memory only) used to encrypt/decrypt xprv fields
       // IMPORTANT: This MUST NOT be the same value as the stored verifier above.
-      const sessionPasswordKey = await this.encryptSHA512Async(password, salt);
+      let sessionPasswordKey = await this.deriveStoredSessionKey(
+        password,
+        vaultKeys
+      );
       // Handle migration from old vault format with currentSessionSalt
       if (vaultKeys.currentSessionSalt) {
         console.log(
@@ -538,8 +545,46 @@ export class KeyringManager implements IKeyringManager {
 
       // v4 vault is encrypted with the derived session password key (PBKDF2 output).
       // If the password is wrong, this will throw and we return canLogin:false below.
-      await getDecryptedVault(sessionPasswordKey);
+      let decryptedVault: any;
+      let legacyProfile = vaultKeys.keyDerivation === LEGACY_ENCRYPTION_KDF;
+      try {
+        decryptedVault = await getDecryptedVault(sessionPasswordKey);
+      } catch (error) {
+        // Only the historical CBC fallback used the 20k key without metadata.
+        // Never try it for GCM, malformed records, or platform/storage failures.
+        const rawVault =
+          error instanceof VaultAuthenticationError &&
+          !vaultKeys.keyDerivation &&
+          !vaultKeys.currentSessionSalt
+            ? await this.storage.get('vault')
+            : undefined;
+        if (typeof rawVault !== 'string' || rawVault.trim().startsWith('{')) {
+          throw error;
+        }
+        const legacyKey = await this.deriveLegacySessionKey(password, salt);
+        decryptedVault = await getDecryptedVault(legacyKey);
+        authenticated = true;
+        sessionPasswordKey = legacyKey;
+        // Keep the historical account wrapping key. Persist its profile before
+        // GCM rewrapping so either interrupted write remains recoverable.
+        await this.storage.set('vault-keys', {
+          ...vaultKeys,
+          keyDerivation: LEGACY_ENCRYPTION_KDF,
+        });
+        legacyProfile = true;
+      }
       authenticated = true;
+      if (legacyProfile && this.hasWebCrypto()) {
+        const storedVault = await this.storage.get('vault');
+        if (
+          typeof storedVault === 'string' &&
+          !storedVault.trim().startsWith('{')
+        ) {
+          // A failed earlier rewrap can leave the authenticated profile plus
+          // CBC. Retry that write without changing the account wrapping key.
+          await setEncryptedVault(decryptedVault, sessionPasswordKey);
+        }
+      }
 
       // If session data missing or corrupted, recreate from vault
       if (!this.sessionMnemonic) {
@@ -559,7 +604,8 @@ export class KeyringManager implements IKeyringManager {
           this.getAccountsState,
           this.getAddress,
           this.ledgerSigner,
-          this.trezorSigner
+          this.trezorSigner,
+          this.capturePsbtSigningContext
         );
       }
 
@@ -726,7 +772,7 @@ export class KeyringManager implements IKeyringManager {
         throw new Error('Vault keys not found');
       }
 
-      const genPwd = await this.encryptSHA512Async(pwd, vaultKeys.salt);
+      const genPwd = await this.deriveStoredSessionKey(pwd, vaultKeys);
       if (this.getSessionPasswordString() !== genPwd) {
         throw new Error('Invalid password');
       }
@@ -815,7 +861,7 @@ export class KeyringManager implements IKeyringManager {
       throw new Error('Vault keys not found');
     }
 
-    const genPwd = await this.encryptSHA512Async(pwd, vaultKeys.salt);
+    const genPwd = await this.deriveStoredSessionKey(pwd, vaultKeys);
     if (this.getSessionPasswordString() !== genPwd) {
       throw new Error('Invalid password');
     }
@@ -1013,7 +1059,7 @@ export class KeyringManager implements IKeyringManager {
     if (!vaultKeys || !vaultKeys.salt) {
       throw new Error('Vault keys not found');
     }
-    const genPwd = await this.encryptSHA512Async(pwd, vaultKeys.salt);
+    const genPwd = await this.deriveStoredSessionKey(pwd, vaultKeys);
     if (!this.sessionPassword) {
       throw new Error('Unlock wallet first');
     } else if (this.getSessionPasswordString() !== genPwd) {
@@ -1689,6 +1735,36 @@ export class KeyringManager implements IKeyringManager {
     }
   };
 
+  private capturePsbtSigningContext = (): (() => void) => {
+    const session = this.sessionPassword;
+    const vault = this.getVault();
+    const selected = { ...vault.activeAccount };
+    const account = vault.accounts[selected.type]?.[selected.id];
+    const identity = { address: account?.address, xpub: account?.xpub };
+    const network = { ...vault.activeNetwork };
+    const assertCurrent = () => {
+      const current = this.getVault();
+      const currentAccount = current.accounts[selected.type]?.[selected.id];
+      if (
+        !session ||
+        session.isCleared() ||
+        this.sessionPassword !== session ||
+        current.activeAccount.id !== selected.id ||
+        current.activeAccount.type !== selected.type ||
+        currentAccount?.address !== identity.address ||
+        currentAccount?.xpub !== identity.xpub ||
+        current.activeNetwork.kind !== network.kind ||
+        current.activeNetwork.chainId !== network.chainId ||
+        current.activeNetwork.slip44 !== network.slip44 ||
+        current.activeNetwork.url !== network.url
+      ) {
+        throw new Error('Wallet signing context changed');
+      }
+    };
+    assertCurrent();
+    return assertCurrent;
+  };
+
   private getSigner = (): {
     hd: any; // SyscoinHDSigner or WIFSigner wrapper with sign(psbt)
     main: any; // syscoinjs-lib Syscoin instance
@@ -1704,6 +1780,7 @@ export class KeyringManager implements IKeyringManager {
     const { activeAccount } = vault;
     const accountId = activeAccount.id;
     const accountType = activeAccount.type;
+    const assertCurrent = this.capturePsbtSigningContext();
 
     // Determine signer type: HD or WIF single-address
     let signerForUse: any;
@@ -1746,6 +1823,34 @@ export class KeyringManager implements IKeyringManager {
         `Unsupported account type for UTXO signing: ${accountType}`
       );
     }
+
+    const scope = {
+      account: vault.accounts[accountType][accountId],
+      accountId,
+      accountType,
+      network: vault.activeNetwork,
+    };
+    if (typeof signerForUse.getRootNode === 'function') {
+      const getRootNode = signerForUse.getRootNode.bind(signerForUse);
+      const guardPath = createPsbtDerivationGuard(scope);
+      signerForUse.getRootNode = () => {
+        const root = getRootNode();
+        const scopedRoot = Object.create(root);
+        scopedRoot.derivePath = (path: string) => {
+          guardPath(path);
+          return root.derivePath(path);
+        };
+        return scopedRoot;
+      };
+    }
+    const sign = signerForUse.sign.bind(signerForUse);
+    signerForUse.sign = async (psbt: Psbt) => {
+      assertCurrent();
+      assertPsbtAccountScope(psbt, scope);
+      const result = await sign(psbt);
+      assertCurrent();
+      return result;
+    };
 
     // Create syscoinjs instance with current network (no need to attach signer for signing flow)
     const network = vault.activeNetwork;
@@ -1795,13 +1900,24 @@ export class KeyringManager implements IKeyringManager {
     };
   };
 
+  private writeUtf8Diagnostic(hasUtf8Error: boolean): void {
+    try {
+      void Promise.resolve(
+        this.storage.set('utf8Error', { hasUtf8Error })
+      ).catch(() => undefined);
+    } catch {
+      // This diagnostic must not interrupt authentication or become an
+      // unhandled rejection when an asynchronous storage client is offline.
+    }
+  }
+
   private validateAndHandleErrorByMessage(message: string) {
     const utf8ErrorMessage = 'Malformed UTF-8 data';
     if (
       message.includes(utf8ErrorMessage) ||
       message.toLowerCase().includes(utf8ErrorMessage.toLowerCase())
     ) {
-      this.storage.set('utf8Error', { hasUtf8Error: true });
+      this.writeUtf8Diagnostic(true);
     }
   }
 
@@ -1924,7 +2040,41 @@ export class KeyringManager implements IKeyringManager {
       });
     }
 
-    return this.encryptSHA512(password, salt);
+    throw new Error('WebCrypto is required for vault key derivation');
+  }
+
+  private async deriveLegacySessionKey(
+    password: string,
+    salt: string
+  ): Promise<string> {
+    if (this.hasWebCrypto()) {
+      return this.pbkdf2WebCryptoHex({
+        password,
+        saltHex: salt,
+        iterations: 20_000,
+        lengthBytes: 32,
+        hash: 'SHA-512',
+      });
+    }
+    // Read compatibility only; new vault writes still require WebCrypto.
+    return CryptoJS.PBKDF2(password, CryptoJS.enc.Hex.parse(salt), {
+      keySize: 256 / 32,
+      iterations: 20_000,
+      hasher: CryptoJS.algo.SHA512,
+    }).toString();
+  }
+
+  private async deriveStoredSessionKey(
+    password: string,
+    vaultKeys: any
+  ): Promise<string> {
+    if (vaultKeys.keyDerivation === LEGACY_ENCRYPTION_KDF) {
+      return this.deriveLegacySessionKey(password, vaultKeys.salt);
+    }
+    if (vaultKeys.keyDerivation !== undefined) {
+      throw new Error('Unsupported vault key derivation profile');
+    }
+    return this.encryptSHA512Async(password, vaultKeys.salt);
   }
 
   private getSysActivePrivateKey = (hd: SyscoinHDSigner) => {
@@ -2780,9 +2930,9 @@ export class KeyringManager implements IKeyringManager {
 
     // v4 stores only the salt on disk (vault-keys.salt).
     // The derived session encryption key must remain in memory only.
-    const sessionPasswordSaltedHash = await this.encryptSHA512Async(
+    const sessionPasswordSaltedHash = await this.deriveStoredSessionKey(
       password,
-      salt
+      foundVaultKeys ? vaultKeys : { salt }
     );
     if (!foundVaultKeys) {
       // Store vault-keys using the storage abstraction

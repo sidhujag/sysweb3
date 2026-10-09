@@ -387,38 +387,61 @@ export class TrezorKeyring {
    */
 
   public async signUtxoTransaction(utxoTransaction: any, psbt: Psbt) {
-    return this.executeWithRetry(async () => {
-      const { payload, success } = await TrezorConnect.signTransaction(
-        utxoTransaction
-      );
-
-      if (success) {
-        const tx = bitcoinjs.Transaction.fromHex(payload.serializedTx);
-        for (const i of this.range(psbt.data.inputs.length)) {
-          if (tx.ins[i].witness == null) {
-            throw new Error(
-              'Please move your funds to a Segwit address: https://wiki.trezor.io/Account'
-            );
-          }
-          const partialSig = [
-            {
-              pubkey: tx.ins[i].witness[1],
-              signature: tx.ins[i].witness[0],
-            },
-          ];
-          psbt.updateInput(i, { partialSig });
-        }
-
-        try {
-          syscoinjs.utils.finalizePSBT(psbt);
-        } catch (err) {
-          console.log(err);
-        }
-        return psbt;
-      } else {
-        throw new Error('Trezor sign failed: ' + payload.error);
+    // Capture approval before the device await. Witnesses and scriptSigs are
+    // signatures, but every unsigned transaction field must remain identical.
+    const unsignedSnapshot = (transaction: any): string =>
+      JSON.stringify({
+        version: transaction.version,
+        locktime: transaction.locktime,
+        inputs: (transaction.txInputs || transaction.ins).map((input: any) => ({
+          hash: Buffer.from(input.hash).toString('hex'),
+          index: input.index,
+          sequence: input.sequence,
+        })),
+        outputs: (transaction.txOutputs || transaction.outs).map(
+          (output: any) => ({
+            script: Buffer.from(output.script).toString('hex'),
+            value: output.value.toString(),
+          })
+        ),
+      });
+    const approvedTransaction = unsignedSnapshot(psbt);
+    const payload = await this.executeWithRetry(async () => {
+      const response = await TrezorConnect.signTransaction(utxoTransaction);
+      if (!response.success) {
+        throw new Error('Trezor sign failed: ' + response.payload.error);
       }
+      return response.payload;
     }, 'signUtxoTransaction');
+
+    const tx = bitcoinjs.Transaction.fromHex(payload.serializedTx);
+    if (
+      unsignedSnapshot(tx) !== approvedTransaction ||
+      unsignedSnapshot(psbt) !== approvedTransaction
+    ) {
+      throw new Error('Trezor returned a different unsigned transaction');
+    }
+    for (const i of this.range(psbt.data.inputs.length)) {
+      if (tx.ins[i].witness == null || tx.ins[i].witness.length !== 2) {
+        throw new Error(
+          'Please move your funds to a Segwit address: https://wiki.trezor.io/Account'
+        );
+      }
+      const partialSig = [
+        {
+          pubkey: tx.ins[i].witness[1],
+          signature: tx.ins[i].witness[0],
+        },
+      ];
+      psbt.updateInput(i, { partialSig });
+    }
+
+    try {
+      syscoinjs.utils.finalizePSBT(psbt);
+    } catch (err) {
+      console.log(err);
+    }
+    return psbt;
   }
 
   private setHdPath(coin: string, accountIndex: number, slip44: number) {
@@ -517,6 +540,7 @@ export class TrezorKeyring {
 
     trezortx.coin = coin;
     trezortx.version = psbt.version;
+    trezortx.locktime = psbt.locktime;
     trezortx.inputs = [];
     trezortx.outputs = [];
 
@@ -524,12 +548,10 @@ export class TrezorKeyring {
       const input = psbt.txInputs[i];
       const inputItem: any = {};
       inputItem.prev_index = input.index;
-      const hashBuf = Buffer.isBuffer(input.hash)
-        ? input.hash
-        : Buffer.from(input.hash);
+      const hashBuf = Buffer.from(input.hash);
       const prevHashHex = hashBuf.reverse().toString('hex'); // 64-char hex
       inputItem.prev_hash = prevHashHex;
-      if (input.sequence) inputItem.sequence = input.sequence;
+      if (input.sequence !== undefined) inputItem.sequence = input.sequence;
 
       const dataInput = psbt.data.inputs[i];
 

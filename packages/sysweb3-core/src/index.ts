@@ -2,14 +2,14 @@ import { parseJsonRecursively } from './utils';
 
 interface IStateStorageClient {
   getItem(key: string): string | null;
-  removeItem(key: string): void;
-  setItem(key: string, value: string): void;
+  removeItem(key: string): void | Promise<void>;
+  setItem(key: string, value: string): void | Promise<void>;
 }
 
 export interface IKeyValueDb {
-  deleteItem(key: string): void;
+  deleteItem(key: string): void | Promise<void>;
   get(key: string): any;
-  set(key: string, value: any): void;
+  set(key: string, value: any): void | Promise<void>;
   setClient(client?: IStateStorageClient): void;
   setPrefix(prefix: string): void;
 }
@@ -40,11 +40,10 @@ const StateStorageDb = (
     if (!storageClient) return;
 
     if ('set' in storageClient) {
-      storageClient.set({ [keyPrefix + key]: value });
-      return;
+      return storageClient.set({ [keyPrefix + key]: value });
     }
 
-    storageClient.setItem(keyPrefix + key, JSON.stringify(value));
+    return storageClient.setItem(keyPrefix + key, JSON.stringify(value));
   };
 
   const get = async (key: string): Promise<any> => {
@@ -68,11 +67,10 @@ const StateStorageDb = (
   const deleteItem = (key: string) => {
     if (!storageClient) return;
     if ('remove' in storageClient) {
-      storageClient.remove(keyPrefix + key);
-      return;
+      return storageClient.remove(keyPrefix + key);
     }
 
-    storageClient.removeItem(keyPrefix + key);
+    return storageClient.removeItem(keyPrefix + key);
   };
 
   return {
