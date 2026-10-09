@@ -40,6 +40,26 @@ These methods are just some of the ones available in our library.
 
 Feel free to explore the possibilities. We hope you enjoy it.
 
+## Conditional creation
+
+`createManyIfAbsent(items)` creates a set of prefixed records only when all of
+them are absent, returning `true` for the creator and `false` when a record
+already exists. Write failures reject its promise.
+
+- The built-in memory client checks and commits synchronously.
+- Native `chrome.storage.local` or `browser.storage.local` clients require
+  `navigator.locks`. A lock named for the captured storage prefix covers the
+  complete read, absence check, and awaited batch write. This coordinates
+  contexts in the same extension origin and storage partition.
+- Custom clients must implement `createItemsIfAbsent(items)`, accepting the
+  prefixed, JSON-serialized values and returning `boolean | Promise<boolean>`.
+  That method must enforce the absence check and commit atomically in the
+  backend. A separate read followed by an ordinary write does not satisfy it.
+
+There is no unlocked or sequential fallback. Backends shared across different
+origins or storage partitions need their own atomic implementation or a single
+owner. Existing `get`, `set`, `setMany`, and delete behavior is unchanged.
+
 ## License
 
 MIT License

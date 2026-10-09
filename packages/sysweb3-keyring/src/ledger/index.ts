@@ -459,6 +459,10 @@ export class LedgerKeyring {
       for (let i = 0; i < psbt.inputCount; i++) {
         const dataInput = psbt.data.inputs[i];
 
+        // External inputs are already authorized by their final scripts. Do
+        // not invent wallet derivations or ask the device to sign them again.
+        if (dataInput.finalScriptSig || dataInput.finalScriptWitness) continue;
+
         // Skip if already has bip32Derivation
         if (dataInput.bip32Derivation && dataInput.bip32Derivation.length > 0) {
           continue;

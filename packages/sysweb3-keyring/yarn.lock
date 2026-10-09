@@ -672,10 +672,9 @@
     "@noble/hashes" "~1.8.0"
     "@scure/base" "~1.2.5"
 
-"@sidhujag/sysweb3-core@^1.0.28":
-  version "1.0.28"
-  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-core/-/sysweb3-core-1.0.28.tgz#05daaf0a9411febfe36d96a43f76767a5bcd5d03"
-  integrity sha512-YN3qdoPNyFFdseO/iaUmr0gSWpKbVEPA6I9ePd8Sny2BhY11SsXkj1x+acL9RfmtsfZ7kh+tzo3//OOGCw+PLA==
+"@sidhujag/sysweb3-core@^1.0.29":
+  version "1.0.29"
+  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-core/-/sysweb3-core-1.0.29.tgz"
 
 "@sidhujag/sysweb3-network@^1.0.109":
   version "1.0.109"

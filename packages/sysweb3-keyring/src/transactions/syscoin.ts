@@ -21,6 +21,7 @@ import {
   convertExtendedKeyVersion,
 } from '../utils/derivation-paths';
 import { PsbtUtils } from '../utils/psbt';
+import { assertPsbtAccountScope } from '../utils/psbt-account-scope';
 
 // Recommended fee changes slowly; cache per explorer to avoid hammering
 // Blockbook while the user edits amounts on the send screen
@@ -69,6 +70,7 @@ export class SyscoinTransactions implements ISyscoinTransactions {
     xpub: string,
     isChangeAddress: boolean
   ) => Promise<string>;
+  private captureSigningContext?: () => () => void;
 
   constructor(
     getSyscoinSigner: () => {
@@ -91,13 +93,15 @@ export class SyscoinTransactions implements ISyscoinTransactions {
     },
     getAddress: (xpub: string, isChangeAddress: boolean) => Promise<string>,
     ledgerSigner: LedgerKeyring,
-    trezorSigner: TrezorKeyring
+    trezorSigner: TrezorKeyring,
+    captureSigningContext?: () => () => void
   ) {
     this.getSigner = getSyscoinSigner;
     this.getReadOnlySigner = getReadOnlySigner;
     this.getState = getState;
     this.getAddress = getAddress;
     this.trezor = trezorSigner;
+    this.captureSigningContext = captureSigningContext;
     this.ledger = ledgerSigner;
   }
 
@@ -314,6 +318,42 @@ export class SyscoinTransactions implements ISyscoinTransactions {
   ): Promise<Psbt> => {
     const { activeNetwork, activeAccountId, activeAccountType, accounts } =
       this.getState();
+    const account = accounts[activeAccountType]?.[activeAccountId];
+    if (!account) throw new Error('Active account not found');
+    // Device choice belongs to the selected account, never to PSBT/caller flags.
+    isTrezor =
+      activeAccountType === KeyringAccountType.Trezor ||
+      account.isTrezorWallet === true;
+    isLedger =
+      activeAccountType === KeyringAccountType.Ledger ||
+      account.isLedgerWallet === true;
+    const assertSession = this.captureSigningContext?.() || (() => undefined);
+    const scope = {
+      account: { address: account.address, xpub: account.xpub },
+      accountId: activeAccountId,
+      accountType: activeAccountType,
+      network: { ...activeNetwork },
+    };
+    const assertCurrent = () => {
+      assertSession();
+      const current = this.getState();
+      const selected =
+        current.accounts[current.activeAccountType]?.[current.activeAccountId];
+      if (
+        current.activeAccountId !== activeAccountId ||
+        current.activeAccountType !== activeAccountType ||
+        selected?.address !== scope.account.address ||
+        selected?.xpub !== scope.account.xpub ||
+        current.activeNetwork.kind !== scope.network.kind ||
+        current.activeNetwork.chainId !== scope.network.chainId ||
+        current.activeNetwork.slip44 !== scope.network.slip44 ||
+        current.activeNetwork.url !== scope.network.url
+      ) {
+        throw new Error('Wallet signing context changed');
+      }
+    };
+    assertCurrent();
+    if (isTrezor || isLedger) assertPsbtAccountScope(psbt, scope);
 
     if (isLedger) {
       // CRITICAL: Enhance PSBT with required Ledger fields
@@ -338,9 +378,18 @@ export class SyscoinTransactions implements ISyscoinTransactions {
         Array.isArray(txInputs) &&
         txInputs.length > 0
       ) {
-        // Fetch and add nonWitnessUtxo for all inputs
+        // Fetch and add nonWitnessUtxo where Ledger still needs it.
         const txFetchPromises = txInputs.map(async (_txInput, index) => {
           try {
+            // Keep existing previous transactions, and finalized witness
+            // inputs that already carry the prevout data needed by Ledger.
+            const input = inputMetas[index];
+            if (
+              input?.nonWitnessUtxo ||
+              (input?.witnessUtxo &&
+                (input.finalScriptSig || input.finalScriptWitness))
+            )
+              return { index, success: true };
             const tx = txInputs[index];
             const prevTxId = Buffer.from(tx.hash).reverse().toString('hex');
 
@@ -402,6 +451,7 @@ export class SyscoinTransactions implements ISyscoinTransactions {
         }
       }
 
+      assertCurrent();
       const enhancedPsbt = await this.ledger.convertToLedgerFormat(
         psbt,
         accountXpub,
@@ -409,6 +459,8 @@ export class SyscoinTransactions implements ISyscoinTransactions {
         activeNetwork.currency,
         activeNetwork.slip44
       );
+      assertCurrent();
+      assertPsbtAccountScope(enhancedPsbt, scope);
 
       // Get wallet policy for Ledger
       const fingerprint =
@@ -460,20 +512,39 @@ export class SyscoinTransactions implements ISyscoinTransactions {
 
       // Convert to PsbtV2 for direct signing without intermediate base64 encode/decode
       const psbtV2 = new PsbtV2().fromBitcoinJS(enhancedPsbt);
+      assertCurrent();
+      assertPsbtAccountScope(enhancedPsbt, scope);
       const signatureEntries = await this.ledger.ledgerUtxoClient.signPsbt(
         psbtV2,
         walletPolicy,
         hmac
       );
+      assertCurrent();
 
       signatureEntries.forEach(([inputIndex, partialSig]) => {
+        const input = enhancedPsbt.data.inputs[inputIndex];
+        if (
+          !input ||
+          input.finalScriptSig ||
+          input.finalScriptWitness ||
+          !input.bip32Derivation?.some((derivation) =>
+            Buffer.from(derivation.pubkey).equals(
+              Buffer.from(partialSig.pubkey)
+            )
+          )
+        ) {
+          throw new Error('PSBT input is outside the approved account');
+        }
         enhancedPsbt.updateInput(inputIndex, {
           partialSig: [partialSig],
         });
       });
 
-      // Finalize all inputs
-      enhancedPsbt.finalizeAllInputs();
+      // Preserve external inputs that were finalized before device signing.
+      enhancedPsbt.data.inputs.forEach((input, index) => {
+        if (!input.finalScriptSig && !input.finalScriptWitness)
+          enhancedPsbt.finalizeInput(index);
+      });
 
       return enhancedPsbt;
     } else if (isTrezor) {
@@ -493,7 +564,9 @@ export class SyscoinTransactions implements ISyscoinTransactions {
         coin: activeNetwork.currency.toLowerCase(),
         network: bitcoinjsNetwork || undefined, // Pass network config for isScriptHash check
       });
+      assertCurrent();
       const signedPsbt = await this.trezor.signUtxoTransaction(trezorTx, psbt);
+      assertCurrent();
       return signedPsbt;
     } else {
       // HD signing (seed-based HDAccount or imported BIP84 zprv/vprv account).
@@ -542,7 +615,11 @@ export class SyscoinTransactions implements ISyscoinTransactions {
 
         const needsAnyPath = (psbt as any)?.data?.inputs?.some((input) => {
           const unknowns = input?.unknownKeyVals || [];
-          return !unknowns.some((kv) => kv?.key?.toString?.() === 'path');
+          return (
+            !input.bip32Derivation?.length &&
+            !input.tapBip32Derivation?.length &&
+            !unknowns.some((kv) => kv?.key?.toString?.() === 'path')
+          );
         });
 
         if (
@@ -612,11 +689,14 @@ export class SyscoinTransactions implements ISyscoinTransactions {
         // Best-effort enrichment; if it fails, fall back to default signing error path.
       }
 
+      assertCurrent();
+      assertPsbtAccountScope(psbt, scope);
       const { hd } = this.getSigner();
       const signedPsbt = await this.signPSBTWithSigner({
         psbt,
         signer: hd,
       });
+      assertCurrent();
       return signedPsbt;
     }
   };
@@ -752,11 +832,49 @@ export class SyscoinTransactions implements ISyscoinTransactions {
     isLedger?: boolean;
   }): Promise<any> => {
     const psbtObj = PsbtUtils.fromPali(psbt, this.getState().activeNetwork);
+    // Scope validation temporarily removes other signers' hints. Preserve the
+    // public metadata for the next cosigner, without exposing it to our signer.
+    const cosignerMetadata = psbtObj.data.inputs.map((input, index) => ({
+      hash: Buffer.from(psbtObj.txInputs[index].hash),
+      index: psbtObj.txInputs[index].index,
+      bip32Derivation: input.bip32Derivation?.map((value) => ({ ...value })),
+      tapBip32Derivation: input.tapBip32Derivation?.map((value) => ({
+        ...value,
+      })),
+      path: input.unknownKeyVals
+        ?.filter((value) => Buffer.from(value.key).toString() === 'path')
+        .map((value) => ({
+          key: Buffer.from(value.key),
+          value: Buffer.from(value.value),
+        }))[0],
+    }));
     const signedPsbt = await this.signPSBTWithMethod(
       psbtObj,
       isTrezor,
       isLedger
     );
+    signedPsbt.data.inputs.forEach((input, index) => {
+      if (input.finalScriptSig || input.finalScriptWitness) return;
+      const metadata = cosignerMetadata[index];
+      if (!metadata) return;
+      const signed = signedPsbt.txInputs[index];
+      if (
+        !signed ||
+        metadata.index !== signed.index ||
+        !metadata.hash.equals(Buffer.from(signed.hash))
+      )
+        throw new Error('Wallet signing context changed');
+      if (metadata.bip32Derivation)
+        input.bip32Derivation = metadata.bip32Derivation;
+      if (metadata.tapBip32Derivation)
+        input.tapBip32Derivation = metadata.tapBip32Derivation;
+      if (metadata.path) {
+        input.unknownKeyVals = (input.unknownKeyVals || []).filter(
+          (value) => Buffer.from(value.key).toString() !== 'path'
+        );
+        input.unknownKeyVals.push(metadata.path);
+      }
+    });
     return PsbtUtils.toPali(signedPsbt);
   };
 

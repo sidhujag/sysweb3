@@ -4,7 +4,7 @@ import * as wif from 'wif';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
-import { setupMocks } from '../../helpers/setup';
+import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
 
 // Helper to generate deterministic WIFs from a fixed private key for given network
 const generateWif = (network: any): string => {
@@ -38,7 +38,7 @@ describe('WIF Import - KeyringManager', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -105,7 +105,7 @@ describe('WIF Import - KeyringManager', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter

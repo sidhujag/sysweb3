@@ -2,7 +2,7 @@ import { INetworkType } from '@sidhujag/sysweb3-network';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
-import { setupMocks } from '../../helpers/setup';
+import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
 
 describe('Watch-only Import - KeyringManager', () => {
   let keyringManager: KeyringManager;
@@ -24,7 +24,7 @@ describe('Watch-only Import - KeyringManager', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -82,7 +82,7 @@ describe('Watch-only Import - KeyringManager', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter

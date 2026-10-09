@@ -14,6 +14,40 @@ The sysweb3-keyring provides a unified interface for managing accounts, transact
 - **Secure Session Management**: Encrypted private key handling with session transfer
 - **Transaction Management**: Full transaction lifecycle support for both network types
 
+## Vault encryption compatibility
+
+New vaults require WebCrypto and use PBKDF2-HMAC-SHA-512 (900,000 production
+iterations) with AES-256-GCM. Missing WebCrypto rejects the operation without
+writing a weaker fallback vault. Restore WebCrypto availability before retrying
+an unmarked legacy vault.
+
+Historical fallback vaults used a 20,000-iteration key that also encrypted their
+persisted account keys. After authenticating such a CBC vault, the keyring records
+the explicit `pbkdf2-sha512-20000` compatibility profile and rewraps the vault with
+AES-GCM. This preserves existing account access across restart; it is **not** a
+full rekey of those account records to 900,000 iterations. The profile is written
+before rewrapping, so interruption of either write remains recoverable. Arbitrary
+KDF profiles or parameters are rejected.
+
+Storage clients must return their asynchronous write/delete promises. The core
+adapter preserves them so rejected writes do not silently advance vault migration.
+Fresh wallet creation additionally requires conditional batch creation. Native
+`chrome.storage.local` and `browser.storage.local` use a prefix-scoped Web Lock
+around the absence check and awaited write, coordinating contexts in the same
+extension origin and storage partition. Custom clients must provide an atomic
+`createItemsIfAbsent(items)` backend operation over prefixed, JSON-serialized
+values; the built-in memory client provides this operation synchronously.
+There is no sequential or unlocked fallback. A backend shared across storage
+partitions needs its own atomic implementation or a single owner.
+
+### Release order for 1.0.613
+
+Publish `@sidhujag/sysweb3-core@1.0.29` before `@sidhujag/sysweb3-keyring@1.0.613`.
+The updated lock entry describes that intended dependency; its integrity is
+intentionally absent until publication. Regenerate and verify the lockfile from
+the published registry artifacts before a clean registry installation. Local
+validation uses the built package tarballs and does not establish publication.
+
 ## Installation
 
 ```bash
@@ -191,7 +225,11 @@ Main class for keyring operations:
 
 ## Security
 
-- Private keys are encrypted and stored in memory only
+- `initializeSession`, `initializeWalletSecurely`, and the initialization factories create a new wallet only when both vault records are absent. Use `unlock()` to restore an existing wallet. Repeating initialization on a matching live session verifies the stored wallet without rewriting it.
+- Fresh vault salt and ciphertext are created together only if both are absent, through the core conditional-creation operation. Native extension contexts sharing an origin/storage partition are coordinated by Web Locks; custom backends must provide atomic `createItemsIfAbsent`. Unsupported adapters are rejected before writing. Existing or incomplete records are preserved.
+- UTXO signing authenticates the selected account's paths, public keys and spent scripts. A joint PSBT may include unfinished inputs for another signer: their HD/path hints are removed before the selected private signer runs, then their public metadata is restored to the returned partial PSBT. Another account in the same wallet remains unsigned. At least one unfinished input must authenticate to the selected account; a wholly finalized PSBT retains its existing handling. Standard P2WSH, wrapped P2WSH and P2SH multisig preserve external cosigner signatures and continuation. Hardware paths and single-address imports can reject unsupported joint inputs rather than widening signing authority.
+- Hardware signing preserves already-finalized external inputs without requesting their private derivations. Trezor receives them as `EXTERNAL` inputs; Ledger retains their final scripts in PSBTv2 and skips signing/finalizing them again. Unfinished foreign hardware inputs remain unsupported.
+- Persisted wallet and account secrets are encrypted; plaintext signing material is used in memory
 - Session data is cleared when the keyring is locked
 - Hardware wallet integration follows device security models
 - Secure memory management with explicit cleanup

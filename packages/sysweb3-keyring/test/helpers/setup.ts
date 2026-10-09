@@ -1,9 +1,9 @@
 // Test setup file
 import { INetworkType } from '@sidhujag/sysweb3-network';
-import { randomBytes } from 'crypto';
+import { webcrypto } from 'crypto';
 import CryptoJS from 'crypto-js';
 
-import { KeyringAccountType } from '../../src';
+import { KeyringAccountType, KeyringManager } from '../../src';
 import { getDecryptedVault, setEncryptedVault } from '../../src/storage';
 
 const getTestIters = (envKey: string, fallback: number) => {
@@ -23,14 +23,8 @@ declare global {
   const mockVaultState: any;
 }
 
-// Polyfill crypto.getRandomValues for Node.js
-global.crypto = {
-  getRandomValues: (arr: Uint8Array) => {
-    const bytes = randomBytes(arr.length);
-    arr.set(bytes);
-    return arr;
-  },
-} as any;
+// Exercise the production WebCrypto path; fallback CBC is read-only.
+global.crypto = webcrypto as any;
 
 // Mock browser globals that Trezor expects
 global.self = global as any;
@@ -218,6 +212,21 @@ jest.mock('@sidhujag/sysweb3-core', () => ({
       set: jest.fn((key: string, value: any) => {
         mockStorage.set(key, value);
         return Promise.resolve();
+      }),
+      setMany: jest.fn((items: Record<string, any>) => {
+        Object.entries(items).forEach(([key, value]) =>
+          mockStorage.set(key, value)
+        );
+        return Promise.resolve();
+      }),
+      createManyIfAbsent: jest.fn((items: Record<string, any>) => {
+        // No await between the shared map's absence check and complete write.
+        if (Object.keys(items).some((key) => mockStorage.get(key) != null))
+          return Promise.resolve(false);
+        Object.entries(items).forEach(([key, value]) =>
+          mockStorage.set(key, value)
+        );
+        return Promise.resolve(true);
       }),
       deleteItem: jest.fn((key: string) => {
         mockStorage.delete(key);
@@ -723,5 +732,39 @@ export const setupMocks = () => {
   // Reset vault data if it exists
   if ((global as any).storedVaultData) {
     (global as any).storedVaultData = null;
+  }
+};
+
+// Each fixture factory call represents a separate, intentionally fresh wallet.
+// Production initialization must never replace a persisted wallet; restoration
+// tests use unlock() explicitly instead of this helper.
+export const createFreshTestKeyring = async (
+  seed: string,
+  password: string,
+  vaultStateGetter: () => any
+): Promise<KeyringManager> => {
+  const { sysweb3Di } = jest.requireMock('@sidhujag/sysweb3-core');
+  const storage = sysweb3Di.getStateStorageDb();
+  await storage.deleteItem('vault');
+  await storage.deleteItem('vault-keys');
+  // The account fixture above was encrypted with this public deterministic
+  // salt. Keep its wrapping key aligned; GCM's independent IV stays random.
+  const crypto = require('crypto');
+  const originalRandomBytes = crypto.randomBytes;
+  const randomBytes = jest
+    .spyOn(crypto, 'randomBytes')
+    .mockImplementation((size: number) =>
+      size === 16
+        ? Buffer.from('0123456789abcdef0123456789abcdef', 'hex')
+        : originalRandomBytes(size)
+    );
+  try {
+    return await KeyringManager.createInitialized(
+      seed,
+      password,
+      vaultStateGetter
+    );
+  } finally {
+    randomBytes.mockRestore();
   }
 };

@@ -2,7 +2,7 @@ import { INetworkType, INetwork } from '@sidhujag/sysweb3-network';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
-import { setupMocks } from '../../helpers/setup';
+import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
 
 describe('KeyringManager - State Management', () => {
   let keyringManager: KeyringManager;
@@ -75,7 +75,7 @@ describe('KeyringManager - State Management', () => {
         activeNetwork: mockVaultState.networks.syscoin[57],
       };
 
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -95,7 +95,7 @@ describe('KeyringManager - State Management', () => {
         activeNetwork: mockVaultState.networks.ethereum[1],
       };
 
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -125,7 +125,7 @@ describe('KeyringManager - State Management', () => {
         activeNetwork: mockVaultState.networks.ethereum[1],
       };
 
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -177,7 +177,7 @@ describe('KeyringManager - State Management', () => {
       };
       const evmVaultGetter = jest.fn(() => evmVaultState);
 
-      const evmKeyring = await KeyringManager.createInitialized(
+      const evmKeyring = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         evmVaultGetter
@@ -190,7 +190,7 @@ describe('KeyringManager - State Management', () => {
       };
       const utxoVaultGetter = jest.fn(() => utxoVaultState);
 
-      const utxoKeyring = await KeyringManager.createInitialized(
+      const utxoKeyring = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         utxoVaultGetter
@@ -209,7 +209,7 @@ describe('KeyringManager - State Management', () => {
     });
 
     it('should share session data between keyrings', async () => {
-      const keyring1 = await KeyringManager.createInitialized(
+      const keyring1 = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -240,7 +240,7 @@ describe('KeyringManager - State Management', () => {
 
   describe('State Recovery', () => {
     it('should handle state recovery after errors', async () => {
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -268,7 +268,7 @@ describe('KeyringManager - State Management', () => {
     });
 
     it('should handle network switching rollback on failure', async () => {
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -301,7 +301,7 @@ describe('KeyringManager - State Management', () => {
 
   describe('State Validation', () => {
     it('should validate account access through vault state', async () => {
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -322,7 +322,7 @@ describe('KeyringManager - State Management', () => {
     });
 
     it('should validate active account through vault state', async () => {
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter

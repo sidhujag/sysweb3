@@ -13,10 +13,8 @@ describe('KeyringManager Initialization', () => {
   let mockVaultStateGetter: jest.Mock;
   let currentVaultState: any;
 
-  beforeEach(async () => {
+  beforeEach(() => {
     setupMocks();
-    // Set up vault-keys
-    await setupTestVault(FAKE_PASSWORD);
   });
 
   afterEach(async () => {
@@ -155,6 +153,9 @@ describe('KeyringManager Initialization', () => {
       );
 
       // Second EVM keyring with same seed
+      const storage = (keyring1 as any).storage;
+      await storage.deleteItem('vault');
+      await storage.deleteItem('vault-keys');
       const mockVaultStateGetter2 = jest.fn(() => currentVaultState);
       const keyring2 = await KeyringManager.createInitialized(
         PEACE_SEED_PHRASE,
@@ -429,7 +430,7 @@ describe('KeyringManager Initialization', () => {
       expect(seed).toBe(PEACE_SEED_PHRASE);
     });
 
-    it("should create vault keys when they don't exist", async () => {
+    it('should create vault keys when the wallet storage is empty', async () => {
       // Use a keyring with proper UTXO setup
       keyringManager = new KeyringManager();
 
@@ -446,8 +447,10 @@ describe('KeyringManager Initialization', () => {
       // Get the actual storage instance
       const keyringStorage = (keyringManager as any).storage;
 
-      // Ensure no vault-keys exist initially (clean state)
-      await keyringStorage.set('vault-keys', null);
+      // A fresh wallet has neither keys nor ciphertext. Removing only the keys
+      // would simulate an incomplete existing wallet, which must be preserved.
+      await keyringStorage.deleteItem('vault');
+      await keyringStorage.deleteItem('vault-keys');
 
       // Should create vault-keys and initialize successfully
       const result = await keyringManager.initializeWalletSecurely(

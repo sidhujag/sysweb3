@@ -2,7 +2,7 @@ import { INetworkType } from '@sidhujag/sysweb3-network';
 
 import { KeyringManager, KeyringAccountType } from '../../src';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../helpers/constants';
-import { setupMocks } from '../helpers/setup';
+import { createFreshTestKeyring, setupMocks } from '../helpers/setup';
 
 describe('Import Validation - Integration Tests', () => {
   let keyringManager: KeyringManager;
@@ -45,7 +45,7 @@ describe('Import Validation - Integration Tests', () => {
         });
         mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-        keyringManager = await KeyringManager.createInitialized(
+        keyringManager = await createFreshTestKeyring(
           PEACE_SEED_PHRASE,
           FAKE_PASSWORD,
           mockVaultStateGetter
@@ -119,7 +119,7 @@ describe('Import Validation - Integration Tests', () => {
         });
         mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-        keyringManager = await KeyringManager.createInitialized(
+        keyringManager = await createFreshTestKeyring(
           PEACE_SEED_PHRASE,
           FAKE_PASSWORD,
           mockVaultStateGetter
@@ -175,7 +175,7 @@ describe('Import Validation - Integration Tests', () => {
         });
         mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-        keyringManager = await KeyringManager.createInitialized(
+        keyringManager = await createFreshTestKeyring(
           PEACE_SEED_PHRASE,
           FAKE_PASSWORD,
           mockVaultStateGetter
@@ -235,7 +235,7 @@ describe('Import Validation - Integration Tests', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -331,7 +331,7 @@ describe('Import Validation - Integration Tests', () => {
       const evmVaultStateGetter = jest.fn(() => evmVaultState);
 
       // Create EVM keyring and import
-      const evmKeyring = await KeyringManager.createInitialized(
+      const evmKeyring = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         evmVaultStateGetter
@@ -366,7 +366,7 @@ describe('Import Validation - Integration Tests', () => {
       const utxoVaultStateGetter = jest.fn(() => utxoVaultState);
 
       // Create UTXO keyring and import
-      const utxoKeyring = await KeyringManager.createInitialized(
+      const utxoKeyring = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         utxoVaultStateGetter
@@ -415,7 +415,7 @@ describe('Import Validation - Integration Tests', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -535,7 +535,7 @@ describe('Import Validation - Integration Tests', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter

@@ -127,7 +127,12 @@ const decryptVaultWebCrypto = async (
   envelope: VaultGcmEnvelopeV4,
   keyHex: string
 ): Promise<string> => {
-  const subtle = (globalThis as any).crypto.subtle as SubtleCrypto;
+  const subtle = (globalThis as any)?.crypto?.subtle as
+    | SubtleCrypto
+    | undefined;
+  if (!subtle) {
+    throw new Error('WebCrypto is required to decrypt this vault');
+  }
   const keyBytes = hexToBytes(keyHex);
   if (keyBytes.length !== 32) {
     throw new Error('Vault key must be 32 bytes (hex length 64)');
@@ -165,33 +170,43 @@ const decryptVaultWebCrypto = async (
 };
 
 // Single vault for all networks - stores the mnemonic and can derive accounts for any slip44
-export const setEncryptedVault = async (decryptedVault: any, pwd: string) => {
+export const setEncryptedVault = async (
+  decryptedVault: any,
+  pwd: string,
+  freshVaultKeys?: { salt: string }
+) => {
   return vaultMutex.runExclusive(async () => {
     const plaintext = JSON.stringify(decryptedVault);
 
-    // Prefer WebCrypto AES-GCM when available.
-    // For v4, callers pass a PBKDF2-derived hex key (32 bytes).
-    // Fallback to CryptoJS passphrase-AES if WebCrypto is unavailable.
-    let toStore: string;
+    // Writes never downgrade to unauthenticated passphrase AES. Legacy CBC
+    // remains readable below, but missing WebCrypto is an operational failure.
     const canUseWebCrypto =
       !!(globalThis as any)?.crypto?.subtle &&
       !!(globalThis as any)?.crypto?.getRandomValues;
-
-    if (
-      canUseWebCrypto &&
-      typeof pwd === 'string' &&
-      isHex(pwd) &&
-      pwd.length === 64
-    ) {
-      const envelope = await encryptVaultWebCrypto(plaintext, pwd);
-      toStore = JSON.stringify(envelope);
-    } else {
-      const encryptedVault = CryptoJS.AES.encrypt(plaintext, pwd);
-      toStore = encryptedVault.toString();
+    if (!canUseWebCrypto) {
+      throw new Error('WebCrypto is required for vault encryption');
     }
+    if (typeof pwd !== 'string' || !isHex(pwd) || pwd.length !== 64) {
+      throw new Error('Vault key must be 32 bytes (hex length 64)');
+    }
+    const envelope = await encryptVaultWebCrypto(plaintext, pwd);
+    const toStore = JSON.stringify(envelope);
 
-    // Always use single 'vault' key for all networks
-    await storage.set('vault', toStore);
+    if (freshVaultKeys) {
+      // The backend primitive (or native storage Web Lock) covers both the
+      // absence check and batch commit across independently bundled contexts.
+      const created = await storage.createManyIfAbsent({
+        'vault-keys': freshVaultKeys,
+        vault: toStore,
+      });
+      if (!created)
+        throw new Error(
+          'Cannot initialize a new vault over existing wallet storage'
+        );
+    } else {
+      // Existing vault updates retain their migration-specific write ordering.
+      await storage.set('vault', toStore);
+    }
   });
 };
 

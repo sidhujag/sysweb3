@@ -330,6 +330,21 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
         'vault',
         CryptoJS.AES.encrypt(JSON.stringify({ mnemonic }), 'correct').toString()
       );
+      if (!webCryptoAvailable) {
+        const originalVault = await storage.get('vault');
+        await expect(keyring.unlock('correct')).rejects.toThrow(
+          'WebCrypto is required for vault encryption'
+        );
+        await expect(storage.get('vault')).resolves.toBe(originalVault);
+        await expect(storage.get('vault-keys')).resolves.toEqual({
+          salt: '33'.repeat(16),
+          currentSessionSalt: '44'.repeat(16),
+        });
+        Object.defineProperty(globalThis, 'crypto', {
+          configurable: true,
+          value: webcrypto,
+        });
+      }
       const error = new Error('migration storage write unavailable');
       const originalSet = storage.set;
       let failMetadataWrite = true;
@@ -345,19 +360,7 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
       expect(cleanup).toHaveBeenCalledTimes(1);
       expect(keyring.isUnlocked()).toBe(false);
       const migratedVault = await storage.get('vault');
-      if (!webCryptoAvailable) {
-        expect(migratedVault.startsWith('U2FsdGVkX1')).toBe(true);
-        const originalDecrypt = sourceCrypto.AES.decrypt;
-        jest
-          .spyOn(sourceCrypto.AES, 'decrypt')
-          .mockImplementation((ciphertext, pwd, config) => {
-            // CBC with the old key can return empty text rather than throw.
-            if (ciphertext === migratedVault && pwd === 'correct') {
-              return sourceCrypto.enc.Utf8.parse('');
-            }
-            return originalDecrypt(ciphertext, pwd, config);
-          });
-      }
+      expect(JSON.parse(migratedVault).alg).toBe('A256GCM');
       await expect(keyring.unlock('wrong')).resolves.toEqual({
         canLogin: false,
       });

@@ -3,15 +3,52 @@ import * as sjs from 'syscoinjs-lib';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
-import { setupMocks } from '../../helpers/setup';
+import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
 
 describe('Syscoin Transactions', () => {
   let keyringManager: KeyringManager;
   let mockVaultStateGetter: jest.Mock;
   let currentVaultState: any;
 
+  // Use a real spent output and an authenticated path for the selected account.
+  // The signer and scope checks remain real; only network/transport wrappers are mocked.
+  const scopedPsbtFixture = () => {
+    const bitcoinjs = (sjs.utils as any).bitcoinjs;
+    const signer = (keyringManager as any).createOnDemandUTXOSigner(0);
+    const root = signer.getRootNode();
+    const path = `m/84'/${currentVaultState.activeNetwork.slip44}'/0'/0/0`;
+    const child = root.derivePath(path);
+    const network = signer.Signer.network;
+    const payment = bitcoinjs.payments.p2wpkh({
+      pubkey: child.publicKey,
+      network,
+    });
+    const previous = new bitcoinjs.Transaction();
+    previous.addInput(Buffer.alloc(32), 0xffffffff);
+    previous.addOutput(payment.output, 100000000n);
+    const psbt = new bitcoinjs.Psbt({ network });
+    psbt.addInput({
+      hash: previous.getId(),
+      index: 0,
+      nonWitnessUtxo: previous.toBuffer(),
+      bip32Derivation: [
+        { masterFingerprint: root.fingerprint, path, pubkey: child.publicKey },
+      ],
+    });
+    psbt.addOutput({ script: payment.output, value: 99999000n });
+    return psbt;
+  };
+
   beforeEach(async () => {
     setupMocks();
+    // Keep real PSBT getters and signatures through the public return path.
+    // The shared mock spreads the object and loses prototype fields such as
+    // txInputs, so use the real HD signing method for these integration cases.
+    jest
+      .spyOn((sjs.utils as any).HDSigner.prototype, 'sign')
+      .mockImplementation(
+        jest.requireActual('syscoinjs-lib').utils.HDSigner.prototype.sign
+      );
     // Set up vault-keys that would normally be created by Pali's MainController
     await setupTestVault(FAKE_PASSWORD);
 
@@ -24,12 +61,14 @@ describe('Syscoin Transactions', () => {
     });
     mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-    keyringManager = await KeyringManager.createInitialized(
+    keyringManager = await createFreshTestKeyring(
       PEACE_SEED_PHRASE,
       FAKE_PASSWORD,
       mockVaultStateGetter
     );
   });
+
+  afterEach(() => jest.restoreAllMocks());
 
   describe('Fee Estimation', () => {
     it('should get recommended fee from network', async () => {
@@ -117,26 +156,7 @@ describe('Syscoin Transactions', () => {
       const originalFromPali = PsbtUtils.fromPali;
       const originalToPali = PsbtUtils.toPali;
 
-      PsbtUtils.fromPali = jest.fn().mockReturnValue({
-        txInputs: [{ hash: Buffer.alloc(32), index: 0, sequence: 0xffffffff }],
-        txOutputs: [{ script: Buffer.alloc(25), value: 100000000 }],
-        data: {
-          inputs: [
-            {
-              witnessUtxo: { script: Buffer.alloc(25), value: 100000000 },
-              nonWitnessUtxo: Buffer.alloc(100),
-            },
-          ],
-          outputs: [{}],
-        },
-        getInputType: () => 'witnesspubkeyhash',
-        signAllInputsHDAsync: jest.fn().mockResolvedValue(undefined),
-        validateSignaturesOfAllInputs: jest.fn().mockReturnValue(true),
-        finalizeAllInputs: jest.fn(),
-        extractTransaction: jest.fn().mockReturnValue({
-          getId: jest.fn().mockReturnValue('mock_txid'),
-        }),
-      });
+      PsbtUtils.fromPali = jest.fn().mockReturnValue(scopedPsbtFixture());
 
       PsbtUtils.toPali = jest.fn().mockReturnValue({
         psbt: 'mock_signed_psbt',
@@ -184,37 +204,10 @@ describe('Syscoin Transactions', () => {
       ).signPSBTWithMethod;
       (keyringManager.syscoinTransaction as any).signPSBTWithMethod = jest
         .fn()
-        .mockResolvedValue({
-          txid: 'mock_trezor_txid',
-          transaction: 'mock_trezor_transaction',
-        });
+        .mockImplementation(async (psbt) => psbt);
 
       // Mock a proper PSBT object with required methods for Trezor conversion
-      PsbtUtils.fromPali = jest.fn().mockReturnValue({
-        txInputs: [{ hash: Buffer.alloc(32), index: 0, sequence: 0xffffffff }],
-        txOutputs: [
-          {
-            script: Buffer.from('0014' + '0'.repeat(40), 'hex'), // Valid witness script
-            value: 100000000,
-            address:
-              'tsys1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq4k9aqm', // Valid testnet bech32
-          },
-        ],
-        data: {
-          inputs: [
-            {
-              witnessUtxo: { script: Buffer.alloc(25), value: 100000000 },
-              nonWitnessUtxo: Buffer.alloc(100),
-            },
-          ],
-          outputs: [{}],
-        },
-        getInputType: () => 'witnesspubkeyhash',
-        finalizeAllInputs: jest.fn(),
-        extractTransaction: jest.fn().mockReturnValue({
-          getId: jest.fn().mockReturnValue('mock_txid'),
-        }),
-      });
+      PsbtUtils.fromPali = jest.fn().mockReturnValue(scopedPsbtFixture());
 
       PsbtUtils.toPali = jest.fn().mockReturnValue({
         psbt: 'mock_signed_psbt',
@@ -255,26 +248,7 @@ describe('Syscoin Transactions', () => {
         assets: [],
       });
 
-      PsbtUtils.fromPali = jest.fn().mockReturnValue({
-        txInputs: [{ hash: Buffer.alloc(32), index: 0, sequence: 0xffffffff }],
-        txOutputs: [{ script: Buffer.alloc(25), value: 100000000 }],
-        data: {
-          inputs: [
-            {
-              witnessUtxo: { script: Buffer.alloc(25), value: 100000000 },
-              nonWitnessUtxo: Buffer.alloc(100),
-            },
-          ],
-          outputs: [{}],
-        },
-        getInputType: () => 'witnesspubkeyhash',
-        signAllInputsHDAsync: jest.fn().mockResolvedValue(undefined),
-        validateSignaturesOfAllInputs: jest.fn().mockReturnValue(true),
-        finalizeAllInputs: jest.fn(),
-        extractTransaction: jest.fn().mockReturnValue({
-          getId: jest.fn().mockReturnValue('mock_transaction_id'),
-        }),
-      });
+      PsbtUtils.fromPali = jest.fn().mockReturnValue(scopedPsbtFixture());
 
       // First create unsigned PSBT
       const feeEstimate =
@@ -407,26 +381,7 @@ describe('Syscoin Transactions', () => {
         assets: [],
       });
 
-      PsbtUtils.fromPali = jest.fn().mockReturnValue({
-        txInputs: [{ hash: Buffer.alloc(32), index: 0, sequence: 0xffffffff }],
-        txOutputs: [{ script: Buffer.alloc(25), value: 100000000 }],
-        data: {
-          inputs: [
-            {
-              witnessUtxo: { script: Buffer.alloc(25), value: 100000000 },
-              nonWitnessUtxo: Buffer.alloc(100),
-            },
-          ],
-          outputs: [{}],
-        },
-        getInputType: () => 'witnesspubkeyhash',
-        signAllInputsHDAsync: jest.fn().mockResolvedValue(undefined),
-        validateSignaturesOfAllInputs: jest.fn().mockReturnValue(true),
-        finalizeAllInputs: jest.fn(),
-        extractTransaction: jest.fn().mockReturnValue({
-          getId: jest.fn().mockReturnValue('mock_token_txid'),
-        }),
-      });
+      PsbtUtils.fromPali = jest.fn().mockReturnValue(scopedPsbtFixture());
 
       // First create unsigned PSBT for token transaction
       const feeEstimate =
@@ -529,7 +484,7 @@ describe('Syscoin Transactions', () => {
       const mainnetVaultStateGetter = jest.fn(() => mainnetVaultState);
 
       // Create mainnet keyring
-      const mainnetKeyring = await KeyringManager.createInitialized(
+      const mainnetKeyring = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mainnetVaultStateGetter

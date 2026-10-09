@@ -2,7 +2,7 @@ import { INetworkType, INetwork } from '@sidhujag/sysweb3-network';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
-import { setupMocks } from '../../helpers/setup';
+import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
 
 describe('Network Management', () => {
   let keyringManager: KeyringManager;
@@ -26,7 +26,7 @@ describe('Network Management', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -128,7 +128,7 @@ describe('Network Management', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -160,7 +160,7 @@ describe('Network Management', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -190,7 +190,7 @@ describe('Network Management', () => {
       };
       const syscoinMainnetVaultGetter = jest.fn(() => syscoinMainnetVaultState);
 
-      const syscoinKeyring = await KeyringManager.createInitialized(
+      const syscoinKeyring = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         syscoinMainnetVaultGetter
@@ -211,7 +211,7 @@ describe('Network Management', () => {
       };
       const syscoinTestnetVaultGetter = jest.fn(() => syscoinTestnetVaultState);
 
-      const syscoinTestnetKeyring = await KeyringManager.createInitialized(
+      const syscoinTestnetKeyring = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         syscoinTestnetVaultGetter
@@ -250,7 +250,7 @@ describe('Network Management', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -346,7 +346,7 @@ describe('Network Management', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await KeyringManager.createInitialized(
+      keyringManager = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
