@@ -112,6 +112,17 @@ const encryptVaultWebCrypto = async (
   };
 };
 
+export class VaultAuthenticationError extends Error {
+  readonly code = 'INVALID_PASSWORD';
+
+  constructor() {
+    super('Failed to decrypt vault - invalid password or corrupted data');
+    this.name = 'VaultAuthenticationError';
+  }
+}
+
+const invalidPasswordError = () => new VaultAuthenticationError();
+
 const decryptVaultWebCrypto = async (
   envelope: VaultGcmEnvelopeV4,
   keyHex: string
@@ -131,11 +142,25 @@ const decryptVaultWebCrypto = async (
 
   const ivBytes = hexToBytes(envelope.iv);
   const ctBytes = hexToBytes(envelope.ct);
-  const pt = await subtle.decrypt(
-    { name: 'AES-GCM', iv: ivBytes as unknown as BufferSource },
-    key,
-    ctBytes as unknown as BufferSource
-  );
+  if (ivBytes.length !== 12 || ctBytes.length < 16) {
+    throw new Error('Invalid encrypted vault format');
+  }
+
+  let pt: ArrayBuffer;
+  try {
+    pt = await subtle.decrypt(
+      { name: 'AES-GCM', iv: ivBytes as unknown as BufferSource },
+      key,
+      ctBytes as unknown as BufferSource
+    );
+  } catch (error) {
+    // Only a failed authentication tag is a password/ciphertext failure.
+    // Key import and other platform exceptions must remain operational.
+    if (error?.name === 'OperationError') {
+      throw invalidPasswordError();
+    }
+    throw error;
+  }
   return new TextDecoder().decode(pt);
 };
 
@@ -170,7 +195,10 @@ export const setEncryptedVault = async (decryptedVault: any, pwd: string) => {
   });
 };
 
-export const getDecryptedVault = async (pwd: string) => {
+export const getDecryptedVault = async (
+  pwd: string,
+  legacyPassword?: string
+) => {
   return vaultMutex.runExclusive(async () => {
     // Always use single 'vault' key
     const vault = await storage.get('vault');
@@ -181,26 +209,46 @@ export const getDecryptedVault = async (pwd: string) => {
 
     // Prefer WebCrypto AES-GCM when the stored vault is in v4 envelope format.
     const maybeEnvelope = maybeParseGcmEnvelope(vault);
+    if (
+      !maybeEnvelope &&
+      typeof vault === 'string' &&
+      vault.trim().startsWith('{')
+    ) {
+      // Legacy CBC vaults are base64. A JSON-shaped record must be a valid
+      // GCM envelope rather than being misreported as a password failure.
+      throw new Error('Invalid encrypted vault format');
+    }
     let decryptedVault: string;
     if (maybeEnvelope) {
-      try {
-        decryptedVault = await decryptVaultWebCrypto(maybeEnvelope, pwd);
-      } catch {
-        throw new Error(
-          'Failed to decrypt vault - invalid password or corrupted data'
-        );
-      }
+      decryptedVault = await decryptVaultWebCrypto(maybeEnvelope, pwd);
     } else {
       // Legacy CryptoJS passphrase-AES vault (v3 and older v4 canary).
-      decryptedVault = CryptoJS.AES.decrypt(vault, pwd).toString(
-        CryptoJS.enc.Utf8
-      );
+      // An interrupted migration can already have written CBC with the
+      // derived key while the metadata still selects the legacy password.
+      for (const candidateKey of new Set([legacyPassword ?? pwd, pwd])) {
+        let plaintext: string;
+        try {
+          plaintext = CryptoJS.AES.decrypt(vault, candidateKey).toString(
+            CryptoJS.enc.Utf8
+          );
+        } catch (error) {
+          if (error?.message === 'Malformed UTF-8 data') continue;
+          throw error;
+        }
+        if (!plaintext) continue;
+        try {
+          return JSON.parse(plaintext);
+        } catch (error) {
+          // CBC has no authentication tag; invalid plaintext is the only
+          // available indication of a bad password/ciphertext.
+          if (!(error instanceof SyntaxError)) throw error;
+        }
+      }
+      throw invalidPasswordError();
     }
 
     if (!decryptedVault) {
-      throw new Error(
-        'Failed to decrypt vault - invalid password or corrupted data'
-      );
+      throw invalidPasswordError();
     }
 
     return JSON.parse(decryptedVault);

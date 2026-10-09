@@ -1175,6 +1175,36 @@ export class EthereumTransactions implements IEthereumTransactions {
     params: SimpleTransactionRequest,
     isLegacy?: boolean
   ) => {
+    let broadcastAttempted = false;
+    try {
+      return await this.sendFormattedTransactionInternal(
+        params,
+        isLegacy,
+        () => {
+          broadcastAttempted = true;
+        }
+      );
+    } catch (error) {
+      // A broadcast transport error may mean the node accepted the signed
+      // transaction. Derive this marker from this invocation, never RPC data.
+      const submissionError = Object.assign(
+        new Error(error instanceof Error ? error.message : String(error)),
+        error,
+        { transactionNotBroadcast: !broadcastAttempted }
+      );
+      if (error instanceof Error) {
+        submissionError.name = error.name;
+        submissionError.stack = error.stack;
+      }
+      throw submissionError;
+    }
+  };
+
+  private sendFormattedTransactionInternal = async (
+    params: SimpleTransactionRequest,
+    isLegacy: boolean | undefined,
+    beforeBroadcast: () => void
+  ) => {
     const { activeAccountType, activeAccountId, accounts, activeNetwork } =
       this.getState();
     const activeAccount = accounts[activeAccountType][activeAccountId];
@@ -1287,6 +1317,7 @@ export class EthereumTransactions implements IEthereumTransactions {
             txFormattedForEthers,
             formattedSignature
           );
+          beforeBroadcast();
           const finalTx = await this.web3Provider.sendTransaction(signedTx);
 
           return finalTx;
@@ -1403,6 +1434,7 @@ export class EthereumTransactions implements IEthereumTransactions {
             txFormattedForEthers,
             signature.payload
           );
+          beforeBroadcast();
           const finalTx = await this.web3Provider.sendTransaction(signedTx);
 
           return finalTx;
@@ -1435,7 +1467,8 @@ export class EthereumTransactions implements IEthereumTransactions {
         const transaction = await sendLocalEvmTransaction(
           this.web3Provider,
           decryptedPrivateKey,
-          tx
+          tx,
+          beforeBroadcast
         );
         // The broadcast response already has the hash. Pending transactions
         // have no block number, so a block lookup can fail after a successful
