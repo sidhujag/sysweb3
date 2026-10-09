@@ -217,8 +217,10 @@ Main class for keyring operations:
 
 ## Security
 
+- `initializeSession`, `initializeWalletSecurely`, and the initialization factories create a new wallet only when both vault records are absent. Use `unlock()` to restore an existing wallet. Repeating initialization on a matching live session verifies the stored wallet without rewriting it.
+- Fresh vault salt and ciphertext are committed together through native `set(items)` or an explicitly atomic `setItems` storage adapter. Sequential-only adapters are rejected before writing. Existing or incomplete records are preserved.
 - UTXO signing authenticates the selected account's paths, public keys and spent scripts. A joint PSBT may include unfinished inputs for another signer: their HD/path hints are removed before the selected private signer runs, then their public metadata is restored to the returned partial PSBT. Another account in the same wallet remains unsigned. At least one unfinished input must authenticate to the selected account; a wholly finalized PSBT retains its existing handling. Standard P2WSH, wrapped P2WSH and P2SH multisig preserve external cosigner signatures and continuation. Hardware paths and single-address imports can reject unsupported joint inputs rather than widening signing authority.
-- Private keys are encrypted and stored in memory only
+- Persisted wallet and account secrets are encrypted; plaintext signing material is used in memory
 - Session data is cleared when the keyring is locked
 - Hardware wallet integration follows device security models
 - Secure memory management with explicit cleanup
