@@ -2934,12 +2934,6 @@ export class KeyringManager implements IKeyringManager {
       password,
       foundVaultKeys ? vaultKeys : { salt }
     );
-    if (!foundVaultKeys) {
-      // Store vault-keys using the storage abstraction
-      await this.storage.set('vault-keys', {
-        salt,
-      });
-    }
 
     // Check if already initialized with the same password (idempotent behavior)
     if (this.sessionPassword) {
@@ -2975,7 +2969,8 @@ export class KeyringManager implements IKeyringManager {
         mnemonic: seedPhrase, // Store plain mnemonic - setEncryptedVault will encrypt the entire vault
       },
       // v4 vault is encrypted with the derived session password key (PBKDF2 output)
-      sessionPasswordSaltedHash
+      sessionPasswordSaltedHash,
+      foundVaultKeys ? undefined : { salt }
     );
 
     await this.recreateSessionFromVault(sessionPasswordSaltedHash);

@@ -170,7 +170,11 @@ const decryptVaultWebCrypto = async (
 };
 
 // Single vault for all networks - stores the mnemonic and can derive accounts for any slip44
-export const setEncryptedVault = async (decryptedVault: any, pwd: string) => {
+export const setEncryptedVault = async (
+  decryptedVault: any,
+  pwd: string,
+  freshVaultKeys?: { salt: string }
+) => {
   return vaultMutex.runExclusive(async () => {
     const plaintext = JSON.stringify(decryptedVault);
 
@@ -188,8 +192,24 @@ export const setEncryptedVault = async (decryptedVault: any, pwd: string) => {
     const envelope = await encryptVaultWebCrypto(plaintext, pwd);
     const toStore = JSON.stringify(envelope);
 
-    // Always use single 'vault' key for all networks
-    await storage.set('vault', toStore);
+    if (freshVaultKeys) {
+      // A failed fresh creation must not strand a salt without its ciphertext.
+      // Recheck under the vault mutex so concurrent initializers cannot replace
+      // the wallet committed by the first one, or erase an existing mismatch.
+      const [existingVault, existingKeys] = await Promise.all([
+        storage.get('vault'),
+        storage.get('vault-keys'),
+      ]);
+      if (existingVault || existingKeys) {
+        throw new Error(
+          'Cannot initialize a new vault over existing wallet storage'
+        );
+      }
+      await storage.setMany({ 'vault-keys': freshVaultKeys, vault: toStore });
+    } else {
+      // Existing vault updates retain their migration-specific write ordering.
+      await storage.set('vault', toStore);
+    }
   });
 };
 

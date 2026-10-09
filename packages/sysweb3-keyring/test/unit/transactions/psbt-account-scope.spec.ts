@@ -248,7 +248,7 @@ describe('PSBT approved-account boundary with the real HD signer', () => {
     );
   });
 
-  it('rejects a distinct multisig input with no approved-account key', async () => {
+  it('leaves a distinct multisig input with no approved-account key unsigned', async () => {
     const { tx, psbt, cosigner, root } = multisigFixture('p2wsh');
     const other = root.derivePath("m/84'/1'/1'/0/0");
     const multisig = payments.p2ms({
@@ -276,15 +276,19 @@ describe('PSBT approved-account boundary with the real HD signer', () => {
         },
       ],
     });
-    await expect(tx.signPSBT({ psbt: PsbtUtils.toPali(psbt) })).rejects.toThrow(
-      /approved account/
+    const signed = PsbtUtils.fromPali(
+      await tx.signPSBT({ psbt: PsbtUtils.toPali(psbt) }),
+      network
     );
+    expect(signed.data.inputs[0].partialSig).toHaveLength(1);
+    expect(signed.data.inputs[1].partialSig).toBeUndefined();
+    expect(signed.data.inputs[1].finalScriptWitness).toBeUndefined();
+    expect(signed.data.inputs[1].bip32Derivation).toHaveLength(1);
   });
 
   it.each([
     ['another account without proprietary metadata', [1], false],
     ['another account claiming the approved address', [1], true],
-    ['mixed account inputs', [0, 1], false],
   ])('rejects %s before any signature', async (_label, indices, forged) => {
     const { tx, hd, makePsbt } = fixture();
     const sign = jest.spyOn(hd, 'sign');
@@ -296,6 +300,125 @@ describe('PSBT approved-account boundary with the real HD signer', () => {
       })
     ).rejects.toThrow(/approved account/);
     expect(sign).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'own account 1',
+    'external key',
+    'forged ownership hints',
+    'no hints',
+  ])('signs only the approved input in a joint PSBT with %s', async (kind) => {
+    const { tx, hd, makePsbt, root, paths, children } = fixture();
+    const psbt = makePsbt([0, 1]);
+    if (kind !== 'own account 1') {
+      const actual = jest.requireActual('syscoinjs-lib');
+      const external = new actual.utils.HDSigner(
+        'legal winner thank year wave sausage worth useful legal winner thank yellow',
+        null,
+        true,
+        config.networks,
+        1,
+        config.types.zPubType,
+        84
+      );
+      const externalRoot = external.getRootNode();
+      const externalPath = "m/84'/1'/3'/1/5";
+      const externalKey = externalRoot.derivePath(externalPath);
+      const previous = new Transaction();
+      previous.addInput(Buffer.alloc(32), 0xffffffff);
+      previous.addOutput(
+        payments.p2wpkh({
+          pubkey: externalKey.publicKey,
+          network: bitcoinNetwork,
+        }).output!,
+        100000n
+      );
+      const joint = makePsbt([0]);
+      joint.addInput({
+        hash: previous.getId(),
+        index: 0,
+        nonWitnessUtxo: previous.toBuffer(),
+        ...(kind === 'no hints'
+          ? {}
+          : {
+              bip32Derivation: [
+                {
+                  masterFingerprint:
+                    kind === 'forged ownership hints'
+                      ? root.fingerprint
+                      : externalRoot.fingerprint,
+                  path:
+                    kind === 'forged ownership hints' ? paths[0] : externalPath,
+                  pubkey:
+                    kind === 'forged ownership hints'
+                      ? children[0].publicKey
+                      : externalKey.publicKey,
+                },
+              ],
+            }),
+      });
+      // Keep bitcoinjs internals coherent by using the rebuilt joint PSBT.
+      return verifyJoint(joint);
+    }
+    return verifyJoint(psbt);
+
+    async function verifyJoint(joint: Psbt) {
+      joint.addUnknownKeyValToInput(1, {
+        key: Buffer.from('path'),
+        value: Buffer.from(paths[1]),
+      });
+      const originalSign = hd.sign.bind(hd);
+      let foreignHints: unknown;
+      jest.spyOn(hd, 'sign').mockImplementation(async (input) => {
+        foreignHints = {
+          bip32: input.data.inputs[1].bip32Derivation,
+          tap: input.data.inputs[1].tapBip32Derivation,
+          paths: (input.data.inputs[1].unknownKeyVals || []).filter(
+            (field) => Buffer.from(field.key).toString() === 'path'
+          ),
+        };
+        return originalSign(input);
+      });
+      const signed = PsbtUtils.fromPali(
+        await tx.signPSBT({ psbt: PsbtUtils.toPali(joint) }),
+        network
+      );
+      expect(foreignHints).toEqual({
+        bip32: undefined,
+        tap: undefined,
+        paths: [],
+      });
+      expect(signed.data.inputs[0].finalScriptWitness).toBeDefined();
+      expect(signed.data.inputs[1].finalScriptWitness).toBeUndefined();
+      expect(signed.data.inputs[1].partialSig).toBeUndefined();
+      expect(
+        signed.data.inputs[1].unknownKeyVals?.find(
+          (field) => Buffer.from(field.key).toString() === 'path'
+        )
+      ).toBeDefined();
+    }
+  });
+
+  it('allows an imported account node to sign only its own joint input', async () => {
+    const { root, account, makePsbt } = fixture();
+    const psbt = makePsbt([0, 1]);
+    assertPsbtAccountScope(psbt, {
+      account,
+      accountId: 7,
+      accountType: KeyringAccountType.Imported,
+      network,
+    });
+    expect(psbt.data.inputs[0].bip32Derivation![0].path).toBe('0/0');
+    expect(psbt.data.inputs[1].bip32Derivation).toBeUndefined();
+    const actual = jest.requireActual('syscoinjs-lib');
+    await actual.utils.signWithKeyPair(
+      psbt,
+      root.derivePath("m/84'/1'/0'"),
+      bitcoinNetwork
+    );
+    expect(psbt.data.inputs[0].finalScriptWitness).toBeDefined();
+    expect(psbt.data.inputs[1].finalScriptWitness).toBeUndefined();
+    expect(psbt.data.inputs[1].partialSig).toBeUndefined();
   });
 
   it('still signs the approved account with the actual signer', async () => {
@@ -340,9 +463,11 @@ describe('PSBT approved-account boundary with the real HD signer', () => {
     expect(() => scoped.getRootNode().derivePath(paths[1])).toThrow(
       /approved account/
     );
-    await expect(scoped.sign(makePsbt([0, 1]))).rejects.toThrow(
-      /approved account/
-    );
+    const joint = await scoped.sign(makePsbt([0, 1]));
+    expect(joint.data.inputs[0].finalScriptWitness).toBeDefined();
+    expect(joint.data.inputs[1].finalScriptWitness).toBeUndefined();
+    expect(joint.data.inputs[1].partialSig).toBeUndefined();
+    expect(joint.data.inputs[1].bip32Derivation).toBeUndefined();
     await expect(scoped.sign(makePsbt([0]))).resolves.toBeDefined();
     expect(account.address).toBeDefined();
     keyring.sessionPassword = null;
@@ -417,6 +542,9 @@ describe('PSBT approved-account boundary with the real HD signer', () => {
     };
     expect(() => assertPsbtAccountScope(makePsbt([0]), scope)).not.toThrow();
     expect(() => assertPsbtAccountScope(makePsbt([1], true), scope)).toThrow(
+      /approved account/
+    );
+    expect(() => assertPsbtAccountScope(makePsbt([0, 1]), scope)).toThrow(
       /approved account/
     );
     const keyring: any = new KeyringManager();
@@ -494,6 +622,45 @@ describe('PSBT approved-account boundary with the real HD signer', () => {
     );
     expect(signed.data.inputs[1].partialSig).toBeUndefined();
     expect(signed.data.inputs[0].finalScriptWitness).toBeDefined();
+  });
+
+  it('preserves scope validation for a completely finalized PSBT', () => {
+    const { account, makePsbt, children } = fixture();
+    const psbt = makePsbt([1]);
+    psbt.signInput(0, children[1]);
+    psbt.finalizeInput(0);
+    expect(() =>
+      assertPsbtAccountScope(psbt, {
+        account,
+        accountId: 0,
+        accountType: KeyringAccountType.HDAccount,
+        network,
+      })
+    ).not.toThrow();
+  });
+
+  it('requires an authenticated owned input even when foreign hints are absent', async () => {
+    const { tx, makePsbt, hd } = fixture();
+    const psbt = makePsbt([1]);
+    delete psbt.data.inputs[0].bip32Derivation;
+    const sign = jest.spyOn(hd, 'sign');
+    await expect(tx.signPSBT({ psbt: PsbtUtils.toPali(psbt) })).rejects.toThrow(
+      /approved account/
+    );
+    expect(sign).not.toHaveBeenCalled();
+  });
+
+  it('does not skip malformed previous-transaction data in a joint input', async () => {
+    const { tx, makePsbt, hd } = fixture();
+    const psbt = makePsbt([0, 1]);
+    const wrong = Transaction.fromBuffer(psbt.data.inputs[1].nonWitnessUtxo!);
+    wrong.outs[0].value += 1n;
+    psbt.data.inputs[1].nonWitnessUtxo = wrong.toBuffer();
+    const sign = jest.spyOn(hd, 'sign');
+    await expect(
+      tx.signPSBT({ psbt: PsbtUtils.toPali(psbt) })
+    ).rejects.toThrow();
+    expect(sign).not.toHaveBeenCalled();
   });
 
   it('validates 100 legitimate independent inputs within one bounded operation', () => {

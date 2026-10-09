@@ -169,6 +169,103 @@ describe('production KDF compatibility through the real core adapter', () => {
     expect(await getDecryptedVault(expected)).toEqual({ mnemonic });
   });
 
+  it('publishes a fresh salt and ciphertext together only after the native write succeeds', async () => {
+    const entered = deferred();
+    const release = deferred();
+    client.set.mockImplementation(async (value: any) => {
+      entered.resolve();
+      await release.promise;
+      Object.assign(data, value);
+    });
+    const creation = ring.initializeSession(mnemonic, password);
+    await entered.promise;
+    expect(data).toEqual({});
+    expect(client.set).toHaveBeenCalledTimes(1);
+    expect(client.set.mock.calls[0][0]).toEqual({
+      'sysweb3-vault-keys': { salt: expect.stringMatching(/^[a-f0-9]{32}$/) },
+      'sysweb3-vault': expect.any(String),
+    });
+    release.resolve();
+    await creation;
+    expect(JSON.parse(data['sysweb3-vault']).alg).toBe('A256GCM');
+    await ring.lockWallet();
+    ring = createRing();
+    await expect(ring.unlock(password)).resolves.toEqual({ canLogin: true });
+    expect(await ring.getSeed(password)).toBe(mnemonic);
+  });
+
+  it('leaves no fresh-wallet metadata after a rejected native write and permits a safe retry', async () => {
+    const error = new Error('native batch quota failure');
+    client.set.mockImplementationOnce(async (value: any) => {
+      // Before the fix, the first standalone salt write succeeded, then
+      // ciphertext failed. Reject the vault-containing call in both versions.
+      if ('sysweb3-vault' in value) throw error;
+      Object.assign(data, value);
+    });
+    client.set.mockImplementationOnce(async () => {
+      throw error;
+    });
+    await expect(ring.initializeSession(mnemonic, password)).rejects.toBe(
+      error
+    );
+    expect(data).toEqual({});
+    client.set.mockReset().mockImplementation(async (value: any) => {
+      Object.assign(data, value);
+    });
+    await expect(
+      ring.initializeSession(mnemonic, password)
+    ).resolves.toBeUndefined();
+    expect(await ring.getSeed(password)).toBe(mnemonic);
+  });
+
+  it('does not publish fresh metadata when encryption fails before the batch write', async () => {
+    const error = new Error('WebCrypto encryption failed');
+    jest.spyOn(webcrypto.subtle, 'encrypt').mockRejectedValueOnce(error);
+    await expect(ring.initializeSession(mnemonic, password)).rejects.toBe(
+      error
+    );
+    expect(data).toEqual({});
+    expect(client.set).not.toHaveBeenCalled();
+  });
+
+  it('does not replace an orphaned existing ciphertext when fresh keys are absent', async () => {
+    data['sysweb3-vault'] = 'pre-existing ciphertext';
+    await expect(ring.initializeSession(mnemonic, password)).rejects.toThrow(
+      'Cannot initialize a new vault over existing wallet storage'
+    );
+    expect(data).toEqual({ 'sysweb3-vault': 'pre-existing ciphertext' });
+    expect(client.set).not.toHaveBeenCalled();
+  });
+
+  it('rejects a fresh creation on a sequential-only adapter before any write', async () => {
+    const sequential = {
+      getItem: jest.fn(() => null),
+      setItem: jest.fn(),
+      removeItem: jest.fn(),
+    };
+    db.setClient(sequential);
+    await expect(ring.initializeSession(mnemonic, password)).rejects.toThrow(
+      'Storage adapter does not support atomic batch writes'
+    );
+    expect(sequential.setItem).not.toHaveBeenCalled();
+  });
+
+  it('leaves a complete recoverable vault if the batch commits but acknowledgement is lost', async () => {
+    const error = new Error('write acknowledgement lost');
+    client.set.mockImplementationOnce(async (value: any) => {
+      Object.assign(data, value);
+      throw error;
+    });
+    await expect(ring.initializeSession(mnemonic, password)).rejects.toBe(
+      error
+    );
+    expect(data['sysweb3-vault-keys']).toEqual({ salt: expect.any(String) });
+    expect(JSON.parse(data['sysweb3-vault']).alg).toBe('A256GCM');
+    ring = createRing();
+    await expect(ring.unlock(password)).resolves.toEqual({ canLogin: true });
+    expect(await ring.getSeed(password)).toBe(mnemonic);
+  });
+
   it('retains legacy account access after WebCrypto appears and after restarting', async () => {
     installLegacy();
     await expect(ring.unlock(password)).resolves.toEqual({ canLogin: true });

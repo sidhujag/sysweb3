@@ -213,6 +213,12 @@ jest.mock('@sidhujag/sysweb3-core', () => ({
         mockStorage.set(key, value);
         return Promise.resolve();
       }),
+      setMany: jest.fn((items: Record<string, any>) => {
+        Object.entries(items).forEach(([key, value]) =>
+          mockStorage.set(key, value)
+        );
+        return Promise.resolve();
+      }),
       deleteItem: jest.fn((key: string) => {
         mockStorage.delete(key);
         return Promise.resolve();

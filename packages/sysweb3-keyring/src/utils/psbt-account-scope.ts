@@ -7,8 +7,16 @@ import { KeyringAccountType } from '../types';
 import { getAccountDerivationPath } from './derivation-paths';
 
 const bip32 = BIP32Factory(ecc);
+const SCOPE_ERROR = 'PSBT input is outside the approved account';
 const fail = (): never => {
-  throw new Error('PSBT input is outside the approved account');
+  throw new Error(SCOPE_ERROR);
+};
+const clearSigningHints = (input: Psbt['data']['inputs'][number]) => {
+  delete input.bip32Derivation;
+  delete input.tapBip32Derivation;
+  input.unknownKeyVals = (input.unknownKeyVals || []).filter(
+    (field) => Buffer.from(field.key).toString() !== 'path'
+  );
 };
 const equal = (a?: Uint8Array, b?: Uint8Array) =>
   Boolean(a && b && Buffer.from(a).equals(Buffer.from(b)));
@@ -96,17 +104,16 @@ export function assertPsbtAccountScope(
     { publicKey: Uint8Array; scripts: Array<Uint8Array | undefined> }
   >();
 
+  let ownedInputs = 0;
+  let hasUnfinishedInputs = false;
   psbt.data.inputs.forEach((input, inputIndex) => {
     // Finalized co-signer inputs may remain in a PSBT. Remove signing hints so
     // even a permissive underlying signer cannot add another signature there.
     if (input.finalScriptSig || input.finalScriptWitness) {
-      delete input.bip32Derivation;
-      delete input.tapBip32Derivation;
-      input.unknownKeyVals = (input.unknownKeyVals || []).filter(
-        (field) => Buffer.from(field.key).toString() !== 'path'
-      );
+      clearSigningHints(input);
       return;
     }
+    hasUnfinishedInputs = true;
     const txInput = psbt.txInputs[inputIndex];
     let spent = input.witnessUtxo;
     if (input.nonWitnessUtxo) {
@@ -122,170 +129,201 @@ export function assertPsbtAccountScope(
       spent = output;
     }
     if (!spent) return fail();
-    let multisigKeys: Uint8Array[] | undefined;
-    const multisigScript = input.witnessScript || input.redeemScript;
-    if (multisigScript) {
-      try {
-        // Only standard multisig is supported here. The scripts, not the
-        // cosigners' supplied derivation metadata, authenticate membership.
-        const multisig = payments.p2ms({
-          output: multisigScript,
-          network: bitcoinNetwork,
-        });
-        if (!multisig.pubkeys?.length) return fail();
-        if (input.witnessScript) {
-          const witness = payments.p2wsh({
-            redeem: multisig,
+    try {
+      let multisigKeys: Uint8Array[] | undefined;
+      const multisigScript = input.witnessScript || input.redeemScript;
+      if (multisigScript) {
+        try {
+          // Only standard multisig is supported here. The scripts, not the
+          // cosigners' supplied derivation metadata, authenticate membership.
+          const multisig = payments.p2ms({
+            output: multisigScript,
             network: bitcoinNetwork,
           });
-          if (input.redeemScript && !equal(input.redeemScript, witness.output))
+          if (!multisig.pubkeys?.length) return fail();
+          if (input.witnessScript) {
+            const witness = payments.p2wsh({
+              redeem: multisig,
+              network: bitcoinNetwork,
+            });
+            if (
+              input.redeemScript &&
+              !equal(input.redeemScript, witness.output)
+            )
+              return fail();
+            const output = input.redeemScript
+              ? payments.p2sh({ redeem: witness, network: bitcoinNetwork })
+                  .output
+              : witness.output;
+            if (!equal(output, spent.script)) return fail();
+          } else if (
+            !equal(
+              payments.p2sh({ redeem: multisig, network: bitcoinNetwork })
+                .output,
+              spent.script
+            )
+          ) {
+            // Nested single-key P2WPKH is validated below, not as multisig.
             return fail();
-          const output = input.redeemScript
-            ? payments.p2sh({ redeem: witness, network: bitcoinNetwork }).output
-            : witness.output;
-          if (!equal(output, spent.script)) return fail();
-        } else if (
-          !equal(
-            payments.p2sh({ redeem: multisig, network: bitcoinNetwork }).output,
-            spent.script
-          )
-        ) {
-          // Nested single-key P2WPKH is validated below, not as multisig.
-          return fail();
+          }
+          multisigKeys = multisig.pubkeys;
+        } catch {
+          // A wrapped single-key input has a redeemScript but no multisig.
+          // Its normal derived-key output check below still authenticates it.
+          if (input.witnessScript) return fail();
         }
-        multisigKeys = multisig.pubkeys;
-      } catch {
-        // A wrapped single-key input has a redeemScript but no multisig.
-        // Its normal derived-key output check below still authenticates it.
-        if (input.witnessScript) return fail();
       }
-    }
-    if (singleAddress) {
-      const approvedScript = address.toOutputScript(
-        account.address,
-        bitcoinNetwork
-      );
-      if (multisigKeys) {
-        const ownsKey = multisigKeys.some((pubkey) => {
-          const witness = payments.p2wpkh({ pubkey, network: bitcoinNetwork });
-          return [
-            payments.p2pkh({ pubkey, network: bitcoinNetwork }).output,
-            witness.output,
-            payments.p2sh({ redeem: witness, network: bitcoinNetwork }).output,
-          ].some((output) => equal(output, approvedScript));
-        });
-        if (!ownsKey) return fail();
-        delete input.bip32Derivation;
-        delete input.tapBip32Derivation;
-        input.unknownKeyVals = (input.unknownKeyVals || []).filter(
-          (field) => Buffer.from(field.key).toString() !== 'path'
+      if (singleAddress) {
+        const approvedScript = address.toOutputScript(
+          account.address,
+          bitcoinNetwork
         );
-      } else if (!equal(spent.script, approvedScript)) return fail();
-      return;
-    }
+        if (multisigKeys) {
+          const ownsKey = multisigKeys.some((pubkey) => {
+            const witness = payments.p2wpkh({
+              pubkey,
+              network: bitcoinNetwork,
+            });
+            return [
+              payments.p2pkh({ pubkey, network: bitcoinNetwork }).output,
+              witness.output,
+              payments.p2sh({ redeem: witness, network: bitcoinNetwork })
+                .output,
+            ].some((output) => equal(output, approvedScript));
+          });
+          if (!ownsKey) return fail();
+          delete input.bip32Derivation;
+          delete input.tapBip32Derivation;
+          input.unknownKeyVals = (input.unknownKeyVals || []).filter(
+            (field) => Buffer.from(field.key).toString() !== 'path'
+          );
+        } else if (!equal(spent.script, approvedScript)) return fail();
+        ownedInputs += 1;
+        return;
+      }
 
-    const derivations = [
-      ...(input.bip32Derivation || []),
-      ...(input.tapBip32Derivation || []),
-    ];
-    const paths: Array<{ path: string; pubkey?: Uint8Array; source: object }> =
-      derivations.map((derivation) => ({
+      const derivations = [
+        ...(input.bip32Derivation || []),
+        ...(input.tapBip32Derivation || []),
+      ];
+      const paths: Array<{
+        path: string;
+        pubkey?: Uint8Array;
+        source: object;
+      }> = derivations.map((derivation) => ({
         path: derivation.path,
         pubkey: derivation.pubkey,
         source: derivation,
       }));
-    for (const field of input.unknownKeyVals || []) {
-      if (Buffer.from(field.key).toString() === 'path')
-        paths.push({
-          path: Buffer.from(field.value).toString(),
-          pubkey: undefined,
-          source: field,
-        });
-    }
-    if (!paths.length) return fail();
-    const approvedHints = new Set<object>();
-    for (const candidate of paths) {
-      let relative: string;
-      try {
-        relative = guardPath!(candidate.path);
-      } catch (error) {
-        if (multisigKeys) continue;
-        throw error;
+      for (const field of input.unknownKeyVals || []) {
+        if (Buffer.from(field.key).toString() === 'path')
+          paths.push({
+            path: Buffer.from(field.value).toString(),
+            pubkey: undefined,
+            source: field,
+          });
       }
-      const parts = relative.split('/');
-      if (parts.length !== 2) return fail();
-      const branch = childIndex(parts[0]);
-      const index = childIndex(parts[1]);
-      if (branch !== 0 && branch !== 1) return fail();
-      let derived = derivedKeys.get(relative);
-      if (!derived) {
-        const publicKey = node!.derive(branch).derive(index).publicKey;
-        const p2pkh = payments.p2pkh({
-          pubkey: publicKey,
-          network: bitcoinNetwork,
-        });
-        const p2wpkh = payments.p2wpkh({
-          pubkey: publicKey,
-          network: bitcoinNetwork,
-        });
-        const p2sh = payments.p2sh({ redeem: p2wpkh, network: bitcoinNetwork });
-        derived = {
-          publicKey,
-          scripts: [p2pkh.output, p2wpkh.output, p2sh.output],
-        };
-        derivedKeys.set(relative, derived);
-      }
-      const { publicKey } = derived;
-      if (
-        candidate.pubkey &&
-        !equal(candidate.pubkey, publicKey) &&
-        !equal(candidate.pubkey, publicKey.slice(1))
-      ) {
-        if (multisigKeys) continue;
-        return fail();
+      if (!paths.length) return fail();
+      const approvedHints = new Set<object>();
+      for (const candidate of paths) {
+        let relative: string;
+        try {
+          relative = guardPath!(candidate.path);
+        } catch (error) {
+          if (multisigKeys) continue;
+          throw error;
+        }
+        const parts = relative.split('/');
+        if (parts.length !== 2) return fail();
+        const branch = childIndex(parts[0]);
+        const index = childIndex(parts[1]);
+        if (branch !== 0 && branch !== 1) return fail();
+        let derived = derivedKeys.get(relative);
+        if (!derived) {
+          const publicKey = node!.derive(branch).derive(index).publicKey;
+          const p2pkh = payments.p2pkh({
+            pubkey: publicKey,
+            network: bitcoinNetwork,
+          });
+          const p2wpkh = payments.p2wpkh({
+            pubkey: publicKey,
+            network: bitcoinNetwork,
+          });
+          const p2sh = payments.p2sh({
+            redeem: p2wpkh,
+            network: bitcoinNetwork,
+          });
+          derived = {
+            publicKey,
+            scripts: [p2pkh.output, p2wpkh.output, p2sh.output],
+          };
+          derivedKeys.set(relative, derived);
+        }
+        const { publicKey } = derived;
+        if (
+          candidate.pubkey &&
+          !equal(candidate.pubkey, publicKey) &&
+          !equal(candidate.pubkey, publicKey.slice(1))
+        ) {
+          if (multisigKeys) continue;
+          return fail();
+        }
+        if (multisigKeys) {
+          if (!multisigKeys.some((key) => equal(key, publicKey))) continue;
+          approvedHints.add(candidate.source);
+          continue;
+        }
+        const ordinary = derived.scripts.some((script) =>
+          equal(script, spent!.script)
+        );
+        let taproot = false;
+        if (
+          input.tapInternalKey &&
+          equal(input.tapInternalKey, publicKey.slice(1))
+        ) {
+          const p2tr = payments.p2tr({
+            internalPubkey: publicKey.slice(1),
+            hash: input.tapMerkleRoot,
+            network: bitcoinNetwork,
+          });
+          taproot = equal(p2tr.output, spent.script);
+        }
+        if (!ordinary && !taproot) return fail();
       }
       if (multisigKeys) {
-        if (!multisigKeys.some((key) => equal(key, publicKey))) continue;
-        approvedHints.add(candidate.source);
-        continue;
+        if (!approvedHints.size) return fail();
+        // Keep cosigner signatures, but expose only the approved account's paths
+        // to the underlying signer, including its full-root HD fallback.
+        if (input.bip32Derivation)
+          input.bip32Derivation = input.bip32Derivation.filter((value) =>
+            approvedHints.has(value)
+          );
+        if (input.tapBip32Derivation)
+          input.tapBip32Derivation = input.tapBip32Derivation.filter((value) =>
+            approvedHints.has(value)
+          );
+        if (input.unknownKeyVals)
+          input.unknownKeyVals = input.unknownKeyVals.filter(
+            (field) =>
+              Buffer.from(field.key).toString() !== 'path' ||
+              approvedHints.has(field)
+          );
       }
-      const ordinary = derived.scripts.some((script) =>
-        equal(script, spent!.script)
-      );
-      let taproot = false;
+      ownedInputs += 1;
+    } catch (error) {
       if (
-        input.tapInternalKey &&
-        equal(input.tapInternalKey, publicKey.slice(1))
-      ) {
-        const p2tr = payments.p2tr({
-          internalPubkey: publicKey.slice(1),
-          hash: input.tapMerkleRoot,
-          network: bitcoinNetwork,
-        });
-        taproot = equal(p2tr.output, spent.script);
-      }
-      if (!ordinary && !taproot) return fail();
-    }
-    if (multisigKeys) {
-      if (!approvedHints.size) return fail();
-      // Keep cosigner signatures, but expose only the approved account's paths
-      // to the underlying signer, including its full-root HD fallback.
-      if (input.bip32Derivation)
-        input.bip32Derivation = input.bip32Derivation.filter((value) =>
-          approvedHints.has(value)
-        );
-      if (input.tapBip32Derivation)
-        input.tapBip32Derivation = input.tapBip32Derivation.filter((value) =>
-          approvedHints.has(value)
-        );
-      if (input.unknownKeyVals)
-        input.unknownKeyVals = input.unknownKeyVals.filter(
-          (field) =>
-            Buffer.from(field.key).toString() !== 'path' ||
-            approvedHints.has(field)
-        );
+        singleAddress ||
+        !(error instanceof Error) ||
+        error.message !== SCOPE_ERROR
+      )
+        throw error;
+      // A joint PSBT may include inputs for another signer. Hide every HD
+      // hint before our private signer runs; even another account in this
+      // wallet must remain unsigned. The public API restores metadata later.
+      clearSigningHints(input);
     }
   });
+  if (hasUnfinishedInputs && ownedInputs === 0) return fail();
   // An imported extended key is already the account node, so the signer must
   // receive only the validated relative children, never another full root path.
   if (accountType === KeyringAccountType.Imported && !singleAddress) {

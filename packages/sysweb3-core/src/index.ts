@@ -4,12 +4,15 @@ interface IStateStorageClient {
   getItem(key: string): string | null;
   removeItem(key: string): void | Promise<void>;
   setItem(key: string, value: string): void | Promise<void>;
+  // Optional all-or-nothing batch for clients without a native set(items).
+  setItems?(items: Record<string, string>): void | Promise<void>;
 }
 
 export interface IKeyValueDb {
   deleteItem(key: string): void | Promise<void>;
   get(key: string): any;
   set(key: string, value: any): void | Promise<void>;
+  setMany(items: Record<string, any>): void | Promise<void>;
   setClient(client?: IStateStorageClient): void;
   setPrefix(prefix: string): void;
 }
@@ -46,6 +49,27 @@ const StateStorageDb = (
     return storageClient.setItem(keyPrefix + key, JSON.stringify(value));
   };
 
+  const setMany = (items: Record<string, any>) => {
+    // Never emulate an atomic write with a sequence of setItem calls.
+    // Chrome storage and the built-in memory client can commit the whole batch.
+    if (storageClient && typeof storageClient.set === 'function') {
+      const prefixed = Object.fromEntries(
+        Object.entries(items).map(([key, value]) => [keyPrefix + key, value])
+      );
+      return storageClient.set(prefixed);
+    }
+    if (storageClient && typeof storageClient.setItems === 'function') {
+      const serialized = Object.fromEntries(
+        Object.entries(items).map(([key, value]) => [
+          keyPrefix + key,
+          JSON.stringify(value),
+        ])
+      );
+      return storageClient.setItems(serialized);
+    }
+    throw new Error('Storage adapter does not support atomic batch writes');
+  };
+
   const get = async (key: string): Promise<any> => {
     if (!storageClient) return;
 
@@ -77,6 +101,7 @@ const StateStorageDb = (
     setClient,
     setPrefix,
     set,
+    setMany,
     get,
     deleteItem,
   };
@@ -89,6 +114,10 @@ const MemoryStorageClient = (): IStateStorageClient => {
     memory[key] = value;
   };
 
+  const setItems = (items: Record<string, string>) => {
+    Object.assign(memory, items);
+  };
+
   const getItem = (key: string): any => memory[key];
 
   const removeItem = (key: string) => {
@@ -97,6 +126,7 @@ const MemoryStorageClient = (): IStateStorageClient => {
 
   return {
     setItem,
+    setItems,
     getItem,
     removeItem,
   };
