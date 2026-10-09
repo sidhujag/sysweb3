@@ -277,9 +277,14 @@ export function assertPsbtAccountScope(
           equal(script, spent!.script)
         );
         let taproot = false;
+        // Key-path signing can reconstruct an omitted internal key from this
+        // approved derivation. Commit any supplied Merkle root when checking
+        // the output, but do not infer script-path keys or accept a conflicting
+        // explicit internal key.
         if (
-          input.tapInternalKey &&
-          equal(input.tapInternalKey, publicKey.slice(1))
+          input.tapInternalKey === undefined
+            ? !ordinary && !input.tapLeafScript?.length
+            : equal(input.tapInternalKey, publicKey.slice(1))
         ) {
           const p2tr = payments.p2tr({
             internalPubkey: publicKey.slice(1),
