@@ -26,6 +26,7 @@
     "localTest": "yarn prebuild && yarn build && yarn copy"
   },
   "devDependencies": {
-    "rimraf": "^6.1.2"
+    "rimraf": "^6.1.2",
+    "typescript": "5.9.3"
   }
 }
