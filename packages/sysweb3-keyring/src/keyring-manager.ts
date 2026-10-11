@@ -53,6 +53,7 @@ import {
   ISyscoinTransactions,
   KeyringAccountType,
   IEthereumTransactions,
+  IEvmReplacementOptions,
   IKeyringManager,
 } from './types';
 import { fetchBackendAccountCached as fetchBlockbookAccountCached } from './utils/blockbook-cache';
@@ -1637,13 +1638,16 @@ export class KeyringManager implements IKeyringManager {
    */
 
   // ===================================== AUXILIARY METHOD - FOR TRANSACTIONS CLASSES ===================================== //
-  private getDecryptedPrivateKey = (): {
+  private getDecryptedPrivateKey = (
+    targetAccount?: IEvmReplacementOptions['targetAccount']
+  ): {
     address: string;
     decryptedPrivateKey: string;
   } => {
     try {
       const vault = this.getVault();
-      const { accounts, activeAccount } = vault;
+      const { accounts } = vault;
+      const activeAccount = targetAccount || vault.activeAccount;
       const activeAccountId = activeAccount.id;
       const activeAccountType = activeAccount.type;
       const isLedger = activeAccountType === KeyringAccountType.Ledger;

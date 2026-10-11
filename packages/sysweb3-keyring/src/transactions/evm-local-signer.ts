@@ -168,7 +168,8 @@ export const sendLocalEvmTransaction = async (
   provider: CustomJsonRpcProvider,
   privateKey: string,
   transaction: Deferrable<Record<string, any>>,
-  beforeBroadcast?: () => void
+  beforeBroadcast?: () => void,
+  beforeSign?: () => void
 ) => {
   const account = privateKeyToAccount(privateKey);
   const resolved = await resolveProperties(transaction);
@@ -234,6 +235,7 @@ export const sendLocalEvmTransaction = async (
     tx.value = '0x0';
   }
 
+  beforeSign?.();
   const signedTx = signTransaction(tx, privateKey);
   beforeBroadcast?.();
   return provider.sendTransaction(signedTx);

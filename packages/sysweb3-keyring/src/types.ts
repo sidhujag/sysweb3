@@ -52,6 +52,19 @@ export type EvmLocalAccount = {
   publicKey: string;
 };
 
+export interface IEvmReplacementOptions {
+  /** Read-only preview; never requests credentials, a device signature or broadcast. */
+  previewOnly?: boolean;
+  /** Required for sending: maximum execution gas fee in decimal wei approved by the user. */
+  approvedMaximumFee?: string;
+  /** Select the locally controlled outer gas payer for a smart-account transaction. */
+  targetAccount?: { id: number; type: KeyringAccountType };
+  /** Host guard for the current account, network, session and pending original. */
+  assertCurrentContext?: () => void;
+  validateOriginal?: (transaction: TransactionResponse) => void;
+  beforeBroadcast?: () => void;
+}
+
 // Version type is now replaced by SignTypedDataVersion from @metamask/eth-sig-util
 
 export interface IEthereumTransactions {
@@ -74,7 +87,9 @@ export interface IEthereumTransactions {
     apiUrl: string
   ) => Promise<any[]>;
   getFeeByType: (type: string) => Promise<string>;
-  getFeeDataWithDynamicMaxPriorityFeePerGas: () => Promise<any>;
+  getFeeDataWithDynamicMaxPriorityFeePerGas: (
+    provider?: CustomJsonRpcProvider
+  ) => Promise<any>;
   getGasLimit: (toAddress: string) => Promise<number>;
   getGasOracle?: () => Promise<any>;
   getRecommendedNonce: (address: string) => Promise<number>;
@@ -118,8 +133,10 @@ export interface IEthereumTransactions {
 
   sendTransactionWithEditedFee: (
     txHash: string,
-    isLegacy?: boolean
+    isLegacy?: boolean,
+    options?: IEvmReplacementOptions
   ) => Promise<{
+    maximumFee?: string;
     isSpeedUp: boolean;
     transaction?: TransactionResponse;
     error?: boolean;

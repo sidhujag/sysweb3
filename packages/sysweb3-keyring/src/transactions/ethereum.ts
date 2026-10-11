@@ -17,6 +17,7 @@ import {
   getErc55Abi,
 } from '@sidhujag/sysweb3-utils';
 import { EthereumTransactionEIP1559 } from '@trezor/connect-web';
+import { Transaction } from 'ethers/transaction';
 import omit from 'lodash/omit';
 
 import {
@@ -29,18 +30,20 @@ import {
   formatEther,
   formatUnits,
   isHexString,
+  normalizeTransactionRequest,
   normalizeTxValue,
   parseUnits,
   resolveProperties,
   serializeTransaction,
 } from '../ethers-v6';
 import { LedgerKeyring } from '../ledger';
-import { CustomJsonRpcProvider } from '../providers';
+import { CustomJsonRpcProvider, wrapTransactionResponse } from '../providers';
 import { TrezorKeyring } from '../trezor';
 import {
   IResponseFromSendErcSignedTransaction,
   ISendSignedErcTransactionProps,
   IEthereumTransactions,
+  IEvmReplacementOptions,
   SimpleTransactionRequest,
   KeyringAccountType,
   accountType,
@@ -83,7 +86,9 @@ export class EthereumTransactions implements IEthereumTransactions {
   public ledgerSigner: LedgerKeyring;
   private getNetwork: () => INetwork;
   private abortController: AbortController;
-  private getDecryptedPrivateKey: () => {
+  private getDecryptedPrivateKey: (
+    targetAccount?: IEvmReplacementOptions['targetAccount']
+  ) => {
     address: string;
     decryptedPrivateKey: string;
   };
@@ -109,7 +114,9 @@ export class EthereumTransactions implements IEthereumTransactions {
 
   constructor(
     getNetwork: () => INetwork,
-    getDecryptedPrivateKey: () => {
+    getDecryptedPrivateKey: (
+      targetAccount?: IEvmReplacementOptions['targetAccount']
+    ) => {
       address: string;
       decryptedPrivateKey: string;
     },
@@ -662,20 +669,22 @@ export class EthereumTransactions implements IEthereumTransactions {
     }
   };
 
-  getFeeDataWithDynamicMaxPriorityFeePerGas = async () => {
+  getFeeDataWithDynamicMaxPriorityFeePerGas = async (
+    provider = this.web3Provider
+  ) => {
     let maxFeePerGas = this.toBigNumber(0);
     let maxPriorityFeePerGas = this.toBigNumber(0);
 
     try {
       // First, try to get the current gas price as a baseline
-      const currentGasPrice = await this.web3Provider.getGasPrice();
+      const currentGasPrice = await provider.getGasPrice();
 
-      const block = await this.web3Provider.getBlock('latest');
+      const block = await provider.getBlock('latest');
       if (block && block.baseFeePerGas != null) {
         const baseFeePerGas = BigNumber.from(block.baseFeePerGas);
         try {
           // Some networks don't support this RPC method
-          const ethMaxPriorityFee = await this.web3Provider.send(
+          const ethMaxPriorityFee = await provider.send(
             'eth_maxPriorityFeePerGas',
             []
           );
@@ -712,7 +721,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           // Use a more aggressive fallback strategy with higher priority fees
           // Check if we can get fee history for better estimation
           try {
-            const feeHistory = await this.web3Provider.send('eth_feeHistory', [
+            const feeHistory = await provider.send('eth_feeHistory', [
               '0x5', // Last 5 blocks
               'latest',
               [25, 50, 75], // Percentiles for priority fees
@@ -750,7 +759,7 @@ export class EthereumTransactions implements IEthereumTransactions {
               'Fee history not available, using gas price based estimation'
             );
             // Use 10% of current gas price as priority fee
-            const currentGasPrice = await this.web3Provider.getGasPrice();
+            const currentGasPrice = await provider.getGasPrice();
             maxPriorityFeePerGas = currentGasPrice.mul(10).div(100);
 
             // Ensure minimum of 1 gwei
@@ -761,7 +770,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           }
 
           // Calculate maxFeePerGas based on current network conditions
-          const currentGasPrice = await this.web3Provider.getGasPrice();
+          const currentGasPrice = await provider.getGasPrice();
           const baselineMaxFee = currentGasPrice.mul(120).div(100);
           const calculatedMaxFee = baseFeePerGas
             .mul(250)
@@ -1489,25 +1498,123 @@ export class EthereumTransactions implements IEthereumTransactions {
   };
   sendTransactionWithEditedFee = async (
     txHash: string,
-    isLegacy?: boolean
+    isLegacy = false,
+    options: IEvmReplacementOptions = {}
   ): Promise<{
+    maximumFee?: string;
     error?: boolean;
     isSpeedUp: boolean;
     transaction?: TransactionResponse;
+    code?: string;
+    message?: string;
   }> => {
-    let tx = (await this.web3Provider.getTransaction(
-      txHash
-    )) as Deferrable<TransactionResponse>;
-
+    const {
+      assertCurrentContext,
+      validateOriginal,
+      beforeBroadcast,
+      approvedMaximumFee,
+    } = options;
+    const previewOnly = options.previewOnly === true;
+    if (
+      !previewOnly &&
+      (typeof approvedMaximumFee !== 'string' ||
+        !/^\d{1,78}$/.test(approvedMaximumFee))
+    ) {
+      throw new Error('Replacement fee approval required');
+    }
+    const assertCurrent = () => assertCurrentContext?.();
+    const assertBeforeBroadcast = () => {
+      assertCurrent();
+      beforeBroadcast?.();
+      assertCurrent();
+    };
+    const assertSignedSender = (signedTx: string) => {
+      if (Transaction.from(signedTx).from?.toLowerCase() !== expectedSender) {
+        throw new Error('Replacement signature does not match account');
+      }
+    };
+    assertCurrent();
+    const state = this.getState();
+    const activeAccountType =
+      options.targetAccount?.type ?? state.activeAccountType;
+    const activeAccountId = options.targetAccount?.id ?? state.activeAccountId;
+    const targetAccount = options.targetAccount
+      ? { type: activeAccountType, id: activeAccountId }
+      : undefined;
+    const activeAccount = {
+      ...state.accounts?.[activeAccountType]?.[activeAccountId],
+    };
+    const activeNetwork = { ...state.activeNetwork };
+    if (
+      !activeAccount.address ||
+      (targetAccount && activeAccountType === KeyringAccountType.SmartAccount)
+    ) {
+      throw new Error('Replacement signing account is unavailable');
+    }
+    const expectedSender = activeAccount.address.toLowerCase();
+    const requestedHash = txHash.toLowerCase();
+    const provider = this.web3Provider;
+    assertCurrent();
+    const validateLookup = (transaction: TransactionResponse | null) => {
+      assertCurrent();
+      if (!transaction) return null;
+      const fields = normalizeTransactionRequest(transaction);
+      if (fields.hash != null) fields.hash = fields.hash.toLowerCase();
+      const type =
+        fields.type ??
+        (fields.maxFeePerGas != null ? 2 : fields.accessList != null ? 1 : 0);
+      if (![0, 1, 2].includes(type)) {
+        throw new Error('Unsupported replacement transaction type');
+      }
+      fields.signature = fields.signature ?? {
+        r: fields.r,
+        s: fields.s,
+        v: fields.v ?? fields.yParity,
+      };
+      fields.type = type;
+      fields.data = fields.data ?? fields.input ?? '0x';
+      if (type === 2) delete fields.gasPrice; // Effective RPC gas price is not signed in type 2.
+      const original = Transaction.from(fields);
+      if (
+        !original.signature ||
+        original.hash !== requestedHash ||
+        original.from?.toLowerCase() !== expectedSender ||
+        original.chainId !== BigInt(activeNetwork.chainId)
+      ) {
+        throw new Error('Original transaction is not authenticated');
+      }
+      if (type !== 1) isLegacy = type === 0;
+      if (
+        isLegacy &&
+        type === 1 &&
+        activeAccountType === KeyringAccountType.Trezor
+      ) {
+        throw new Error('Trezor does not support type 1 replacement signing');
+      }
+      // Read only detached, authenticated signed fields after asynchronous work.
+      const authenticated = wrapTransactionResponse({
+        ...original.toJSON(),
+        hash: original.hash,
+        from: original.from,
+        gasPrice: original.gasPrice ?? 0,
+        maxFeePerGas: original.maxFeePerGas ?? 0,
+        maxPriorityFeePerGas: original.maxPriorityFeePerGas ?? 0,
+        signature: original.signature,
+        blockNumber: transaction.blockNumber,
+      });
+      validateOriginal?.(authenticated);
+      assertCurrent();
+      return authenticated;
+    };
+    let tx = validateLookup(await provider.getTransaction(txHash));
     if (!tx) {
       // Retry a couple of times in case the node hasn't indexed the pending tx yet
       for (let attempt = 0; attempt < 2 && !tx; attempt++) {
         await new Promise((resolve) =>
           setTimeout(resolve, 500 * (attempt + 1))
         );
-        tx = (await this.web3Provider.getTransaction(
-          txHash
-        )) as Deferrable<TransactionResponse>;
+        assertCurrent();
+        tx = validateLookup(await provider.getTransaction(txHash));
       }
       if (!tx) {
         return {
@@ -1515,175 +1622,107 @@ export class EthereumTransactions implements IEthereumTransactions {
           error: true,
           code: 'TX_NOT_FOUND',
           message: 'Original transaction not yet available from RPC provider',
-        } as any;
+        };
       }
     }
-
-    const { activeAccountType, activeAccountId, accounts, activeNetwork } =
-      this.getState();
-    const activeAccount = accounts[activeAccountType][activeAccountId];
-
     // Check if this might be a max send transaction by comparing total cost to balance
-    const currentBalance = await this.web3Provider.getBalance(
-      activeAccount.address
-    );
-
+    const currentBalance = await provider.getBalance(activeAccount.address);
+    assertCurrent();
     // Ensure all transaction values are resolved from promises
     const gasLimit = await Promise.resolve(tx.gasLimit);
     const gasPrice = await Promise.resolve(tx.gasPrice || 0);
-    const maxFeePerGas = await Promise.resolve(tx.maxFeePerGas || 0);
+    const maxFeePerGas = await Promise.resolve(
+      tx.type === 1 ? tx.gasPrice : tx.maxFeePerGas
+    );
     const maxPriorityFeePerGas = await Promise.resolve(
-      tx.maxPriorityFeePerGas || 0
+      tx.type === 1 ? tx.gasPrice : tx.maxPriorityFeePerGas
     );
     const txValue = await Promise.resolve(tx.value);
     const txData = await Promise.resolve(tx.data || '0x');
-
+    assertCurrent();
     // Check if this is a contract call (has data)
     const isContractCall = txData && txData !== '0x' && txData.length > 2;
-
     const originalGasCost = isLegacy
       ? gasLimit.mul(gasPrice || 0)
       : gasLimit.mul(maxFeePerGas || 0);
     const originalTotalCost = txValue.add(originalGasCost);
-
     // If original transaction used >95% of balance, it's likely a max send
     const balanceThreshold = currentBalance.mul(95).div(100);
     const isLikelyMaxSend = originalTotalCost.gt(balanceThreshold);
-
-    let txWithEditedFee: Deferrable<TransactionRequest>;
-
-    // If the original tx has 0 or very low gas price, fetch current network gas prices
-    const oldTxsGasValues: IGasParams = {
-      maxFeePerGas: maxFeePerGas as BigNumber,
-      maxPriorityFeePerGas: maxPriorityFeePerGas as BigNumber,
-      gasPrice: gasPrice as BigNumber,
-      gasLimit: gasLimit as BigNumber,
+    const oldTxsGasValues = {
+      maxFeePerGas: maxFeePerGas,
+      maxPriorityFeePerGas: maxPriorityFeePerGas,
+      gasPrice: gasPrice,
+      gasLimit: gasLimit,
     };
-
-    // Only fetch current gas prices if the original tx has exactly 0 or undefined gas
-    // This avoids unnecessary backend calls for legitimate low-gas networks (L2s, testnets)
-    if (isLegacy) {
-      if (!oldTxsGasValues.gasPrice || oldTxsGasValues.gasPrice.isZero()) {
-        // Fetch current network gas price for replacement
-        const currentGasPrice = await this.web3Provider.getGasPrice();
-        oldTxsGasValues.gasPrice = currentGasPrice;
-      }
-    } else {
-      // For EIP-1559 transactions
-      if (
-        !oldTxsGasValues.maxFeePerGas ||
-        oldTxsGasValues.maxFeePerGas.isZero()
-      ) {
-        // Fetch current network fee data for replacement
-        const feeData = await this.getFeeDataWithDynamicMaxPriorityFeePerGas();
-        oldTxsGasValues.maxFeePerGas = BigNumber.from(
-          feeData.maxFeePerGas || 0
-        );
-        oldTxsGasValues.maxPriorityFeePerGas = BigNumber.from(
-          feeData.maxPriorityFeePerGas || 0
-        );
-      }
-    }
-
-    if (!isLegacy) {
-      const newGasValues = this.calculateNewGasValues(
-        oldTxsGasValues,
-        false,
-        false
+    // A zero-fee original may need a current estimate; the preview shows it
+    // and the final candidate must stay within the user's approved ceiling.
+    if (isLegacy && oldTxsGasValues.gasPrice.isZero()) {
+      oldTxsGasValues.gasPrice = await provider.getGasPrice();
+      assertCurrent();
+    } else if (!isLegacy && oldTxsGasValues.maxFeePerGas.isZero()) {
+      const feeData = await this.getFeeDataWithDynamicMaxPriorityFeePerGas(
+        provider
       );
-
-      let adjustedValue = txValue;
-
-      // For likely max sends, check if we need to adjust value
-      if (
-        isLikelyMaxSend &&
-        newGasValues.gasLimit &&
-        newGasValues.maxFeePerGas
-      ) {
-        const newGasCost = newGasValues.gasLimit.mul(newGasValues.maxFeePerGas);
-        const newTotalCost = txValue.add(newGasCost);
-
-        if (newTotalCost.gt(currentBalance)) {
-          // If this is a contract call, we cannot adjust the value
-          if (isContractCall) {
-            console.error(
-              '[SpeedUp] Cannot adjust value for contract call - rejecting speedup'
-            );
-            return {
-              isSpeedUp: false,
-              error: true,
-              code: 'CONTRACT_CALL_MAX_SEND',
-              message:
-                'Cannot speed up a likely max-send contract call; value cannot be adjusted to fit new gas',
-            } as any;
-          }
-
-          // For non-contract calls, reduce value to fit within balance (clamp at zero)
-          adjustedValue = currentBalance.gt(newGasCost)
-            ? currentBalance.sub(newGasCost)
-            : Zero;
-        }
-      }
-
-      txWithEditedFee = {
-        from: tx.from,
-        to: tx.to,
-        nonce: tx.nonce,
-        value: adjustedValue,
-        data: txData,
-        maxFeePerGas: newGasValues.maxFeePerGas,
-        maxPriorityFeePerGas: newGasValues.maxPriorityFeePerGas,
-        gasLimit: newGasValues.gasLimit,
-        // Don't set type - let ethers auto-detect for EIP-1559
-      };
-    } else {
-      const newGasValues = this.calculateNewGasValues(
-        oldTxsGasValues,
-        false,
-        true
+      assertCurrent();
+      oldTxsGasValues.maxFeePerGas = BigNumber.from(feeData.maxFeePerGas || 0);
+      oldTxsGasValues.maxPriorityFeePerGas = BigNumber.from(
+        feeData.maxPriorityFeePerGas || 0
       );
-
-      let adjustedValue = txValue;
-
-      // For likely max sends, check if we need to adjust value
-      if (isLikelyMaxSend && newGasValues.gasLimit && newGasValues.gasPrice) {
-        const newGasCost = newGasValues.gasLimit.mul(newGasValues.gasPrice);
-        const newTotalCost = txValue.add(newGasCost);
-
-        if (newTotalCost.gt(currentBalance)) {
-          // If this is a contract call, we cannot adjust the value
-          if (isContractCall) {
-            console.error(
-              '[SpeedUp] Cannot adjust value for contract call - rejecting speedup'
-            );
-            return {
-              isSpeedUp: false,
-              error: true,
-              code: 'CONTRACT_CALL_MAX_SEND',
-              message:
-                'Cannot speed up a likely max-send contract call; value cannot be adjusted to fit new gas',
-            } as any;
-          }
-
-          // For non-contract calls, reduce value to fit within balance (clamp at zero)
-          adjustedValue = currentBalance.gt(newGasCost)
-            ? currentBalance.sub(newGasCost)
-            : Zero;
-        }
-      }
-
-      txWithEditedFee = {
-        from: tx.from,
-        to: tx.to,
-        nonce: tx.nonce,
-        value: adjustedValue,
-        data: txData,
-        gasLimit: newGasValues.gasLimit,
-        gasPrice: newGasValues.gasPrice,
-        type: 0, // Force Type 0 for legacy speedup
-      };
     }
-
+    const newGasValues = this.calculateNewGasValues(
+      oldTxsGasValues,
+      false,
+      isLegacy
+    );
+    if (!newGasValues.gasLimit!.gt(0))
+      throw new Error('Invalid replacement gas limit');
+    if (
+      !isLegacy &&
+      newGasValues.maxPriorityFeePerGas!.gt(newGasValues.maxFeePerGas!)
+    )
+      throw new Error('Invalid replacement fee');
+    const maximumFee = newGasValues.gasLimit!.mul(
+      isLegacy ? newGasValues.gasPrice! : newGasValues.maxFeePerGas!
+    );
+    let adjustedValue = txValue;
+    if (isLikelyMaxSend && txValue.add(maximumFee).gt(currentBalance)) {
+      if (isContractCall) {
+        console.error(
+          '[SpeedUp] Cannot adjust value for contract call - rejecting speedup'
+        );
+        return {
+          isSpeedUp: false,
+          error: true,
+          code: 'CONTRACT_CALL_MAX_SEND',
+          message:
+            'Cannot speed up a likely max-send contract call; value cannot be adjusted to fit new gas',
+        };
+      }
+      adjustedValue = currentBalance.gt(maximumFee)
+        ? currentBalance.sub(maximumFee)
+        : Zero;
+    }
+    const txWithEditedFee: TransactionRequest = {
+      chainId: activeNetwork.chainId,
+      from: tx.from,
+      to: tx.to,
+      nonce: tx.nonce,
+      value: adjustedValue,
+      data: txData,
+      gasLimit: newGasValues.gasLimit,
+      ...(tx.accessList != null ? { accessList: tx.accessList } : {}),
+      ...(isLegacy
+        ? { gasPrice: newGasValues.gasPrice, type: tx.type === 1 ? 1 : 0 }
+        : {
+            maxFeePerGas: newGasValues.maxFeePerGas,
+            maxPriorityFeePerGas: newGasValues.maxPriorityFeePerGas,
+          }),
+    };
+    if (previewOnly)
+      return { isSpeedUp: false, maximumFee: maximumFee.toString() };
+    if (maximumFee.gt(approvedMaximumFee!))
+      throw new Error('Replacement fee exceeds approval');
     // Ledger speedup handler
     const speedUpWithLedger = async () => {
       try {
@@ -1692,43 +1731,41 @@ export class EthereumTransactions implements IEthereumTransactions {
         );
         const formatParams = {
           ...resolvedParams,
-          nonce: resolvedParams.nonce
-            ? Number(resolvedParams.nonce.toString())
-            : undefined,
+          nonce:
+            resolvedParams.nonce != null
+              ? Number(resolvedParams.nonce.toString())
+              : undefined,
         };
         const txFormattedForEthers = isLegacy
           ? {
               ...formatParams,
               chainId: activeNetwork.chainId,
-              type: 0, // Need explicit type for hardware wallet serialization
+              type: txWithEditedFee.type,
             }
           : {
               ...formatParams,
               chainId: activeNetwork.chainId,
               type: 2, // Need explicit type for hardware wallet serialization
             };
-
         const rawTx = serializeTransaction(txFormattedForEthers);
+        assertCurrent();
         const signature = await this.ledgerSigner.evm.signEVMTransaction({
           rawTx: rawTx.replace('0x', ''),
           accountIndex: activeAccountId,
         });
-
         const formattedSignature = {
           r: `0x${signature.r}`,
           s: `0x${signature.s}`,
           v: parseInt(signature.v, 16),
         };
-
         if (signature) {
           const signedTx = serializeTransaction(
             txFormattedForEthers,
             formattedSignature
           );
-          const transactionResponse = await this.web3Provider.sendTransaction(
-            signedTx
-          );
-
+          assertSignedSender(signedTx);
+          assertBeforeBroadcast();
+          const transactionResponse = await provider.sendTransaction(signedTx);
           return {
             isSpeedUp: true,
             transaction: transactionResponse,
@@ -1744,7 +1781,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           '[SpeedUp] Failed to send replacement transaction with Ledger:',
           error
         );
-        const message = (error as any)?.message || String(error);
+        const message = error?.message || String(error);
         const lower = message.toLowerCase();
         const code = lower.includes('underpriced')
           ? 'REPLACEMENT_UNDERPRICED'
@@ -1757,10 +1794,9 @@ export class EthereumTransactions implements IEthereumTransactions {
           error: true,
           code,
           message,
-        } as any;
+        };
       }
     };
-
     // Trezor speedup handler
     const speedUpWithTrezor = async () => {
       try {
@@ -1769,7 +1805,6 @@ export class EthereumTransactions implements IEthereumTransactions {
         const formattedTx = await resolveProperties(
           omit(txWithEditedFee, 'from')
         );
-
         const txFormattedForTrezor: any = {
           ...formattedTx,
           gasLimit:
@@ -1782,13 +1817,11 @@ export class EthereumTransactions implements IEthereumTransactions {
               : this.toHex0x(formattedTx.value, 'value'),
           nonce: this.toHex0x(formattedTx.nonce, 'nonce'),
           chainId: activeNetwork.chainId,
-          type: isLegacy ? 0 : 2, // Need explicit type for hardware wallet serialization
+          type: isLegacy ? txWithEditedFee.type : 2,
         };
-
         if (formattedTx.data && formattedTx.data !== '0x') {
           txFormattedForTrezor.data = formattedTx.data;
         }
-
         if (isLegacy) {
           txFormattedForTrezor.gasPrice =
             typeof formattedTx.gasPrice === 'string'
@@ -1796,34 +1829,32 @@ export class EthereumTransactions implements IEthereumTransactions {
               : this.toHex0x(formattedTx.gasPrice, 'gasPrice');
         } else {
           txFormattedForTrezor.maxFeePerGas =
-            typeof (formattedTx as any).maxFeePerGas === 'string'
-              ? (formattedTx as any).maxFeePerGas
-              : this.toHex0x((formattedTx as any).maxFeePerGas, 'maxFeePerGas');
+            typeof formattedTx.maxFeePerGas === 'string'
+              ? formattedTx.maxFeePerGas
+              : this.toHex0x(formattedTx.maxFeePerGas, 'maxFeePerGas');
           txFormattedForTrezor.maxPriorityFeePerGas =
-            typeof (formattedTx as any).maxPriorityFeePerGas === 'string'
-              ? (formattedTx as any).maxPriorityFeePerGas
+            typeof formattedTx.maxPriorityFeePerGas === 'string'
+              ? formattedTx.maxPriorityFeePerGas
               : this.toHex0x(
-                  (formattedTx as any).maxPriorityFeePerGas,
+                  formattedTx.maxPriorityFeePerGas,
                   'maxPriorityFeePerGas'
                 );
         }
-
+        assertCurrent();
         const signature = await this.trezorSigner.signEthTransaction({
           coin: trezorCoin,
           tx: txFormattedForTrezor,
           index: activeAccountId.toString(),
           slip44: activeNetwork.slip44,
         });
-
         if (signature.success) {
           const signedTx = serializeTransaction(
             txFormattedForTrezor,
             signature.payload
           );
-          const transactionResponse = await this.web3Provider.sendTransaction(
-            signedTx
-          );
-
+          assertSignedSender(signedTx);
+          assertBeforeBroadcast();
+          const transactionResponse = await provider.sendTransaction(signedTx);
           return {
             isSpeedUp: true,
             transaction: transactionResponse,
@@ -1839,7 +1870,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           '[SpeedUp] Failed to send replacement transaction with Trezor:',
           error
         );
-        const message = (error as any)?.message || String(error);
+        const message = error?.message || String(error);
         const lower = message.toLowerCase();
         const code = lower.includes('underpriced')
           ? 'REPLACEMENT_UNDERPRICED'
@@ -1852,20 +1883,26 @@ export class EthereumTransactions implements IEthereumTransactions {
           error: true,
           code,
           message,
-        } as any;
+        };
       }
     };
-
     // Regular wallet speedup handler
     const speedUpWithPrivateKey = async () => {
       try {
-        const { decryptedPrivateKey } = this.getDecryptedPrivateKey();
+        assertCurrent();
+        const { address, decryptedPrivateKey } =
+          this.getDecryptedPrivateKey(targetAccount);
+        assertCurrent();
+        if (address.toLowerCase() !== expectedSender) {
+          throw new Error('Replacement signing account changed');
+        }
         const transactionResponse = await sendLocalEvmTransaction(
-          this.web3Provider,
+          provider,
           decryptedPrivateKey,
-          txWithEditedFee
+          txWithEditedFee,
+          assertBeforeBroadcast,
+          assertCurrent
         );
-
         if (transactionResponse) {
           return {
             isSpeedUp: true,
@@ -1881,7 +1918,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           '[SpeedUp] Failed to send replacement transaction:',
           error
         );
-        const message = (error as any)?.message || String(error);
+        const message = error?.message || String(error);
         const lower = message.toLowerCase();
         const code = lower.includes('underpriced')
           ? 'REPLACEMENT_UNDERPRICED'
@@ -1896,10 +1933,9 @@ export class EthereumTransactions implements IEthereumTransactions {
           error: true,
           code,
           message,
-        } as any;
+        };
       }
     };
-
     // Route based on account type
     switch (activeAccountType) {
       case KeyringAccountType.Trezor:
