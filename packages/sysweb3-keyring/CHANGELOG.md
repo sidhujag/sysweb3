@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.615
+
+### Current hardware connection support
+
+- Enable Trezor Connect's stable automatic Suite Desktop route and identify Pali Wallet in its permission prompt. Safe 7 requires this Suite flow; the legacy popup remains available through Connect's established fallback for older devices.
+- Retain the production Connect origin and current transports. No beta Suite Web bridge, custom pairing state or dependency upgrade is introduced.
+- Add compatibility tests for Nano Gen5, Flex and Stax through the installed Ledger WebHID library. The declared WebHID minimum already includes these model identifiers.
+
+### Host integration and validation limits
+
+For Safe 7, open the current Trezor Suite Desktop, select and unlock the intended device/wallet, then approve Pali's request in Suite. The host must permit `ws://127.0.0.1:21335/connect-ws` in `connect-src`; allow this exact local endpoint rather than a broad `ws:` or localhost wildcard. Browser local-network permission must also permit the connection. Without Suite available, stable Connect can fall back to the legacy popup, which cannot serve Safe 7.
+
+The current Safe family is Safe 3, Safe 5 and Safe 7. Future devices require support from Trezor's SDK and Suite; this release does not certify unannounced models. Ledger coverage is for USB/WebHID, including Nano Gen5, Flex and Stax, and retains existing signing protocols. Separate device-app availability, including the Syscoin app, must be checked per device model.
+
+Automated validation exercises the actual installed Connect bundle and Ledger WebHID/model resolution with simulated browser/device I/O. This establishes host routing and protocol compatibility, not physical device signing, firmware certification or live transaction acceptance. The replacement signing protections from 1.0.614 remain intact.
+
 ## 1.0.614
 
 ### EVM Speed Up signing

@@ -236,6 +236,7 @@ export class HardwareWalletManager extends EventEmitter {
 
         await TrezorConnect.init({
           manifest: {
+            appName: 'Pali Wallet',
             appUrl: 'https://paliwallet.com/',
             email: 'support@syscoin.org',
           },
@@ -245,7 +246,8 @@ export class HardwareWalletManager extends EventEmitter {
           _extendWebextensionLifetime: true,
           transports: ['BridgeTransport', 'WebUsbTransport'],
           debug: false, // Disable debug mode to prevent extra logs
-          coreMode: 'popup', // Use popup mode for webUSB support in Chrome extension
+          // Suite desktop handles newer devices; older devices retain the popup fallback.
+          coreMode: 'auto',
         });
 
         entry.status = ConnectionStatus.CONNECTED;
