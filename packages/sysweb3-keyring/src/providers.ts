@@ -1,3 +1,6 @@
+import { FeeData } from 'ethers/providers';
+import { FetchRequest, getBigInt } from 'ethers/utils';
+
 import { handleStatusCodeError } from './errorUtils';
 import {
   BigNumber,
@@ -5,6 +8,8 @@ import {
   normalizeTransactionRequest,
   type Networkish,
 } from './ethers-v6';
+
+import type { JsonRpcPayload } from 'ethers/providers';
 
 const TRANSACTION_RESPONSE_BIG_NUMBER_FIELDS = new Set([
   'gasLimit',
@@ -26,6 +31,75 @@ const TRANSACTION_RECEIPT_BIG_NUMBER_FIELDS = new Set([
 ]);
 
 const FEE_DATA_CACHE_TTL_MS = 5000;
+
+// A stale response must never be interpreted as the result of another RPC.
+// Keep the sentinel in the message for callers that serialize errors as text.
+export class RpcResponseIntegrityError extends Error {
+  readonly code = 'SYSWEB3_RPC_RESPONSE_INVALID';
+
+  constructor(
+    message = 'JSON-RPC response does not match its request',
+    readonly retryable = true
+  ) {
+    super(`[SYSWEB3_RPC_RESPONSE_INVALID] ${message}`);
+    this.name = 'RpcResponseIntegrityError';
+  }
+}
+
+// Only these standard, side-effect-free reads may recover from a stale cache
+// entry. Never infer retry eligibility from an RPC method prefix.
+const RECOVERABLE_READ_METHODS = new Set([
+  'eth_chainId',
+  'net_version',
+  'web3_clientVersion',
+  'eth_blockNumber',
+  'eth_syncing',
+  'eth_getBalance',
+  'eth_getTransactionCount',
+  'eth_getCode',
+  'eth_getStorageAt',
+  'eth_getProof',
+  'eth_call',
+  'eth_estimateGas',
+  'eth_createAccessList',
+  'eth_gasPrice',
+  'eth_maxPriorityFeePerGas',
+  'eth_feeHistory',
+  'eth_getBlockByNumber',
+  'eth_getBlockByHash',
+  'eth_getBlockTransactionCountByNumber',
+  'eth_getBlockTransactionCountByHash',
+  'eth_getTransactionByHash',
+  'eth_getTransactionByBlockNumberAndIndex',
+  'eth_getTransactionByBlockHashAndIndex',
+  'eth_getTransactionReceipt',
+  'eth_getLogs',
+]);
+
+let rpcRecoveryNonce = 0;
+// Shared across provider instances and seeded anew on process restart. These
+// numeric correlation IDs are not authorization tokens.
+let nextRpcWireId = Math.floor(Math.random() * 2 ** 51);
+const reserveRpcWireId = (): number => {
+  const id = ++nextRpcWireId;
+  if (!Number.isSafeInteger(id)) {
+    throw new RpcResponseIntegrityError(
+      'RPC request ID range exhausted',
+      false
+    );
+  }
+  return id;
+};
+
+const recoveryUrl = (original: string): string => {
+  const url = new URL(original);
+  const token = `${Date.now()}-${++rpcRecoveryNonce}-${Math.random()
+    .toString(36)
+    .slice(2)}`;
+  // Append without reserializing existing query values (including auth data).
+  url.search += `${url.search ? '&' : '?'}sysweb3_rpc_request=${token}`;
+  return url.toString();
+};
 
 const getChainIdFromNetworkish = (network?: Networkish): number | undefined => {
   if (network == null) return undefined;
@@ -149,7 +223,6 @@ class BaseProvider extends JsonRpcProvider {
   private requestCount = 0;
   private lastRequestTime = 0;
   private currentChainId = '';
-  private currentId = 1;
   private feeDataCache: { expiresAt: number; value: any } | null = null;
   private feeDataPromise: Promise<any> | null = null;
   private readonly configuredChainId?: number;
@@ -276,145 +349,193 @@ class BaseProvider extends JsonRpcProvider {
     };
   };
 
+  private validateRpcResponses(
+    json: any,
+    requests: JsonRpcPayload[],
+    batch: boolean
+  ): any[] {
+    if (batch ? !Array.isArray(json) : Array.isArray(json)) {
+      throw new RpcResponseIntegrityError();
+    }
+    const responses = batch ? json : [json];
+    if (responses.length !== requests.length) {
+      throw new RpcResponseIntegrityError();
+    }
+    const expectedIds = new Set(requests.map((request) => request.id));
+    const byId = new Map<number, any>();
+    for (const response of responses) {
+      if (
+        !response ||
+        typeof response !== 'object' ||
+        Array.isArray(response) ||
+        typeof response.id !== 'number' ||
+        !expectedIds.has(response.id) ||
+        byId.has(response.id)
+      ) {
+        throw new RpcResponseIntegrityError();
+      }
+      const hasResult = Object.prototype.hasOwnProperty.call(
+        response,
+        'result'
+      );
+      const hasError = Object.prototype.hasOwnProperty.call(response, 'error');
+      if (
+        response.jsonrpc !== '2.0' ||
+        hasResult === hasError ||
+        (hasError &&
+          (!response.error ||
+            typeof response.error.message !== 'string' ||
+            !Number.isSafeInteger(response.error.code)))
+      ) {
+        throw new RpcResponseIntegrityError(
+          'Invalid JSON-RPC response envelope',
+          false
+        );
+      }
+      byId.set(response.id, response);
+    }
+    return requests.map((request) => byId.get(request.id));
+  }
+
+  private async requestRpc(
+    inputs: Array<Pick<JsonRpcPayload, 'method' | 'params'>>,
+    batch: boolean
+  ): Promise<any[]> {
+    const canRecover = inputs.every(({ method }) =>
+      RECOVERABLE_READ_METHODS.has(method)
+    );
+    const originalUrl = this._getConnection().url;
+    let originalBody = '';
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (this.signal.aborted) {
+        throw this.signal.reason || new Error('RPC request aborted');
+      }
+      // Reserve the whole request range before any dispatch or await.
+      // A recovery must repeat the serialized read, even if its caller mutates
+      // an input object while the first response is delayed.
+      const source =
+        attempt === 0
+          ? inputs
+          : batch
+          ? JSON.parse(originalBody)
+          : [JSON.parse(originalBody)];
+      const requests: JsonRpcPayload[] = source.map(({ method, params }) => ({
+        jsonrpc: '2.0',
+        method,
+        params,
+        id: reserveRpcWireId(),
+      }));
+      const options: RequestInit = {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(batch ? requests : requests[0]),
+        signal: this.signal,
+      };
+      if (attempt === 0) originalBody = options.body as string;
+      const json = await this.throttledRequest(async () => {
+        const response = await fetch(
+          attempt === 0 ? originalUrl : recoveryUrl(originalUrl),
+          options
+        );
+        if (!response.ok) {
+          let errorBody = { error: undefined, message: undefined };
+          try {
+            errorBody = await response.json();
+          } catch {
+            console.warn('No body in request');
+          }
+          this.errorMessage =
+            errorBody.error || errorBody.message || 'No message from Provider';
+          handleStatusCodeError(response.status, this.errorMessage);
+        }
+        if (response.status !== 200) {
+          throw new Error(`Unexpected HTTP status code: ${response.status}`);
+        }
+        try {
+          return await response.json();
+        } catch (error) {
+          if (this.signal.aborted || error?.name === 'AbortError') throw error;
+          throw new RpcResponseIntegrityError(
+            'Invalid JSON-RPC JSON response',
+            false
+          );
+        }
+      }).catch((error) => {
+        if (
+          attempt === 0 ||
+          error instanceof RpcResponseIntegrityError ||
+          this.signal.aborted ||
+          error?.name === 'AbortError'
+        ) {
+          throw error;
+        }
+        throw new RpcResponseIntegrityError(
+          'JSON-RPC response recovery failed',
+          false
+        );
+      });
+      try {
+        const responses = this.validateRpcResponses(json, requests, batch);
+        this.serverHasAnError = false;
+        return responses;
+      } catch (error) {
+        if (
+          !(error instanceof RpcResponseIntegrityError) ||
+          !error.retryable ||
+          attempt !== 0 ||
+          !canRecover
+        ) {
+          throw error;
+        }
+      }
+    }
+    throw new RpcResponseIntegrityError();
+  }
+
+  // Ethers uses this primitive for network auto-detection and inherited send.
+  // Share wire IDs and validation, then restore its caller IDs after correlation.
+  override async _send(
+    payload: JsonRpcPayload | Array<JsonRpcPayload>
+  ): Promise<any[]> {
+    const inputs = Array.isArray(payload) ? payload : [payload];
+    if (!inputs.length) return [];
+    const callerIds = inputs.map(({ id }) => id);
+    const responses = await this.requestRpc(inputs, Array.isArray(payload));
+    return responses.map((response, index) => ({
+      ...response,
+      id: callerIds[index],
+    }));
+  }
+
   override send = async (method: string, params: any[]) => {
     if (!this.isPossibleGetChainId && method === 'eth_chainId') {
       return this.currentChainId;
     }
-
-    const headers = {
-      'Content-Type': 'application/json',
-    };
-
-    const options: RequestInit = {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        method,
-        params,
-        id: this.currentId,
-      }),
-      signal: this.signal,
-    };
-
-    const result = await this.throttledRequest(() =>
-      fetch(this._getConnection().url, options)
-        .then(async (response) => {
-          if (!response.ok) {
-            let errorBody = {
-              error: undefined,
-              message: undefined,
-            };
-            try {
-              errorBody = await response.json();
-            } catch (error) {
-              console.warn('No body in request', error);
-            }
-            this.errorMessage =
-              errorBody.error ||
-              errorBody.message ||
-              'No message from Provider';
-            handleStatusCodeError(response.status, this.errorMessage);
-          }
-          switch (response.status) {
-            case 200:
-              return response.json();
-            default:
-              throw {
-                message: `Unexpected HTTP status code: ${response.status}`,
-              };
-          }
-        })
-        .then((json) => {
-          if (json.error) {
-            if (json.error.message.includes('insufficient funds')) {
-              console.error({
-                errorMessage: json.error.message,
-              });
-              this.errorMessage = json.error.message;
-              throw makeRpcError(json.error);
-            }
-            this.errorMessage = json.error.message;
-            console.log({ requestData: { method, params }, error: json.error });
-            console.error({
-              errorMessage: json.error.message,
-            });
-            throw makeRpcError(json.error);
-          }
-          if (method === 'eth_chainId') {
-            this.currentChainId = json.result;
-            this.isPossibleGetChainId = false;
-          }
-          this.currentId++;
-          this.serverHasAnError = false;
-          return json.result;
-        })
-    );
-    return result;
+    const [json] = await this.requestRpc([{ method, params }], false);
+    if (json.error) {
+      this.errorMessage = json.error.message;
+      throw makeRpcError(json.error);
+    }
+    if (method === 'eth_chainId') {
+      this.currentChainId = json.result;
+      this.isPossibleGetChainId = false;
+    }
+    return json.result;
   };
 
   async sendBatch(method: string, params: Array<any[]>): Promise<any[]> {
-    // Create batch request array
-    const requests = params.map((param, index) => ({
-      jsonrpc: '2.0',
-      id: this.currentId + index,
-      method,
-      params: param,
-    }));
-
-    this.currentId += requests.length;
-
-    const headers = {
-      'Content-Type': 'application/json',
-    };
-
-    const options: RequestInit = {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(requests),
-      signal: this.signal,
-    };
-
-    const results = await this.throttledRequest(() =>
-      fetch(this._getConnection().url, options)
-        .then(async (response) => {
-          if (!response.ok) {
-            let errorBody = {
-              error: undefined,
-              message: undefined,
-            };
-            try {
-              errorBody = await response.json();
-            } catch (error) {
-              console.warn('No body in request', error);
-            }
-            this.errorMessage =
-              errorBody.error ||
-              errorBody.message ||
-              'No message from Provider';
-            handleStatusCodeError(response.status, this.errorMessage);
-          }
-          return response.json();
-        })
-        .then((jsonArray) => {
-          // Sort results by ID to ensure correct order
-          const sortedResults = jsonArray.sort((a: any, b: any) => a.id - b.id);
-
-          // Extract results or throw errors
-          return sortedResults.map((json: any) => {
-            if (json.error) {
-              this.errorMessage = json.error.message;
-              console.error({
-                errorMessage: json.error.message,
-              });
-              throw makeRpcError(json.error);
-            }
-            return json.result;
-          });
-        })
+    if (!params.length) return [];
+    const responses = await this.requestRpc(
+      params.map((param) => ({ method, params: param })),
+      true
     );
-
-    return results;
+    return responses.map((json) => {
+      if (json.error) {
+        this.errorMessage = json.error.message;
+        throw makeRpcError(json.error);
+      }
+      return json.result;
+    });
   }
 
   async getGasPrice() {
@@ -443,8 +564,81 @@ class BaseProvider extends JsonRpcProvider {
     }
   }
 
+  private async readFeeData(): Promise<FeeData> {
+    const network = await this.getNetwork();
+    // Ethers tolerates unavailable optional fee methods; keep that behavior,
+    // but never convert a response-integrity failure into an invented quote.
+    const optionalFee = async (method: 'getGasPrice' | 'getPriorityFee') => {
+      try {
+        return getBigInt(await this._perform({ method }), '%response');
+      } catch (error) {
+        if (
+          error?.code === 'SYSWEB3_RPC_RESPONSE_INVALID' ||
+          error?.name === 'AbortError' ||
+          this.signal.aborted
+        )
+          throw error;
+        return null;
+      }
+    };
+    const getFeeData = async () => {
+      const [block, gasPrice, priorityFee] = await Promise.all([
+        super.getBlock('latest'),
+        optionalFee('getGasPrice'),
+        optionalFee('getPriorityFee'),
+      ]);
+      let maxFeePerGas: bigint | null = null;
+      let maxPriorityFeePerGas: bigint | null = null;
+      if (block?.baseFeePerGas) {
+        maxPriorityFeePerGas = priorityFee ?? 1000000000n;
+        maxFeePerGas = block.baseFeePerGas * 2n + maxPriorityFeePerGas;
+      }
+      return new FeeData(gasPrice, maxFeePerGas, maxPriorityFeePerGas);
+    };
+    // Preserve network-specific fee plugins, including Polygon's fee reader.
+    const plugin = network.getPlugin(
+      'org.ethers.plugins.network.FetchUrlFeeDataPlugin'
+    ) as any;
+    if (plugin) {
+      // Polygon wraps reader failures in SERVER_ERROR. Preserve this
+      // invocation's integrity/cancellation failure through that wrapper.
+      let readerFailure: any;
+      const pluginReader = async () => {
+        try {
+          return await getFeeData();
+        } catch (error) {
+          if (
+            error?.code === 'SYSWEB3_RPC_RESPONSE_INVALID' ||
+            error?.name === 'AbortError' ||
+            this.signal.aborted
+          ) {
+            readerFailure = error;
+          }
+          throw error;
+        }
+      };
+      let result;
+      try {
+        result = await plugin.processFunc(
+          pluginReader,
+          this,
+          new FetchRequest(plugin.url)
+        );
+      } catch (error) {
+        throw readerFailure ?? error;
+      }
+      if (readerFailure) throw readerFailure;
+      return new FeeData(
+        result.gasPrice,
+        result.maxFeePerGas,
+        result.maxPriorityFeePerGas
+      );
+    }
+    return getFeeData();
+  }
+
   private async fetchFeeData(): Promise<any> {
-    const feeData = await super.getFeeData();
+    const feeData = await this.readFeeData();
     let maxFeePerGas =
       feeData.maxFeePerGas == null
         ? null
@@ -462,9 +656,15 @@ class BaseProvider extends JsonRpcProvider {
         if (maxPriorityFeePerGas == null) {
           try {
             maxPriorityFeePerGas = BigNumber.from(
-              await super.send('eth_maxPriorityFeePerGas', [])
+              await this.send('eth_maxPriorityFeePerGas', [])
             );
-          } catch {
+          } catch (error) {
+            if (
+              error?.code === 'SYSWEB3_RPC_RESPONSE_INVALID' ||
+              error?.name === 'AbortError' ||
+              this.signal.aborted
+            )
+              throw error;
             maxPriorityFeePerGas =
               feeData.gasPrice == null
                 ? BigNumber.from(0)
@@ -500,7 +700,7 @@ class BaseProvider extends JsonRpcProvider {
       normalized.maxFeePerGas == null &&
       normalized.maxPriorityFeePerGas == null
     ) {
-      const feeData = await super.getFeeData();
+      const feeData = await this.readFeeData();
       if (
         feeData.maxFeePerGas == null &&
         feeData.maxPriorityFeePerGas == null

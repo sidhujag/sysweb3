@@ -718,6 +718,12 @@ export class EthereumTransactions implements IEthereumTransactions {
             ? calculatedMaxFee
             : baselineMaxFee;
         } catch (e) {
+          if (
+            e?.code === 'SYSWEB3_RPC_RESPONSE_INVALID' ||
+            e?.name === 'AbortError' ||
+            this.abortController.signal.aborted
+          )
+            throw e;
           // Use a more aggressive fallback strategy with higher priority fees
           // Check if we can get fee history for better estimation
           try {
@@ -754,6 +760,13 @@ export class EthereumTransactions implements IEthereumTransactions {
               maxPriorityFeePerGas = BigNumber.from('5000000000');
             }
           } catch (feeHistoryError) {
+            if (
+              feeHistoryError?.code === 'SYSWEB3_RPC_RESPONSE_INVALID' ||
+              feeHistoryError?.name === 'AbortError' ||
+              this.abortController.signal.aborted
+            ) {
+              throw feeHistoryError;
+            }
             // If fee history fails, use current gas price as reference
             console.warn(
               'Fee history not available, using gas price based estimation'
@@ -799,6 +812,12 @@ export class EthereumTransactions implements IEthereumTransactions {
 
       return { maxFeePerGas, maxPriorityFeePerGas };
     } catch (error) {
+      if (
+        error?.code === 'SYSWEB3_RPC_RESPONSE_INVALID' ||
+        error?.name === 'AbortError' ||
+        this.abortController.signal.aborted
+      )
+        throw error;
       console.error(error);
       return { maxFeePerGas, maxPriorityFeePerGas };
     }
@@ -2852,6 +2871,12 @@ export class EthereumTransactions implements IEthereumTransactions {
 
       return withBuffer;
     } catch (error) {
+      if (
+        error?.code === 'SYSWEB3_RPC_RESPONSE_INVALID' ||
+        error?.name === 'AbortError' ||
+        this.abortController.signal.aborted
+      )
+        throw error;
       console.warn('Gas estimation failed:', error);
 
       if (hasCalldata) {
@@ -2884,6 +2909,13 @@ export class EthereumTransactions implements IEthereumTransactions {
 
         return withBuffer;
       } catch (secondError) {
+        if (
+          secondError?.code === 'SYSWEB3_RPC_RESPONSE_INVALID' ||
+          secondError?.name === 'AbortError' ||
+          this.abortController.signal.aborted
+        ) {
+          throw secondError;
+        }
         // Ultimate fallback
         console.warn(
           'Simple estimation also failed, using default',
@@ -3021,6 +3053,12 @@ export class EthereumTransactions implements IEthereumTransactions {
         maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
       };
     } catch (error) {
+      if (
+        error?.code === 'SYSWEB3_RPC_RESPONSE_INVALID' ||
+        error?.name === 'AbortError' ||
+        this.abortController.signal.aborted
+      )
+        throw error;
       console.warn('Failed to get EIP-1559 fees, using legacy:', error);
       const gasPrice = await this.web3Provider.getGasPrice();
       const bufferedGasPrice = gasPrice.mul(110).div(100);
