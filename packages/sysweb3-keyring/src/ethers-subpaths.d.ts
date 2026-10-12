@@ -11,8 +11,8 @@ declare module 'ethers/crypto' {
 }
 
 declare module 'ethers/providers' {
-  export { JsonRpcProvider } from 'ethers';
-  export type { Networkish } from 'ethers';
+  export { FeeData, JsonRpcProvider } from 'ethers';
+  export type { JsonRpcPayload, Networkish } from 'ethers';
 }
 
 declare module 'ethers/transaction' {
@@ -21,9 +21,11 @@ declare module 'ethers/transaction' {
 
 declare module 'ethers/utils' {
   export {
+    FetchRequest,
     dataSlice,
     formatEther,
     formatUnits,
+    getBigInt,
     hexlify,
     isHexString,
     parseEther,
