@@ -12,8 +12,24 @@ jobs:
           node-version: '23.11.1'
           check-latest: true
       - run: yarn install
+      - name: Install keyring source-test dependencies
+        run: |
+          for package in sysweb3-core sysweb3-network sysweb3-utils sysweb3-keyring; do
+            yarn --cwd "packages/$package" install --frozen-lockfile --ignore-scripts
+          done
       - run: |
           touch .env
           echo SEED_LAW_COOK=${{ secrets.SEED_LAW_COOK }} >> .env
           echo SEED_PEACE_GLOBE=${{ secrets.SEED_PEACE_GLOBE }} >> .env
           echo SEED_SWALLOW_HEALTH=${{ secrets.SEED_SWALLOW_HEALTH }} >> .env
+      - name: Validate keyring fee and RPC regressions
+        working-directory: packages/sysweb3-keyring
+        timeout-minutes: 10
+        # Existing unit fixtures leave timers/listeners after completion.
+        # --forceExit retains Jest's failure exit status; it does not skip tests.
+        run: |
+          NODE_ENV=test node ../../node_modules/jest/bin/jest.js --config jest.config.js --runInBand --silent --forceExit \
+            test/unit/transactions/ethereum-fee-data.spec.ts \
+            test/unit/providers-rpc-integrity.spec.ts \
+            test/unit/transactions/ethereum-transactions.spec.ts \
+            test/unit/transactions/ethereum-replacement.spec.ts
