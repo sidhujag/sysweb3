@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.617
+
+- Preserve valid zero-priority EIP-1559 fees and supported BigNumberish fee overrides without silently changing the transaction fee model.
+- Separate actual network gas prices from fee recommendations; only use fee history for a confirmed unsupported priority-fee RPC, and retain RPC integrity checks.
+- Preserve zero priority quotes in cancellation and use exact integer replacement arithmetic. Correct dist-only, no-hook release preflight.
+- Fee/RPC source validation: 373 tests passed. No new wallet RPC method or fee-bound capability is introduced.
+
 ## 1.0.615
 
 ### Current hardware connection support
