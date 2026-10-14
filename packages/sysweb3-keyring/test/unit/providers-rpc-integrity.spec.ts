@@ -597,7 +597,9 @@ describe('JSON-RPC response correlation', () => {
       if (stage === 'priority') provider.send.mockRejectedValueOnce(integrity);
       if (stage === 'history') {
         provider.send.mockRejectedValueOnce(
-          new Error('priority method unavailable')
+          Object.assign(new Error('priority method unavailable'), {
+            code: -32601,
+          })
         );
         provider.send.mockRejectedValueOnce(integrity);
       }
@@ -642,7 +644,7 @@ describe('JSON-RPC response correlation', () => {
     }
   );
 
-  it('keeps ordinary unsupported-priority fee fallback', async () => {
+  it('does not fabricate a one-gwei priority fee when the method is unsupported', async () => {
     const parentGetBlock = jest
       .spyOn(JsonRpcProvider.prototype, 'getBlock')
       .mockResolvedValue({ baseFeePerGas: 7n });
@@ -659,11 +661,9 @@ describe('JSON-RPC response correlation', () => {
       );
     });
     try {
-      await expect(providerFor().getFeeData()).resolves.toEqual({
-        gasPrice: BigNumber.from(7),
-        maxFeePerGas: BigNumber.from('1000000014'),
-        maxPriorityFeePerGas: BigNumber.from('1000000000'),
-      });
+      await expect(providerFor().getFeeData()).rejects.toThrow(
+        'fee data unavailable'
+      );
       expect(fetchMock).toHaveBeenCalledTimes(2);
     } finally {
       parentGetBlock.mockRestore();
@@ -724,7 +724,7 @@ describe('JSON-RPC response correlation', () => {
   );
 
   it.each(['', true, false, Number.MAX_SAFE_INTEGER + 1, null])(
-    'keeps ethers fallback for malformed optional priority fee: %p',
+    'does not invent a quote for malformed optional priority fee: %p',
     async (value) => {
       const parentGetBlock = jest
         .spyOn(JsonRpcProvider.prototype, 'getBlock')
@@ -739,11 +739,37 @@ describe('JSON-RPC response correlation', () => {
         );
       });
       try {
+        await expect(providerFor().getFeeData()).rejects.toThrow(
+          'fee data unavailable'
+        );
+      } finally {
+        parentGetBlock.mockRestore();
+      }
+    }
+  );
+
+  it.each([0n, 7n])(
+    'retains an RPC zero tip on an EIP-1559 header with base fee %p',
+    async (baseFeePerGas) => {
+      const parentGetBlock = jest
+        .spyOn(JsonRpcProvider.prototype, 'getBlock')
+        .mockResolvedValue({ baseFeePerGas });
+      fetchMock.mockImplementation(async (_url, options) => {
+        const request = JSON.parse(options.body);
+        return response(
+          resultFor(
+            request,
+            request.method === 'eth_maxPriorityFeePerGas' ? '0x0' : '0x7'
+          )
+        );
+      });
+      try {
         await expect(providerFor().getFeeData()).resolves.toEqual({
           gasPrice: BigNumber.from(7),
-          maxFeePerGas: BigNumber.from('1000000014'),
-          maxPriorityFeePerGas: BigNumber.from('1000000000'),
+          maxFeePerGas: BigNumber.from(baseFeePerGas * 2n),
+          maxPriorityFeePerGas: BigNumber.from(0),
         });
+        expect(fetchMock).toHaveBeenCalledTimes(2);
       } finally {
         parentGetBlock.mockRestore();
       }

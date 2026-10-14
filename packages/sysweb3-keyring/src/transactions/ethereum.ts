@@ -64,6 +64,25 @@ const stripHexPrefix = (value: string) =>
 
 const normalizeEthersOverrideValue = (value: any) => normalizeTxValue(value);
 
+const nonNegativeFeeQuantity = (value: unknown, label: string): BigNumber => {
+  if (
+    !(
+      (typeof value === 'string' && /^(?:0x[\da-f]+|\d+)$/i.test(value)) ||
+      (typeof value === 'number' &&
+        Number.isSafeInteger(value) &&
+        value >= 0) ||
+      (typeof value === 'bigint' && value >= 0n) ||
+      BigNumber.isBigNumber(value)
+    )
+  )
+    throw new Error(`Invalid ${label}`);
+  const quantity = BigNumber.from(
+    value as Parameters<typeof BigNumber.from>[0]
+  );
+  if (quantity.isNegative()) throw new Error(`Invalid ${label}`);
+  return quantity;
+};
+
 const normalizeEthersOverrides = (overrides: Record<string, any>) => {
   const normalized = { ...overrides };
   for (const field of [
@@ -672,155 +691,76 @@ export class EthereumTransactions implements IEthereumTransactions {
   getFeeDataWithDynamicMaxPriorityFeePerGas = async (
     provider = this.web3Provider
   ) => {
-    let maxFeePerGas = this.toBigNumber(0);
-    let maxPriorityFeePerGas = this.toBigNumber(0);
-
+    // Keep the actual legacy-price recommendation separate from the buffered
+    // EIP-1559 maximum. A failed read is not evidence of a zero/legacy fee.
+    const gasPrice = nonNegativeFeeQuantity(
+      await provider.getGasPrice(),
+      'gas price'
+    );
+    const block = await provider.getBlock('latest');
+    if (!block) throw new Error('Block not found');
+    if (block.baseFeePerGas == null) {
+      return {
+        gasPrice,
+        maxFeePerGas: BigNumber.from(0),
+        maxPriorityFeePerGas: BigNumber.from(0),
+      };
+    }
+    const baseFeePerGas = nonNegativeFeeQuantity(
+      block.baseFeePerGas,
+      'base fee'
+    );
+    let maxPriorityFeePerGas: BigNumber;
     try {
-      // First, try to get the current gas price as a baseline
-      const currentGasPrice = await provider.getGasPrice();
-
-      const block = await provider.getBlock('latest');
-      if (block && block.baseFeePerGas != null) {
-        const baseFeePerGas = BigNumber.from(block.baseFeePerGas);
-        try {
-          // Some networks don't support this RPC method
-          const ethMaxPriorityFee = await provider.send(
-            'eth_maxPriorityFeePerGas',
-            []
-          );
-          maxPriorityFeePerGas = BigNumber.from(ethMaxPriorityFee);
-
-          // Apply minimum priority fee override if set
-          if (
-            this.gasOverrides.minPriorityFee &&
-            maxPriorityFeePerGas.lt(this.gasOverrides.minPriorityFee)
-          ) {
-            maxPriorityFeePerGas = this.gasOverrides.minPriorityFee;
-          }
-
-          if (maxPriorityFeePerGas.isZero()) {
-            throw new Error('Max priority fee is zero');
-          }
-
-          // For networks with validation issues, use current gas price as baseline
-          // This ensures we're not setting fees that the network will reject
-          const baselineMaxFee = currentGasPrice.mul(120).div(100); // 20% above current gas price
-
-          // Calculate standard maxFeePerGas
-          const multiplier = this.gasOverrides.feeMultiplier || 250;
-          const calculatedMaxFee = baseFeePerGas
-            .mul(multiplier)
-            .div(100)
-            .add(maxPriorityFeePerGas);
-
-          // Use the higher of the two to ensure transaction goes through
-          maxFeePerGas = calculatedMaxFee.gt(baselineMaxFee)
-            ? calculatedMaxFee
-            : baselineMaxFee;
-        } catch (e) {
-          if (
-            e?.code === 'SYSWEB3_RPC_RESPONSE_INVALID' ||
-            e?.name === 'AbortError' ||
-            this.abortController.signal.aborted
-          )
-            throw e;
-          // Use a more aggressive fallback strategy with higher priority fees
-          // Check if we can get fee history for better estimation
-          try {
-            const feeHistory = await provider.send('eth_feeHistory', [
-              '0x5', // Last 5 blocks
-              'latest',
-              [25, 50, 75], // Percentiles for priority fees
-            ]);
-
-            if (
-              feeHistory &&
-              feeHistory.reward &&
-              feeHistory.reward.length > 0
-            ) {
-              // Use median of the 50th percentile from recent blocks
-              const recentFees = feeHistory.reward
-                .map((r: any[]) => r[1]) // Get 50th percentile
-                .filter((f: any) => f && f !== '0x0')
-                .map((f: any) => BigNumber.from(f));
-
-              if (recentFees.length > 0) {
-                // Use the median value with a 50% buffer for better reliability
-                const sortedFees = recentFees.sort((a, b) =>
-                  a.sub(b).isNegative() ? -1 : 1
-                );
-                const medianFee = sortedFees[Math.floor(sortedFees.length / 2)];
-                maxPriorityFeePerGas = medianFee.mul(150).div(100); // Add 50% buffer
-              } else {
-                // Fallback with higher default (5 gwei for better validation)
-                maxPriorityFeePerGas = BigNumber.from('5000000000');
-              }
-            } else {
-              // Fallback with higher default (5 gwei for better validation)
-              maxPriorityFeePerGas = BigNumber.from('5000000000');
-            }
-          } catch (feeHistoryError) {
-            if (
-              feeHistoryError?.code === 'SYSWEB3_RPC_RESPONSE_INVALID' ||
-              feeHistoryError?.name === 'AbortError' ||
-              this.abortController.signal.aborted
-            ) {
-              throw feeHistoryError;
-            }
-            // If fee history fails, use current gas price as reference
-            console.warn(
-              'Fee history not available, using gas price based estimation'
-            );
-            // Use 10% of current gas price as priority fee
-            const currentGasPrice = await provider.getGasPrice();
-            maxPriorityFeePerGas = currentGasPrice.mul(10).div(100);
-
-            // Ensure minimum of 1 gwei
-            const minPriority = BigNumber.from('1000000000');
-            if (maxPriorityFeePerGas.lt(minPriority)) {
-              maxPriorityFeePerGas = minPriority;
-            }
-          }
-
-          // Calculate maxFeePerGas based on current network conditions
-          const currentGasPrice = await provider.getGasPrice();
-          const baselineMaxFee = currentGasPrice.mul(120).div(100);
-          const calculatedMaxFee = baseFeePerGas
-            .mul(250)
-            .div(100)
-            .add(maxPriorityFeePerGas);
-          maxFeePerGas = calculatedMaxFee.gt(baselineMaxFee)
-            ? calculatedMaxFee
-            : baselineMaxFee;
-        }
-
-        // Ensure maxFeePerGas is at least 20% higher than maxPriorityFeePerGas
-        const minMaxFee = maxPriorityFeePerGas.mul(120).div(100);
-        if (maxFeePerGas.lt(minMaxFee)) {
-          maxFeePerGas = minMaxFee;
-        }
-
-        return { maxFeePerGas, maxPriorityFeePerGas };
-      } else if (block && block.baseFeePerGas == null) {
-        // For non-EIP1559 chains, return zeros to indicate legacy transaction should be used
-        console.log('Chain does not support EIP1559, use legacy transactions');
-        return {
-          maxFeePerGas: BigNumber.from(0),
-          maxPriorityFeePerGas: BigNumber.from(0),
-        };
-      } else if (!block) throw new Error('Block not found');
-
-      return { maxFeePerGas, maxPriorityFeePerGas };
+      maxPriorityFeePerGas = nonNegativeFeeQuantity(
+        await provider.send('eth_maxPriorityFeePerGas', []),
+        'priority fee'
+      );
     } catch (error) {
       if (
         error?.code === 'SYSWEB3_RPC_RESPONSE_INVALID' ||
         error?.name === 'AbortError' ||
-        this.abortController.signal.aborted
+        this.abortController.signal.aborted ||
+        (error?.code !== -32601 && error?.code !== 4200)
       )
         throw error;
-      console.error(error);
-      return { maxFeePerGas, maxPriorityFeePerGas };
+      // An explicitly unsupported method may use actual observed history,
+      // including zero rewards. Missing/corrupt history never invents a tip.
+      const history = await provider.send('eth_feeHistory', [
+        '0x5',
+        'latest',
+        [25, 50, 75],
+      ]);
+      if (!Array.isArray(history?.reward) || history.reward.length === 0)
+        throw new Error('Priority fee history unavailable');
+      const recentFees = history.reward
+        .map((reward: unknown) => {
+          if (!Array.isArray(reward) || reward.length !== 3)
+            throw new Error('Invalid priority fee history');
+          return nonNegativeFeeQuantity(reward[1], 'priority fee history');
+        })
+        .sort((a: BigNumber, b: BigNumber) => (a.lt(b) ? -1 : a.gt(b) ? 1 : 0));
+      maxPriorityFeePerGas = recentFees[Math.floor(recentFees.length / 2)]
+        .mul(150)
+        .div(100);
     }
+    if (
+      this.gasOverrides.minPriorityFee &&
+      maxPriorityFeePerGas.lt(this.gasOverrides.minPriorityFee)
+    )
+      maxPriorityFeePerGas = this.gasOverrides.minPriorityFee;
+    const baselineMaxFee = gasPrice.mul(120).div(100);
+    const calculatedMaxFee = baseFeePerGas
+      .mul(this.gasOverrides.feeMultiplier || 250)
+      .div(100)
+      .add(maxPriorityFeePerGas);
+    let maxFeePerGas = calculatedMaxFee.gt(baselineMaxFee)
+      ? calculatedMaxFee
+      : baselineMaxFee;
+    const minMaxFee = maxPriorityFeePerGas.mul(120).div(100);
+    if (maxFeePerGas.lt(minMaxFee)) maxFeePerGas = minMaxFee;
+    if (maxFeePerGas.isZero()) throw new Error('Invalid EIP-1559 maximum fee');
+    return { gasPrice, baseFeePerGas, maxFeePerGas, maxPriorityFeePerGas };
   };
   calculateNewGasValues = (
     oldTxsParams: IGasParams,
@@ -1237,27 +1177,32 @@ export class EthereumTransactions implements IEthereumTransactions {
       this.getState();
     const activeAccount = accounts[activeAccountType][activeAccountId];
 
-    // Check if we should force legacy transactions for networks with EIP-1559 issues
-    // Some networks have issues with EIP-1559 validation
-    if (!isLegacy && params.maxFeePerGas && params.maxPriorityFeePerGas) {
-      const maxFee = BigNumber.from(params.maxFeePerGas);
-      const priorityFee = BigNumber.from(params.maxPriorityFeePerGas);
-
-      // If fees are zero or network doesn't support EIP-1559, use legacy
-      if (maxFee.isZero() || priorityFee.isZero()) {
-        console.log('Switching to legacy transaction due to zero fees');
-        isLegacy = true;
-
-        // Convert to legacy by using gasPrice
-        const gasPrice = await this.web3Provider.getGasPrice();
-        params.gasPrice = gasPrice.mul(110).div(100); // 10% buffer
-        // @ts-ignore
-        delete params.maxFeePerGas;
-
-        // @ts-ignore
-        delete params.maxPriorityFeePerGas;
-      }
-    }
+    const explicitEip1559 =
+      params.type != null && BigNumber.from(params.type).eq(2);
+    const requestedEip1559 =
+      explicitEip1559 ||
+      params.maxFeePerGas != null ||
+      params.maxPriorityFeePerGas != null;
+    if (isLegacy && requestedEip1559)
+      throw new Error('EIP-1559 fees conflict with legacy pricing');
+    const validateEip1559Fees = () => {
+      const maximum = nonNegativeFeeQuantity(
+        params.maxFeePerGas,
+        'maximum fee'
+      );
+      const priority = nonNegativeFeeQuantity(
+        params.maxPriorityFeePerGas,
+        'priority fee'
+      );
+      if (maximum.isZero() || priority.gt(maximum))
+        throw new Error('Invalid EIP-1559 fees');
+    };
+    if (
+      !isLegacy &&
+      params.maxFeePerGas != null &&
+      params.maxPriorityFeePerGas != null
+    )
+      validateEip1559Fees();
 
     // Only apply a minimum gas limit when a network-specific override is set.
     // Otherwise keep the user/dapp-approved gas limit unchanged.
@@ -1291,20 +1236,24 @@ export class EthereumTransactions implements IEthereumTransactions {
       if (!params.gasPrice) {
         params.gasPrice = await this.web3Provider.getGasPrice();
       }
-    } else if (!params.maxFeePerGas || params.maxPriorityFeePerGas == null) {
+    } else if (
+      params.maxFeePerGas == null ||
+      params.maxPriorityFeePerGas == null
+    ) {
       const feeData = await this.web3Provider.getFeeData();
-      params.maxFeePerGas =
-        params.maxFeePerGas || feeData.maxFeePerGas || feeData.gasPrice;
+      params.maxFeePerGas = params.maxFeePerGas ?? feeData.maxFeePerGas;
       params.maxPriorityFeePerGas =
         params.maxPriorityFeePerGas ?? feeData.maxPriorityFeePerGas;
-      if (!params.maxFeePerGas || params.maxPriorityFeePerGas == null) {
+      if (params.maxFeePerGas == null || params.maxPriorityFeePerGas == null) {
+        if (requestedEip1559) throw new Error('EIP-1559 fee data unavailable');
         isLegacy = true;
         params.gasPrice =
-          feeData.gasPrice || (await this.web3Provider.getGasPrice());
+          feeData.gasPrice ?? (await this.web3Provider.getGasPrice());
         delete (params as any).maxFeePerGas;
         delete (params as any).maxPriorityFeePerGas;
       }
     }
+    if (!isLegacy) validateEip1559Fees();
 
     const sendEVMLedgerTransaction = async () => {
       const transactionNonce = await this.getRecommendedNonce(
@@ -3026,47 +2975,20 @@ export class EthereumTransactions implements IEthereumTransactions {
       };
     }
 
-    try {
-      // Try EIP-1559 fees first
-      const feeData = await this.getFeeDataWithDynamicMaxPriorityFeePerGas();
-
-      // If fees are zero or too low, fallback to legacy
-      if (
-        !feeData.maxFeePerGas ||
-        feeData.maxFeePerGas.isZero() ||
-        !feeData.maxPriorityFeePerGas ||
-        feeData.maxPriorityFeePerGas.isZero()
-      ) {
-        console.log('EIP-1559 fees invalid, falling back to legacy gas price');
-        const gasPrice = await this.web3Provider.getGasPrice();
-        const bufferedGasPrice = gasPrice.mul(110).div(100);
-        return {
-          gasPrice: bufferedGasPrice,
-          maxFeePerGas: undefined,
-          maxPriorityFeePerGas: undefined,
-        };
-      }
-
-      return {
-        gasPrice: undefined,
-        maxFeePerGas: feeData.maxFeePerGas,
-        maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
-      };
-    } catch (error) {
-      if (
-        error?.code === 'SYSWEB3_RPC_RESPONSE_INVALID' ||
-        error?.name === 'AbortError' ||
-        this.abortController.signal.aborted
-      )
-        throw error;
-      console.warn('Failed to get EIP-1559 fees, using legacy:', error);
-      const gasPrice = await this.web3Provider.getGasPrice();
-      const bufferedGasPrice = gasPrice.mul(110).div(100);
+    const feeData = await this.getFeeDataWithDynamicMaxPriorityFeePerGas();
+    if (feeData.baseFeePerGas === undefined) {
+      // Only an actual pre-London header authorizes legacy selection.
+      const bufferedGasPrice = feeData.gasPrice.mul(110).div(100);
       return {
         gasPrice: bufferedGasPrice,
         maxFeePerGas: undefined,
         maxPriorityFeePerGas: undefined,
       };
     }
+    return {
+      gasPrice: undefined,
+      maxFeePerGas: feeData.maxFeePerGas,
+      maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
+    };
   };
 }
