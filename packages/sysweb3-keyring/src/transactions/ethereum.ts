@@ -65,14 +65,30 @@ const stripHexPrefix = (value: string) =>
 const normalizeEthersOverrideValue = (value: any) => normalizeTxValue(value);
 
 const nonNegativeFeeQuantity = (value: unknown, label: string): BigNumber => {
+  // Match the exported BigNumberish object contract without trusting a
+  // private marker or BigNumber.from's null/empty-to-zero coercions. Normalize
+  // once so validation and conversion use the same integer representation.
+  if (value !== null && typeof value === 'object') {
+    const objectValue = value as {
+      _hex?: unknown;
+      hex?: unknown;
+      toString?: () => unknown;
+    };
+    value =
+      objectValue._hex ??
+      objectValue.hex ??
+      (typeof objectValue.toString === 'function'
+        ? objectValue.toString()
+        : undefined);
+    if (typeof value !== 'string') throw new Error(`Invalid ${label}`);
+  }
   if (
     !(
       (typeof value === 'string' && /^(?:0x[\da-f]+|\d+)$/i.test(value)) ||
       (typeof value === 'number' &&
         Number.isSafeInteger(value) &&
         value >= 0) ||
-      (typeof value === 'bigint' && value >= 0n) ||
-      BigNumber.isBigNumber(value)
+      (typeof value === 'bigint' && value >= 0n)
     )
   )
     throw new Error(`Invalid ${label}`);
@@ -841,6 +857,21 @@ export class EthereumTransactions implements IEthereumTransactions {
     const { activeAccountType, activeAccountId, accounts, activeNetwork } =
       this.getState();
     const activeAccount = accounts[activeAccountType][activeAccountId];
+    const currentEip1559Fees = async () => {
+      const feeData = await this.getFeeDataWithDynamicMaxPriorityFeePerGas();
+      const maxFeePerGas = nonNegativeFeeQuantity(
+        feeData.maxFeePerGas,
+        'cancellation maximum fee'
+      );
+      const maxPriorityFeePerGas = nonNegativeFeeQuantity(
+        feeData.maxPriorityFeePerGas,
+        'cancellation priority fee'
+      );
+      if (maxFeePerGas.isZero() || maxPriorityFeePerGas.gt(maxFeePerGas)) {
+        throw new Error('Invalid cancellation EIP-1559 fees');
+      }
+      return { maxFeePerGas, maxPriorityFeePerGas };
+    };
 
     let tx = (await this.web3Provider.getTransaction(
       txHash
@@ -851,7 +882,10 @@ export class EthereumTransactions implements IEthereumTransactions {
     if (!tx && fallbackNonce !== undefined) {
       // Fetch current network gas prices for the cancellation
       if (isLegacy) {
-        const currentGasPrice = await this.web3Provider.getGasPrice();
+        const currentGasPrice = nonNegativeFeeQuantity(
+          await this.web3Provider.getGasPrice(),
+          'cancellation gas price'
+        );
         tx = {
           from: activeAccount.address,
           to: activeAccount.address,
@@ -862,16 +896,14 @@ export class EthereumTransactions implements IEthereumTransactions {
           data: '0x',
         } as any;
       } else {
-        const feeData = await this.getFeeDataWithDynamicMaxPriorityFeePerGas();
+        const feeData = await currentEip1559Fees();
         tx = {
           from: activeAccount.address,
           to: activeAccount.address,
           value: Zero,
           nonce: fallbackNonce,
-          maxFeePerGas: BigNumber.from(feeData.maxFeePerGas || 0),
-          maxPriorityFeePerGas: BigNumber.from(
-            feeData.maxPriorityFeePerGas || 0
-          ),
+          maxFeePerGas: feeData.maxFeePerGas,
+          maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
           gasLimit: BigNumber.from(42000),
           data: '0x',
         } as any;
@@ -893,7 +925,16 @@ export class EthereumTransactions implements IEthereumTransactions {
     };
 
     if (isLegacy) {
-      const currentGasPrice = await this.web3Provider.getGasPrice();
+      const currentGasPrice = nonNegativeFeeQuantity(
+        await this.web3Provider.getGasPrice(),
+        'cancellation gas price'
+      );
+      if (oldTxsGasValues.gasPrice != null) {
+        oldTxsGasValues.gasPrice = nonNegativeFeeQuantity(
+          oldTxsGasValues.gasPrice,
+          'original gas price'
+        );
+      }
 
       if (
         !oldTxsGasValues.gasPrice ||
@@ -903,15 +944,22 @@ export class EthereumTransactions implements IEthereumTransactions {
         oldTxsGasValues.gasPrice = currentGasPrice;
       }
     } else {
-      const currentGasPrice = await this.web3Provider.getGasPrice();
-      const feeData = await this.getFeeDataWithDynamicMaxPriorityFeePerGas();
-      const currentMaxFeePerGas = BigNumber.from(feeData.maxFeePerGas || 0);
-      const currentPriorityFeePerGas = BigNumber.from(
-        feeData.maxPriorityFeePerGas || 0
-      );
-      const currentMaxPriorityFeePerGas = currentPriorityFeePerGas.isZero()
-        ? currentGasPrice
-        : currentPriorityFeePerGas;
+      const {
+        maxFeePerGas: currentMaxFeePerGas,
+        maxPriorityFeePerGas: currentMaxPriorityFeePerGas,
+      } = await currentEip1559Fees();
+      if (oldTxsGasValues.maxFeePerGas != null) {
+        oldTxsGasValues.maxFeePerGas = nonNegativeFeeQuantity(
+          oldTxsGasValues.maxFeePerGas,
+          'original maximum fee'
+        );
+      }
+      if (oldTxsGasValues.maxPriorityFeePerGas != null) {
+        oldTxsGasValues.maxPriorityFeePerGas = nonNegativeFeeQuantity(
+          oldTxsGasValues.maxPriorityFeePerGas,
+          'original priority fee'
+        );
+      }
 
       if (
         !oldTxsGasValues.maxFeePerGas ||
@@ -935,11 +983,26 @@ export class EthereumTransactions implements IEthereumTransactions {
       }
     }
 
-    const newGasValues = this.calculateNewGasValues(
-      oldTxsGasValues,
-      true,
-      isLegacy || false
-    );
+    // Preserve the existing 20% replacement policy with exact integer math.
+    // Nodes also require a strictly larger cap and tip than an old pending
+    // transaction; zero/small fees therefore need at least a one-wei bump.
+    // This is a replacement bump, not a fabricated network priority floor.
+    const bumpCancelFee = (fee: BigNumber) => {
+      const percentageBump = fee.mul(120).div(100);
+      const strictBump = fee.add(1);
+      return percentageBump.gt(strictBump) ? percentageBump : strictBump;
+    };
+    const newGasValues: IGasParams = {
+      gasLimit: BigNumber.from(42000),
+      ...(isLegacy
+        ? { gasPrice: bumpCancelFee(oldTxsGasValues.gasPrice!) }
+        : {
+            maxFeePerGas: bumpCancelFee(oldTxsGasValues.maxFeePerGas!),
+            maxPriorityFeePerGas: bumpCancelFee(
+              oldTxsGasValues.maxPriorityFeePerGas!
+            ),
+          }),
+    };
 
     // Base cancel transaction parameters (same for all wallet types)
     const baseCancelTx = {
@@ -1196,6 +1259,8 @@ export class EthereumTransactions implements IEthereumTransactions {
       );
       if (maximum.isZero() || priority.gt(maximum))
         throw new Error('Invalid EIP-1559 fees');
+      params.maxFeePerGas = maximum;
+      params.maxPriorityFeePerGas = priority;
     };
     if (
       !isLegacy &&

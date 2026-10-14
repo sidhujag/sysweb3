@@ -7,7 +7,7 @@ jest.mock('../../../src/transactions/evm-local-signer', () => ({
 
 import { INetworkType } from '@sidhujag/sysweb3-network';
 
-import { BigNumber } from '../../../src/ethers-v6';
+import { BigNumber, normalizeTransactionRequest } from '../../../src/ethers-v6';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import { sendLocalEvmTransaction } from '../../../src/transactions/evm-local-signer';
 import { KeyringAccountType } from '../../../src/types';
@@ -33,6 +33,13 @@ const localSend = sendLocalEvmTransaction as jest.Mock;
 
 function fixture() {
   const provider = {
+    getTransaction: jest.fn().mockResolvedValue({
+      ...transaction,
+      gasLimit: BigNumber.from(21000),
+      gasPrice: BigNumber.from(7),
+      maxFeePerGas: BigNumber.from(100),
+      maxPriorityFeePerGas: BigNumber.from(0),
+    }),
     getGasPrice: jest.fn().mockResolvedValue(BigNumber.from(7)),
     getBlock: jest.fn().mockResolvedValue({ baseFeePerGas: BigNumber.from(5) }),
     getFeeData: jest.fn().mockResolvedValue({
@@ -255,6 +262,74 @@ describe('actual RPC fee data without a fabricated tip or model switch', () => {
 });
 
 describe('formatted standard transaction fee-model retention', () => {
+  it.each([
+    [{ hex: '0x64' }, { hex: '0x0' }],
+    [{ _hex: '0x64' }, { _hex: '0x0' }],
+    [{ toString: () => '100' }, { toString: () => '0' }],
+    [
+      { type: 'BigNumber', hex: '0x64' },
+      { type: 'BigNumber', hex: '0x2' },
+    ],
+  ])(
+    'accepts the exported object-form BigNumberish fee contract: %p / %p',
+    async (maximum, priority) => {
+      const { sdk, provider } = fixture();
+      await expect(
+        sdk.sendFormattedTransaction(
+          {
+            ...transaction,
+            type: 2,
+            maxFeePerGas: maximum,
+            maxPriorityFeePerGas: priority,
+          } as any,
+          false
+        )
+      ).resolves.toMatchObject({ hash: HASH });
+      const sent = localSend.mock.calls[0][2];
+      expect(BigNumber.from(sent.maxFeePerGas).toString()).toBe('100');
+      expect(BigNumber.from(sent.maxPriorityFeePerGas).toString()).toBe(
+        BigNumber.from(priority).toString()
+      );
+      expect(normalizeTransactionRequest(sent).maxFeePerGas).toBe(100n);
+      expect(normalizeTransactionRequest(sent).maxPriorityFeePerGas).toBe(
+        BigInt(BigNumber.from(priority).toString())
+      );
+      expect(provider.getFeeData).not.toHaveBeenCalled();
+      expect(provider.getGasPrice).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    { hex: '-0x1' },
+    { _hex: '-1' },
+    { hex: '' },
+    { _hex: 'broken' },
+    { hex: 100 },
+    { toString: () => '-1' },
+    { toString: () => '' },
+    {},
+    { _isBigNumber: true },
+    { _hex: 'broken', hex: '0x64' },
+  ])(
+    'rejects negative or malformed object-form fees before key access: %p',
+    async (maximum) => {
+      const { sdk, getKey } = fixture();
+      await expect(
+        sdk.sendFormattedTransaction(
+          {
+            ...transaction,
+            type: 2,
+            maxFeePerGas: maximum,
+            maxPriorityFeePerGas: { hex: '0x0' },
+          } as any,
+          false
+        )
+      ).rejects.toMatchObject({ transactionNotBroadcast: true });
+      expect(getKey).not.toHaveBeenCalled();
+      expect(localSend).not.toHaveBeenCalled();
+    }
+  );
+
   it('does not silently convert an explicit type-2 request through a legacy flag', async () => {
     const { sdk, getKey } = fixture();
     await expect(
@@ -347,6 +422,150 @@ describe('formatted standard transaction fee-model retention', () => {
         expect(BigNumber.from(sent.maxPriorityFeePerGas).toString()).toBe('2');
       expect(provider.getGasPrice).not.toHaveBeenCalled();
       expect(provider.getFeeData).not.toHaveBeenCalled();
+    }
+  );
+});
+
+describe('cancellation recommendations keep base fee separate from replacement tip', () => {
+  const cancelFields = () => localSend.mock.calls[0][2];
+
+  it('bumps a zero-tip original by one wei, never by the full gas-price recommendation', async () => {
+    const { sdk, provider } = fixture();
+    await expect(sdk.cancelSentTransaction(HASH, false)).resolves.toMatchObject(
+      { isCanceled: true }
+    );
+    expect(cancelFields().maxFeePerGas.toString()).toBe('120');
+    expect(cancelFields().maxPriorityFeePerGas.toString()).toBe('1');
+    expect(cancelFields()).toMatchObject({ from: FROM, to: FROM, nonce: 0 });
+    expect(provider.getGasPrice).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [10, '0x2', '12'],
+    [10, '0xc', '14'],
+    [1, '0x0', '2'],
+  ])(
+    'retains the real positive replacement tip bump: original %s / recommendation %s',
+    async (oldTip, recommendation, expected) => {
+      const { sdk, provider } = fixture();
+      const original = await provider.getTransaction();
+      provider.getTransaction.mockResolvedValue({
+        ...original,
+        maxPriorityFeePerGas: BigNumber.from(oldTip),
+      });
+      provider.send.mockResolvedValue(recommendation);
+      await sdk.cancelSentTransaction(HASH, false);
+      expect(cancelFields().maxPriorityFeePerGas.toString()).toBe(expected);
+      expect(cancelFields().maxFeePerGas.toString()).toBe('120');
+    }
+  );
+
+  it('keeps exact integer replacement arithmetic above the safe-number range', async () => {
+    const { sdk, provider } = fixture();
+    const original = await provider.getTransaction();
+    const oldMaximum = (1n << 60n) + 3n;
+    provider.getTransaction.mockResolvedValue({
+      ...original,
+      maxFeePerGas: BigNumber.from(oldMaximum),
+    });
+    await sdk.cancelSentTransaction(HASH, false);
+    expect(cancelFields().maxFeePerGas.toString()).toBe(
+      ((oldMaximum * 120n) / 100n).toString()
+    );
+    expect(cancelFields().maxPriorityFeePerGas.toString()).toBe('1');
+  });
+
+  it('uses actual zero-tip fees for a missing-original nonce cancellation without inventing a network tip', async () => {
+    const { sdk, provider } = fixture();
+    provider.getTransaction.mockResolvedValue(null as any);
+    await expect(
+      sdk.cancelSentTransaction(HASH, false, 9)
+    ).resolves.toMatchObject({ isCanceled: true });
+    expect(cancelFields().nonce).toBe(9);
+    expect(cancelFields().maxPriorityFeePerGas.toString()).toBe('1');
+    expect(cancelFields().maxFeePerGas.toString()).toBe('14');
+  });
+
+  it('does not request fees or sign when the original and fallback nonce are both absent', async () => {
+    const { sdk, provider, getKey } = fixture();
+    provider.getTransaction.mockResolvedValue(null as any);
+    await expect(sdk.cancelSentTransaction(HASH, false)).resolves.toEqual({
+      isCanceled: false,
+      error: true,
+    });
+    expect(provider.getGasPrice).not.toHaveBeenCalled();
+    expect(getKey).not.toHaveBeenCalled();
+    expect(localSend).not.toHaveBeenCalled();
+  });
+
+  it.each(['gas', 'block', 'priority'])(
+    'refuses unavailable %s data before cancellation key access',
+    async (stage) => {
+      const { sdk, provider, getKey } = fixture();
+      const error = new Error('Cancellation fee RPC unavailable');
+      if (stage === 'gas') provider.getGasPrice.mockRejectedValue(error);
+      if (stage === 'block') provider.getBlock.mockRejectedValue(error);
+      if (stage === 'priority') provider.send.mockRejectedValue(error);
+      await expect(sdk.cancelSentTransaction(HASH, false)).rejects.toBe(error);
+      expect(getKey).not.toHaveBeenCalled();
+      expect(localSend).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    { maxFeePerGas: null },
+    { maxFeePerGas: undefined },
+    { maxFeePerGas: 'broken' },
+    { maxFeePerGas: BigNumber.from(0) },
+    { maxFeePerGas: BigNumber.from(-1) },
+    { maxPriorityFeePerGas: null },
+    { maxPriorityFeePerGas: undefined },
+    { maxPriorityFeePerGas: 'broken' },
+    { maxPriorityFeePerGas: BigNumber.from(-1) },
+    {
+      maxFeePerGas: BigNumber.from(1),
+      maxPriorityFeePerGas: BigNumber.from(2),
+    },
+  ])(
+    'rejects missing or corrupt current EIP recommendations without a zero/default substitution: %p',
+    async (fields) => {
+      const { sdk, getKey } = fixture();
+      jest
+        .spyOn(sdk, 'getFeeDataWithDynamicMaxPriorityFeePerGas')
+        .mockResolvedValue({
+          gasPrice: BigNumber.from(7),
+          maxFeePerGas: BigNumber.from(12),
+          maxPriorityFeePerGas: BigNumber.from(0),
+          ...fields,
+        } as any);
+      await expect(sdk.cancelSentTransaction(HASH, false)).rejects.toThrow();
+      expect(getKey).not.toHaveBeenCalled();
+      expect(localSend).not.toHaveBeenCalled();
+    }
+  );
+
+  it('preserves a normal positive legacy cancellation price and self-transfer nonce', async () => {
+    const { sdk, provider } = fixture();
+    provider.getGasPrice.mockResolvedValue(BigNumber.from(10));
+    await sdk.cancelSentTransaction(HASH, true);
+    expect(cancelFields().gasPrice.toString()).toBe('12');
+    expect(cancelFields()).toMatchObject({
+      type: 0,
+      from: FROM,
+      to: FROM,
+      nonce: 0,
+    });
+    expect(provider.send).not.toHaveBeenCalled();
+  });
+
+  it.each([null, undefined, 'broken', BigNumber.from(-1)])(
+    'rejects corrupt legacy cancellation prices %p before signing',
+    async (price) => {
+      const { sdk, provider, getKey } = fixture();
+      provider.getGasPrice.mockResolvedValue(price as any);
+      await expect(sdk.cancelSentTransaction(HASH, true)).rejects.toThrow();
+      expect(getKey).not.toHaveBeenCalled();
+      expect(localSend).not.toHaveBeenCalled();
     }
   );
 });
