@@ -609,6 +609,170 @@ describe('JSON-RPC response correlation', () => {
     }
   );
 
+  it.each([
+    ['direct', 'Method not found', -32601, '0x0', '0'],
+    ['UNKNOWN_ERROR', 'Method not found', -32601, '0x0', '0'],
+    [
+      'UNSUPPORTED_OPERATION',
+      'the method eth_maxPriorityFeePerGas does not exist',
+      -32601,
+      '0x2',
+      '3',
+    ],
+    ['UNKNOWN_ERROR', 'Method not found', 4200, '0x0', '0'],
+  ])(
+    'uses real correlated history after %s unsupported priority normalization',
+    async (normalization, message, code, reward, expectedTip) => {
+      const provider = providerFor();
+      const sdk = sdkFor(provider);
+      jest.spyOn(provider, 'getBlock').mockResolvedValue({ baseFeePerGas: 7n });
+      if (normalization !== 'direct') {
+        provider.send = JsonRpcProvider.prototype.send.bind(provider);
+        const normalize = jest.spyOn(provider, 'getRpcError');
+        normalize.mockImplementation((payload: any, error: any) => {
+          const result = JsonRpcProvider.prototype.getRpcError.call(
+            provider,
+            payload,
+            error
+          );
+          expect(result.code).toBe(normalization);
+          expect(result.error?.code ?? result.info?.error?.code).toBe(code);
+          return result;
+        });
+      }
+      fetchMock.mockImplementation(async (_url, options) => {
+        const request = JSON.parse(options.body);
+        if (request.method === 'eth_maxPriorityFeePerGas') {
+          return response({
+            jsonrpc: '2.0',
+            id: request.id,
+            error: { code, message },
+          });
+        }
+        return response(
+          resultFor(
+            request,
+            request.method === 'eth_feeHistory'
+              ? { reward: [[reward, reward, reward]] }
+              : '0x7'
+          )
+        );
+      });
+      const fee = await sdk.getFeeDataWithDynamicMaxPriorityFeePerGas();
+      expect(fee.maxPriorityFeePerGas.toString()).toBe(expectedTip);
+      expect(fee.gasPrice.toString()).toBe('7');
+      expect(requestsFrom(fetchMock).map((request) => request.method)).toEqual([
+        'eth_gasPrice',
+        'eth_maxPriorityFeePerGas',
+        'eth_feeHistory',
+      ]);
+      expect(
+        new Set(requestsFrom(fetchMock).map((request) => request.id)).size
+      ).toBe(3);
+    }
+  );
+
+  it.each([
+    'integrity',
+    'abort',
+    'network',
+    'http',
+    'rpc-error',
+    'generic-unsupported',
+  ])(
+    'does not use history to hide a real inherited-send %s failure',
+    async (failure) => {
+      const provider = providerFor();
+      provider.send = JsonRpcProvider.prototype.send.bind(provider);
+      jest.spyOn(provider, 'getBlock').mockResolvedValue({ baseFeePerGas: 7n });
+      const networkError = new TypeError('Network request failed');
+      fetchMock.mockImplementation(async (_url, options) => {
+        const request = JSON.parse(options.body);
+        if (request.method !== 'eth_maxPriorityFeePerGas')
+          return response(resultFor(request, '0x7'));
+        if (failure === 'abort')
+          throw new DOMException('Priority read aborted', 'AbortError');
+        if (failure === 'network') throw networkError;
+        const rpcError = {
+          jsonrpc: '2.0',
+          id: failure === 'integrity' ? -1 : request.id,
+          error: {
+            code: ['rpc-error', 'generic-unsupported'].includes(failure)
+              ? -32000
+              : -32601,
+            message:
+              failure === 'generic-unsupported'
+                ? 'the method eth_maxPriorityFeePerGas does not exist'
+                : 'Method not found',
+          },
+        };
+        return failure === 'http'
+          ? { ...response(rpcError), ok: false, status: 503 }
+          : response(rpcError);
+      });
+      const quote =
+        sdkFor(provider).getFeeDataWithDynamicMaxPriorityFeePerGas();
+      if (failure === 'integrity')
+        await expect(quote).rejects.toMatchObject({ code: SENTINEL });
+      else if (failure === 'abort')
+        await expect(quote).rejects.toMatchObject({ name: 'AbortError' });
+      else if (failure === 'network')
+        await expect(quote).rejects.toBe(networkError);
+      else await expect(quote).rejects.toThrow();
+      expect(
+        requestsFrom(fetchMock).some(
+          (request) => request.method === 'eth_feeHistory'
+        )
+      ).toBe(false);
+    }
+  );
+
+  it.each([
+    {
+      code: 'UNKNOWN_ERROR',
+      error: { code: -32601 },
+      payload: { method: 'eth_getBalance', params: [] },
+    },
+    { code: 'UNKNOWN_ERROR', error: { code: -32601 } },
+    { code: 'UNSUPPORTED_OPERATION', operation: 'eth_maxPriorityFeePerGas' },
+    {
+      code: 'NETWORK_ERROR',
+      error: { code: -32601 },
+      payload: { method: 'eth_maxPriorityFeePerGas', params: [] },
+    },
+    {
+      code: 'UNKNOWN_ERROR',
+      error: { code: -32601 },
+      payload: { method: 'eth_maxPriorityFeePerGas', params: ['unexpected'] },
+    },
+    {
+      code: 'UNSUPPORTED_OPERATION',
+      operation: 'eth_getBalance',
+      info: {
+        error: { code: -32601 },
+        payload: { method: 'eth_maxPriorityFeePerGas', params: [] },
+      },
+    },
+    {
+      code: 'UNKNOWN_ERROR',
+      error: { name: 'AbortError', code: -32601 },
+      payload: { method: 'eth_maxPriorityFeePerGas', params: [] },
+    },
+  ])(
+    'rejects an unsupported-looking wrapper without the matching priority RPC evidence: %p',
+    async (error) => {
+      const provider = {
+        getGasPrice: jest.fn().mockResolvedValue(BigNumber.from(7)),
+        getBlock: jest.fn().mockResolvedValue({ baseFeePerGas: 7n }),
+        send: jest.fn().mockRejectedValue(error),
+      };
+      await expect(
+        sdkFor(provider).getFeeDataWithDynamicMaxPriorityFeePerGas()
+      ).rejects.toBe(error);
+      expect(provider.send).toHaveBeenCalledTimes(1);
+    }
+  );
+
   it('does not replace an integrity error with legacy fees', async () => {
     const provider = {
       getGasPrice: jest.fn().mockResolvedValue(BigNumber.from(7)),

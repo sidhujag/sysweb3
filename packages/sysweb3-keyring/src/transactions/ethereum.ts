@@ -99,6 +99,34 @@ const nonNegativeFeeQuantity = (value: unknown, label: string): BigNumber => {
   return quantity;
 };
 
+const isUnsupportedPriorityFeeRpc = (error: any): boolean => {
+  const unsupportedCode = (code: unknown) => code === -32601 || code === 4200;
+  if (unsupportedCode(error?.code)) return true;
+  // Ethers' HTTP normalizer retains the matched JSON-RPC error and request
+  // under one of these two shapes. A generic outer unsupported/network error
+  // is not evidence that this particular RPC method is unavailable.
+  if (!['UNKNOWN_ERROR', 'UNSUPPORTED_OPERATION'].includes(error?.code)) {
+    return false;
+  }
+  if (
+    error?.operation != null &&
+    error.operation !== 'eth_maxPriorityFeePerGas'
+  ) {
+    return false;
+  }
+  return [
+    { cause: error.error, payload: error.payload },
+    { cause: error.info?.error, payload: error.info?.payload },
+  ].some(
+    ({ cause, payload }) =>
+      cause?.name !== 'AbortError' &&
+      unsupportedCode(cause?.code) &&
+      payload?.method === 'eth_maxPriorityFeePerGas' &&
+      Array.isArray(payload.params) &&
+      payload.params.length === 0
+  );
+};
+
 const normalizeEthersOverrides = (overrides: Record<string, any>) => {
   const normalized = { ...overrides };
   for (const field of [
@@ -737,7 +765,8 @@ export class EthereumTransactions implements IEthereumTransactions {
         error?.code === 'SYSWEB3_RPC_RESPONSE_INVALID' ||
         error?.name === 'AbortError' ||
         this.abortController.signal.aborted ||
-        (error?.code !== -32601 && error?.code !== 4200)
+        provider.signal?.aborted ||
+        !isUnsupportedPriorityFeeRpc(error)
       )
         throw error;
       // An explicitly unsupported method may use actual observed history,

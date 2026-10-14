@@ -20,7 +20,7 @@
     "prerelease": "yarn build",
     "copy": "node ../../scripts/package/copy",
     "release:npm": "yarn publish ./dist --access=public --no-git-tag-version",
-    "release:preflight": "yarn pack ./dist --dry-run",
+    "release:preflight": "npm pack ./dist --dry-run --json --ignore-scripts",
     "publishCode": "yarn prebuild && yarn prerelease && yarn copy && yarn release:npm",
     "type-check": "tsc --pretty --noEmit",
     "localTest": "yarn prebuild && yarn build && yarn copy",

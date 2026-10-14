@@ -6,6 +6,17 @@ jest.mock('../../../src/transactions/evm-local-signer', () => ({
 }));
 
 import { INetworkType } from '@sidhujag/sysweb3-network';
+import { spawnSync } from 'child_process';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 import { BigNumber, normalizeTransactionRequest } from '../../../src/ethers-v6';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
@@ -30,6 +41,87 @@ const transaction = {
   data: '0x1234',
 };
 const localSend = sendLocalEvmTransaction as jest.Mock;
+
+describe('package release preflight', () => {
+  it('inspects only dist without lifecycle hooks, publication or a written tarball', () => {
+    const manifest = JSON.parse(
+      readFileSync(join(__dirname, '../../../package.json'), 'utf8')
+    );
+    const [command, ...args] =
+      manifest.scripts['release:preflight'].split(/\s+/);
+    // Check before execution: the former Yarn recipe writes a source tarball.
+    expect(command).toBe('npm');
+    expect(args).toEqual([
+      'pack',
+      './dist',
+      '--dry-run',
+      '--json',
+      '--ignore-scripts',
+    ]);
+    const directory = mkdtempSync(join(tmpdir(), 'sysweb3-release-preflight-'));
+    try {
+      mkdirSync(join(directory, 'dist', 'cjs'), { recursive: true });
+      const scripts = {
+        prepack: 'node -e "throw new Error(\'lifecycle must not run\')"',
+        postpack: 'node -e "throw new Error(\'lifecycle must not run\')"',
+      };
+      writeFileSync(
+        join(directory, 'package.json'),
+        JSON.stringify({
+          name: 'wrong-source-package',
+          version: '1.0.0',
+          scripts,
+        })
+      );
+      writeFileSync(
+        join(directory, 'dist', 'package.json'),
+        JSON.stringify({
+          name: 'isolated-dist-fixture',
+          version: '1.0.1',
+          main: 'cjs/index.js',
+          scripts,
+        })
+      );
+      writeFileSync(
+        join(directory, 'dist', 'cjs', 'index.js'),
+        'module.exports = {};'
+      );
+      const result = spawnSync(command, args, {
+        cwd: directory,
+        encoding: 'utf8',
+        timeout: 20000,
+        // No inherited npm auth environment or user/global credential files.
+        env: {
+          PATH: process.env.PATH,
+          NPM_CONFIG_CACHE: join(directory, 'cache'),
+          NPM_CONFIG_USERCONFIG: join(directory, 'empty-user-config'),
+          NPM_CONFIG_GLOBALCONFIG: join(directory, 'empty-global-config'),
+          NPM_CONFIG_UPDATE_NOTIFIER: 'false',
+        },
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
+      const [packed] = JSON.parse(result.stdout);
+      expect(packed).toMatchObject({
+        name: 'isolated-dist-fixture',
+        version: '1.0.1',
+      });
+      expect(
+        packed.files.map((file: { path: string }) => file.path).sort()
+      ).toEqual(['cjs/index.js', 'package.json']);
+      expect(readdirSync(directory).some((file) => file.endsWith('.tgz'))).toBe(
+        false
+      );
+      expect(
+        readdirSync(join(directory, 'dist')).some((file) =>
+          file.endsWith('.tgz')
+        )
+      ).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
 
 function fixture() {
   const provider = {
