@@ -303,7 +303,7 @@ describe('Ethereum Transactions', () => {
       );
     });
 
-    it('should clear type before estimating legacy fallback transactions', async () => {
+    it('should reject an invalid explicit type-2 maximum instead of estimating a legacy fallback', async () => {
       const provider = keyringManager.ethereumTransaction.web3Provider as any;
       const tx = {
         from: keyringManager.getActiveAccount().activeAccount.address,
@@ -316,11 +316,11 @@ describe('Ethereum Transactions', () => {
         type: 2,
       };
 
-      await keyringManager.ethereumTransaction.sendFormattedTransaction(tx);
-
-      expect(provider.estimateGas).toHaveBeenLastCalledWith(
-        expect.not.objectContaining({ type: expect.anything() })
-      );
+      await expect(
+        keyringManager.ethereumTransaction.sendFormattedTransaction(tx)
+      ).rejects.toMatchObject({ transactionNotBroadcast: true });
+      expect(provider.estimateGas).not.toHaveBeenCalled();
+      expect(provider.sendTransaction).not.toHaveBeenCalled();
     });
   });
 

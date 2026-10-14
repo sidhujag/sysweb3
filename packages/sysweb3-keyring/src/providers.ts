@@ -589,8 +589,8 @@ class BaseProvider extends JsonRpcProvider {
       ]);
       let maxFeePerGas: bigint | null = null;
       let maxPriorityFeePerGas: bigint | null = null;
-      if (block?.baseFeePerGas) {
-        maxPriorityFeePerGas = priorityFee ?? 1000000000n;
+      if (block?.baseFeePerGas != null && priorityFee != null) {
+        maxPriorityFeePerGas = priorityFee;
         maxFeePerGas = block.baseFeePerGas * 2n + maxPriorityFeePerGas;
       }
       return new FeeData(gasPrice, maxFeePerGas, maxPriorityFeePerGas);
@@ -639,47 +639,37 @@ class BaseProvider extends JsonRpcProvider {
 
   private async fetchFeeData(): Promise<any> {
     const feeData = await this.readFeeData();
-    let maxFeePerGas =
+    const maxFeePerGas =
       feeData.maxFeePerGas == null
         ? null
         : BigNumber.from(feeData.maxFeePerGas);
-    let maxPriorityFeePerGas =
+    const maxPriorityFeePerGas =
       feeData.maxPriorityFeePerGas == null
         ? null
         : BigNumber.from(feeData.maxPriorityFeePerGas);
 
     if (maxFeePerGas == null || maxPriorityFeePerGas == null) {
       const block = await super.getBlock('latest');
+      if (!block) throw new Error('Block not found');
       if (block?.baseFeePerGas != null) {
-        const baseFeePerGas = BigNumber.from(block.baseFeePerGas);
-
-        if (maxPriorityFeePerGas == null) {
-          try {
-            maxPriorityFeePerGas = BigNumber.from(
-              await this.send('eth_maxPriorityFeePerGas', [])
-            );
-          } catch (error) {
-            if (
-              error?.code === 'SYSWEB3_RPC_RESPONSE_INVALID' ||
-              error?.name === 'AbortError' ||
-              this.signal.aborted
-            )
-              throw error;
-            maxPriorityFeePerGas =
-              feeData.gasPrice == null
-                ? BigNumber.from(0)
-                : BigNumber.from(feeData.gasPrice);
-          }
-        }
-
-        maxFeePerGas =
-          maxFeePerGas ?? baseFeePerGas.mul(2).add(maxPriorityFeePerGas);
+        throw new Error('EIP-1559 fee data unavailable');
       }
     }
 
+    if (
+      (maxFeePerGas != null && maxFeePerGas.isNegative()) ||
+      (maxPriorityFeePerGas != null && maxPriorityFeePerGas.isNegative()) ||
+      (maxFeePerGas != null &&
+        maxPriorityFeePerGas != null &&
+        maxPriorityFeePerGas.gt(maxFeePerGas))
+    )
+      throw new Error('Invalid EIP-1559 fee data');
+
+    const gasPrice =
+      feeData.gasPrice == null ? null : BigNumber.from(feeData.gasPrice);
+    if (gasPrice?.isNegative()) throw new Error('Invalid gas price');
     return {
-      gasPrice:
-        feeData.gasPrice == null ? null : BigNumber.from(feeData.gasPrice),
+      gasPrice,
       maxFeePerGas,
       maxPriorityFeePerGas,
     };
