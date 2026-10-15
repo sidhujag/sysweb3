@@ -1146,10 +1146,10 @@ co@^4.6.0:
   resolved "https://registry.yarnpkg.com/co/-/co-4.6.0.tgz#6ea6bdf3d853ae54ccb8e47bfa0bf3f9031fb184"
   integrity sha512-QVb0dM5HvG+uaxitm8wONl7jltx8dqhfU33DcqtOZcLSVIKSDDLDi7+0LbAKiyI8hD9u42m2YxXSkMGWThaecQ==
 
-coinselectsyscoin@^1.1.11:
-  version "1.1.11"
-  resolved "https://registry.yarnpkg.com/coinselectsyscoin/-/coinselectsyscoin-1.1.11.tgz#ce6abfe22b8414edfb8709a717dc88135f2d46a4"
-  integrity sha512-MmWYi0vyoRS/3zZ1Ai4550hHtNvVNdN2+uNNMPFxnaBPPWpCkGvQxgPDG6TA3N4oc7oFJTuDTmycexJIOnE2lQ==
+coinselectsyscoin@^1.1.12:
+  version "1.1.12"
+  resolved "https://registry.npmjs.org/coinselectsyscoin/-/coinselectsyscoin-1.1.12.tgz#2f8715735d59ab91beab85957da737ead33feccc"
+  integrity sha512-eQ/zZGaHRSvJ5Z8cNt3tEjH77WhRl2yBN0Dl/xMJXWa1Cj4S5x3/SlQB9ZaVfrxFFCmtpptDcQi0eMPT2mq1bQ==
   dependencies:
     bn.js "^5.2.4"
 
@@ -3068,10 +3068,10 @@ supports-preserve-symlinks-flag@^1.0.0:
   resolved "https://registry.yarnpkg.com/supports-preserve-symlinks-flag/-/supports-preserve-symlinks-flag-1.0.0.tgz#6eda4bd344a3c94aea376d4cc31bc77311039e09"
   integrity sha512-ot0WnXS9fgdkgIcePe6RHNk1WA8+muPa6cSjeR3V8K27q9BB1rTE3R1p7Hv0z1ZyAc8s6Vvv8DIyWf681MAt0w==
 
-syscoinjs-lib@^1.0.273:
-  version "1.0.273"
-  resolved "https://registry.yarnpkg.com/syscoinjs-lib/-/syscoinjs-lib-1.0.273.tgz#79f24635431f279831098340e50783992cfacfb6"
-  integrity sha512-qjFAaWb5v3pO7Fpm+m21dOVUDdl9P5wRHWMs5Es8ks1m7EGJDPDiofoka30Vg4EdMIKNwK2cHc4w6HXGSKPHgA==
+syscoinjs-lib@^1.0.274:
+  version "1.0.274"
+  resolved "https://registry.npmjs.org/syscoinjs-lib/-/syscoinjs-lib-1.0.274.tgz#0d27e75d9508181de79541e8cefe661b650f3448"
+  integrity sha512-6Tfx7XjVd4PaG13sCXWqvzDm4KvSF+x4X/xGaMhqx7ifurSXqjvebcDoSlQN3TuWnMtQ9SwhpDpQ4OBlFDnqXw==
   dependencies:
     "@bitcoinerlab/secp256k1" "^1.2.0"
     axios "^1.18.1"
@@ -3085,19 +3085,19 @@ syscoinjs-lib@^1.0.273:
     eth-object "https://github.com/syscoin/eth-object.git"
     eth-proof "^2.1.6"
     ethers "^6.17.0"
-    syscointx-js "^1.0.127"
+    syscointx-js "^1.0.128"
     varuint-bitcoin "^2.0.0"
 
-syscointx-js@^1.0.127:
-  version "1.0.127"
-  resolved "https://registry.yarnpkg.com/syscointx-js/-/syscointx-js-1.0.127.tgz#95c3822c0aa8f10eba1efa60f7ab348df31495f6"
-  integrity sha512-9bZ86RxcJvs7YdwiaPIqSgP2z0HD7n0E9mb0WG4deJRfbrRXLhMczmICvwJ/yIxlKx0SgF5rmF49rrX8mNKSEw==
+syscointx-js@^1.0.128:
+  version "1.0.128"
+  resolved "https://registry.npmjs.org/syscointx-js/-/syscointx-js-1.0.128.tgz#60795c81430eacafe1bbc3233d69c8e8baa75ef0"
+  integrity sha512-43dgrnCgRCWcM6PIMU7mvV9t2thjLhtm9yMqmvZvMPWuqRGbWG7yxC6Ix+bsvd/NDIFri26npR5xPdRlXPSO9g==
   dependencies:
     "@bitcoinerlab/secp256k1" "^1.2.0"
     bitcoin-ops "^1.4.1"
     bitcoinjs-lib "^7.0.1"
     bn.js "^5.2.4"
-    coinselectsyscoin "^1.1.11"
+    coinselectsyscoin "^1.1.12"
     ecpair "^3.0.1"
     typeforce "^1.18.0"
     varuint-bitcoin "^2.0.0"
