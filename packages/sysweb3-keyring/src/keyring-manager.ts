@@ -245,7 +245,8 @@ export class KeyringManager implements IKeyringManager {
       this.getDecryptedPrivateKey,
       this.getAccountsState,
       this.ledgerSigner,
-      this.trezorSigner
+      this.trezorSigner,
+      this.capturePsbtSigningContext
     );
   }
 
