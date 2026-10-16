@@ -166,6 +166,14 @@ export interface IEthereumTransactions {
   getTxGasLimit: (tx: SimpleTransactionRequest) => Promise<BigNumber>;
 }
 
+export interface ISyscoinTransactionFeeQuote {
+  fee: number;
+  psbt: any;
+  /** Exact decimal SYS amounts, present only for an explicit native sweep. */
+  grossAmount?: string;
+  recipientAmount?: string;
+}
+
 export interface ISyscoinTransactions {
   getEstimateSysTransactionFee: ({
     txOptions,
@@ -174,14 +182,17 @@ export interface ISyscoinTransactions {
     feeRate,
     token,
     isMax,
+    nativeSweep,
   }: {
-    amount: number;
+    amount: number | string;
     feeRate?: number;
     receivingAddress: string;
     token?: { guid: string; symbol?: string } | null;
     txOptions?: any;
     isMax?: boolean | false;
-  }) => Promise<{ fee: number; psbt: any }>; // Returns UNSIGNED psbt - may throw ISyscoinTransactionError
+    /** Resolve explicit native MAX from one current funding snapshot. Requires isMax and token:null. */
+    nativeSweep?: boolean;
+  }) => Promise<ISyscoinTransactionFeeQuote>; // Returns UNSIGNED psbt - may throw ISyscoinTransactionError
   getRecommendedFee: (explorerUrl: string) => Promise<number>;
   decodeRawTransaction: (psbtOrHex: any, isRawHex?: boolean) => any;
   // Sign PSBT separately

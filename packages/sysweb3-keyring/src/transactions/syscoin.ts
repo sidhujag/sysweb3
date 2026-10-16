@@ -4,6 +4,7 @@ import { Psbt } from 'bitcoinjs-lib';
 import * as syscoinjs from 'syscoinjs-lib';
 // import { BIP_84, ONE_HUNDRED_MILLION, SYSCOIN_BASIC_FEE } from 'utils';
 
+import { formatUnits } from '../ethers-v6';
 import { LedgerKeyring } from '../ledger';
 import { WalletPolicy } from '../ledger/bitcoin_client';
 import { PsbtV2 } from '../ledger/bitcoin_client/lib/psbtv2';
@@ -12,6 +13,7 @@ import { SyscoinHDSigner } from '../signers';
 import { TrezorKeyring } from '../trezor';
 import {
   ISyscoinTransactions,
+  ISyscoinTransactionFeeQuote,
   KeyringAccountType,
   accountType,
 } from '../types';
@@ -26,6 +28,31 @@ import { assertPsbtAccountScope } from '../utils/psbt-account-scope';
 // Recommended fee changes slowly; cache per explorer to avoid hammering
 // Blockbook while the user edits amounts on the send screen
 const FEE_CACHE_TTL_MS = 60_000;
+
+const sweepError = (code: string, message: string) => ({
+  error: true,
+  code,
+  message,
+});
+
+const sweepAtomicValue = (value: any) => {
+  const text =
+    typeof value === 'number'
+      ? Number.isSafeInteger(value)
+        ? String(value)
+        : ''
+      : typeof value === 'string' ||
+        typeof value === 'bigint' ||
+        syscoinjs.utils.BN.isBN(value)
+      ? value.toString()
+      : '';
+  if (!/^\d+$/.test(text))
+    throw sweepError(
+      'INVALID_NATIVE_SWEEP_UTXOS',
+      'Invalid native sweep atomic value.'
+    );
+  return new syscoinjs.utils.BN(text);
+};
 
 type EstimateFeeParams = {
   changeAddress: string;
@@ -185,10 +212,135 @@ export class SyscoinTransactions implements ISyscoinTransactions {
     signer: any;
   }): Promise<Psbt> => await signer.sign(psbt);
 
+  private createNativeSweepPSBT = async (
+    {
+      txOptions,
+      changeAddress,
+      receivingAddress,
+      feeRateBN,
+      source,
+    }: {
+      txOptions: any;
+      changeAddress: string;
+      receivingAddress: string;
+      feeRateBN: any;
+      source: string;
+    },
+    main: any
+  ): Promise<ISyscoinTransactionFeeQuote> => {
+    const raw = await syscoinjs.utils.fetchBackendUTXOS(
+      main.blockbookURL,
+      source
+    );
+    const rows = Array.isArray(raw) ? raw : raw?.utxos;
+    if (!Array.isArray(rows))
+      throw sweepError(
+        'INVALID_NATIVE_SWEEP_UTXOS',
+        'Invalid native sweep UTXO response.'
+      );
+
+    const seen = new Set<string>();
+    const expected = new Set<string>();
+    let gross = new syscoinjs.utils.BN(0);
+    const utxos: any[] = [];
+    for (const row of rows) {
+      const txid = row?.txId ?? row?.txid;
+      if (
+        typeof txid !== 'string' ||
+        !/^[0-9a-fA-F]{64}$/.test(txid) ||
+        !Number.isSafeInteger(row.vout) ||
+        row.vout < 0 ||
+        row.vout > 0xffffffff ||
+        (row.txId !== undefined &&
+          row.txid !== undefined &&
+          row.txId !== row.txid) ||
+        (row.assetInfo != null &&
+          (typeof row.assetInfo !== 'object' || Array.isArray(row.assetInfo)))
+      )
+        throw sweepError(
+          'INVALID_NATIVE_SWEEP_UTXOS',
+          'Invalid native sweep outpoint.'
+        );
+      const outpoint = `${txid.toLowerCase()}:${row.vout}`;
+      if (seen.has(outpoint))
+        throw sweepError(
+          'INVALID_NATIVE_SWEEP_UTXOS',
+          'Duplicate native sweep outpoint.'
+        );
+      seen.add(outpoint);
+      const value = sweepAtomicValue(row.value);
+      // Native MAX must leave asset carriers and their allocations untouched.
+      if (row.assetInfo != null) continue;
+      expected.add(outpoint);
+      gross = gross.add(value);
+      utxos.push({ ...row, value });
+    }
+    if (gross.isZero())
+      throw sweepError(
+        'INSUFFICIENT_FUNDS',
+        'No native UTXOs are available to sweep.'
+      );
+
+    // The library sanitizes this snapshot once; its optional UTXO argument
+    // prevents a second funding lookup between resolving MAX and building it.
+    const result = await main.createTransaction(
+      txOptions,
+      changeAddress,
+      [{ address: receivingAddress, value: gross, subtractFeeFrom: true }],
+      feeRateBN,
+      source,
+      { utxos, assets: new Map() }
+    );
+    const inputs = result.psbt?.txInputs;
+    const outputs = result.psbt?.txOutputs;
+    const selected = Array.isArray(inputs)
+      ? inputs.map(
+          (input) =>
+            `${Buffer.from(input.hash).reverse().toString('hex')}:${
+              input.index
+            }`
+        )
+      : [];
+    if (
+      selected.length !== expected.size ||
+      new Set(selected).size !== expected.size ||
+      selected.some((outpoint) => !expected.has(outpoint)) ||
+      !Array.isArray(outputs) ||
+      outputs.length !== 1
+    )
+      throw sweepError(
+        'INCOMPLETE_NATIVE_SWEEP',
+        'The builder did not preserve the complete native sweep.'
+      );
+    const script = syscoinjs.utils.bitcoinjs.address.toOutputScript(
+      receivingAddress,
+      main.network
+    );
+    const recipient = sweepAtomicValue(outputs[0].value);
+    const fee = sweepAtomicValue(result.fee);
+    if (
+      !Buffer.from(outputs[0].script).equals(Buffer.from(script)) ||
+      recipient.isZero() ||
+      !recipient.add(fee).eq(gross)
+    )
+      throw sweepError(
+        'INCOMPLETE_NATIVE_SWEEP',
+        'The native sweep amounts do not match its PSBT.'
+      );
+
+    return {
+      psbt: result.psbt,
+      fee: result.fee,
+      grossAmount: formatUnits(gross.toString(), 8).replace(/\.0$/, ''),
+      recipientAmount: formatUnits(recipient.toString(), 8).replace(/\.0$/, ''),
+    };
+  };
+
   // Create unsigned PSBT for any transaction type
   private createUnsignedPSBT = async ({
     txOptions = {},
     isMax = false,
+    nativeSweep = false,
     amount,
     receivingAddress,
     feeRateBN,
@@ -200,7 +352,8 @@ export class SyscoinTransactions implements ISyscoinTransactions {
     token?: { guid: string; symbol?: string } | null;
     txOptions?: any;
     isMax?: boolean | false;
-  }): Promise<{ psbt: Psbt; fee: number }> => {
+    nativeSweep?: boolean;
+  }): Promise<ISyscoinTransactionFeeQuote> => {
     // Ensure RBF is enabled by default if not explicitly set
     const finalTxOptions = { rbf: true, ...txOptions };
     const { activeAccountId, accounts, activeAccountType } = this.getState();
@@ -246,6 +399,18 @@ export class SyscoinTransactions implements ISyscoinTransactions {
       : await this.getAddress(xpub, true);
 
     try {
+      if (nativeSweep) {
+        return await this.createNativeSweepPSBT(
+          {
+            txOptions: finalTxOptions,
+            changeAddress,
+            receivingAddress,
+            feeRateBN,
+            source: sourceForUtxoLookup,
+          },
+          main
+        );
+      }
       if (token && token.guid) {
         // Token transaction: use assetAllocationSend
         // Create a Map for the asset allocation
@@ -705,6 +870,7 @@ export class SyscoinTransactions implements ISyscoinTransactions {
   public getEstimateSysTransactionFee = async ({
     txOptions = {},
     isMax = false,
+    nativeSweep = false,
     amount,
     receivingAddress,
     feeRate,
@@ -717,8 +883,17 @@ export class SyscoinTransactions implements ISyscoinTransactions {
     token?: { guid: string; symbol?: string } | null;
     txOptions?: any;
     isMax?: boolean | false;
+    nativeSweep?: boolean;
   }) => {
     try {
+      if (
+        nativeSweep !== false &&
+        (nativeSweep !== true || isMax !== true || token !== null)
+      )
+        throw sweepError(
+          'INVALID_NATIVE_SWEEP',
+          'Native sweep requires explicit MAX and a native transaction.'
+        );
       // Ensure RBF is enabled by default if not explicitly set
       const finalTxOptions = { rbf: true, ...txOptions };
       // Use read-only signer since we're just estimating fees and creating unsigned PSBT
@@ -742,6 +917,7 @@ export class SyscoinTransactions implements ISyscoinTransactions {
       const result = await this.createUnsignedPSBT({
         txOptions: finalTxOptions,
         isMax,
+        nativeSweep,
         amount,
         receivingAddress,
         feeRateBN,
@@ -751,6 +927,12 @@ export class SyscoinTransactions implements ISyscoinTransactions {
       return {
         fee: result.fee / 1e8,
         psbt: PsbtUtils.toPali(result.psbt), // Return UNSIGNED PSBT as JSON
+        ...(nativeSweep
+          ? {
+              grossAmount: result.grossAmount,
+              recipientAmount: result.recipientAmount,
+            }
+          : {}),
       };
     } catch (error) {
       // Pass through structured errors from syscoinjs-lib
