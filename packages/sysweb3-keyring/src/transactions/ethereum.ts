@@ -148,6 +148,7 @@ export class EthereumTransactions implements IEthereumTransactions {
   public trezorSigner: TrezorKeyring;
   public ledgerSigner: LedgerKeyring;
   private getNetwork: () => INetwork;
+  private captureSigningContext?: () => () => void;
   private abortController: AbortController;
   private getDecryptedPrivateKey: (
     targetAccount?: IEvmReplacementOptions['targetAccount']
@@ -195,7 +196,8 @@ export class EthereumTransactions implements IEthereumTransactions {
       activeNetwork: INetwork;
     },
     ledgerSigner: LedgerKeyring,
-    trezorSigner: TrezorKeyring
+    trezorSigner: TrezorKeyring,
+    captureSigningContext?: () => () => void
   ) {
     this.getNetwork = getNetwork;
     this.getDecryptedPrivateKey = getDecryptedPrivateKey;
@@ -207,7 +209,49 @@ export class EthereumTransactions implements IEthereumTransactions {
     this.getState = getState;
     this.trezorSigner = trezorSigner;
     this.ledgerSigner = ledgerSigner;
+    this.captureSigningContext = captureSigningContext;
   }
+
+  private captureEvmSigningContext = () => {
+    const { activeAccountType, activeAccountId, accounts, activeNetwork } =
+      this.getState();
+    const selectedAccount = accounts[activeAccountType]?.[activeAccountId];
+    if (!selectedAccount) throw new Error('Active account not found');
+    const account = { address: selectedAccount.address };
+    const network = { ...activeNetwork };
+    const assertSession = this.captureSigningContext?.();
+    const provider = this.web3Provider;
+    const assertCurrent = () => {
+      assertSession?.();
+      const current = this.getState();
+      const currentAccount =
+        current.accounts[current.activeAccountType]?.[current.activeAccountId];
+      if (
+        current.activeAccountId !== activeAccountId ||
+        current.activeAccountType !== activeAccountType ||
+        currentAccount?.address?.toLowerCase() !==
+          account.address.toLowerCase() ||
+        [current.activeNetwork, this.getNetwork()].some(
+          (selected) =>
+            selected.kind !== network.kind ||
+            selected.chainId !== network.chainId ||
+            selected.slip44 !== network.slip44 ||
+            selected.url !== network.url
+        ) ||
+        this.web3Provider !== provider
+      )
+        throw new Error('Wallet signing context changed');
+    };
+    assertCurrent();
+    return {
+      activeAccount: account,
+      activeAccountType,
+      activeAccountId,
+      activeNetwork: network,
+      provider,
+      assertCurrent,
+    };
+  };
 
   // Getter that automatically ensures providers are initialized when accessed
   public get web3Provider(): CustomJsonRpcProvider {
@@ -661,20 +705,23 @@ export class EthereumTransactions implements IEthereumTransactions {
     }
   };
 
-  private resolveEvmFeeParams = async ({
-    gasPrice,
-    isLegacy = false,
-    maxFeePerGas,
-    maxPriorityFeePerGas,
-  }: {
-    gasPrice?: any;
-    isLegacy?: boolean;
-    maxFeePerGas?: any;
-    maxPriorityFeePerGas?: any;
-  }) => {
+  private resolveEvmFeeParams = async (
+    {
+      gasPrice,
+      isLegacy = false,
+      maxFeePerGas,
+      maxPriorityFeePerGas,
+    }: {
+      gasPrice?: any;
+      isLegacy?: boolean;
+      maxFeePerGas?: any;
+      maxPriorityFeePerGas?: any;
+    },
+    provider = this.web3Provider
+  ) => {
     if (isLegacy) {
       return {
-        gasPrice: gasPrice || (await this.web3Provider.getGasPrice()),
+        gasPrice: gasPrice || (await provider.getGasPrice()),
         isLegacy: true,
         maxFeePerGas: undefined,
         maxPriorityFeePerGas: undefined,
@@ -682,14 +729,14 @@ export class EthereumTransactions implements IEthereumTransactions {
     }
 
     if (!maxFeePerGas || maxPriorityFeePerGas == null) {
-      const feeData = await this.web3Provider.getFeeData();
+      const feeData = await provider.getFeeData();
       maxFeePerGas = maxFeePerGas || feeData.maxFeePerGas || feeData.gasPrice;
       maxPriorityFeePerGas =
         maxPriorityFeePerGas ?? feeData.maxPriorityFeePerGas;
 
       if (!maxFeePerGas || maxPriorityFeePerGas == null) {
         return {
-          gasPrice: feeData.gasPrice || (await this.web3Provider.getGasPrice()),
+          gasPrice: feeData.gasPrice || (await provider.getGasPrice()),
           isLegacy: true,
           maxFeePerGas: undefined,
           maxPriorityFeePerGas: undefined,
@@ -1265,9 +1312,21 @@ export class EthereumTransactions implements IEthereumTransactions {
     isLegacy: boolean | undefined,
     beforeBroadcast: () => void
   ) => {
-    const { activeAccountType, activeAccountId, accounts, activeNetwork } =
-      this.getState();
-    const activeAccount = accounts[activeAccountType][activeAccountId];
+    // Hardware approval may outlive the selected account, network or unlocked
+    // session. Keep immutable identities and one provider for this invocation.
+    const {
+      activeAccount,
+      activeAccountType,
+      activeAccountId,
+      activeNetwork,
+      provider,
+      assertCurrent,
+    } = this.captureEvmSigningContext();
+    const assertBeforeBroadcast = () => {
+      assertCurrent();
+      beforeBroadcast();
+    };
+    assertCurrent();
 
     const explicitEip1559 =
       params.type != null && BigNumber.from(params.type).eq(2);
@@ -1324,25 +1383,28 @@ export class EthereumTransactions implements IEthereumTransactions {
           ['gasPrice']
         );
     if (!params.gasLimit) {
-      params.gasLimit = await this.web3Provider.estimateGas(txForEstimation);
+      params.gasLimit = await provider.estimateGas(txForEstimation);
+      assertCurrent();
     }
     if (isLegacy) {
       if (!params.gasPrice) {
-        params.gasPrice = await this.web3Provider.getGasPrice();
+        params.gasPrice = await provider.getGasPrice();
+        assertCurrent();
       }
     } else if (
       params.maxFeePerGas == null ||
       params.maxPriorityFeePerGas == null
     ) {
-      const feeData = await this.web3Provider.getFeeData();
+      const feeData = await provider.getFeeData();
+      assertCurrent();
       params.maxFeePerGas = params.maxFeePerGas ?? feeData.maxFeePerGas;
       params.maxPriorityFeePerGas =
         params.maxPriorityFeePerGas ?? feeData.maxPriorityFeePerGas;
       if (params.maxFeePerGas == null || params.maxPriorityFeePerGas == null) {
         if (requestedEip1559) throw new Error('EIP-1559 fee data unavailable');
         isLegacy = true;
-        params.gasPrice =
-          feeData.gasPrice ?? (await this.web3Provider.getGasPrice());
+        params.gasPrice = feeData.gasPrice ?? (await provider.getGasPrice());
+        assertCurrent();
         delete (params as any).maxFeePerGas;
         delete (params as any).maxPriorityFeePerGas;
       }
@@ -1350,9 +1412,12 @@ export class EthereumTransactions implements IEthereumTransactions {
     if (!isLegacy) validateEip1559Fees();
 
     const sendEVMLedgerTransaction = async () => {
-      const transactionNonce = await this.getRecommendedNonce(
-        activeAccount.address
+      assertCurrent();
+      const transactionNonce = await provider.getTransactionCount(
+        activeAccount.address,
+        'pending'
       );
+      assertCurrent();
       const formatParams = isLegacy
         ? omit(params, 'from')
         : omit(params, ['from', 'gasPrice']); // Strip gasPrice for EIP-1559
@@ -1375,6 +1440,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         rawTx: rawTx.replace('0x', ''),
         accountIndex: activeAccountId,
       });
+      assertCurrent();
 
       const formattedSignature = {
         r: `0x${signature.r}`,
@@ -1388,8 +1454,8 @@ export class EthereumTransactions implements IEthereumTransactions {
             txFormattedForEthers,
             formattedSignature
           );
-          beforeBroadcast();
-          const finalTx = await this.web3Provider.sendTransaction(signedTx);
+          assertBeforeBroadcast();
+          const finalTx = await provider.sendTransaction(signedTx);
 
           return finalTx;
         } catch (error) {
@@ -1401,9 +1467,12 @@ export class EthereumTransactions implements IEthereumTransactions {
     };
 
     const sendEVMTrezorTransaction = async () => {
-      const transactionNonce = await this.getRecommendedNonce(
-        activeAccount.address
+      assertCurrent();
+      const transactionNonce = await provider.getTransactionCount(
+        activeAccount.address,
+        'pending'
       );
+      assertCurrent();
       let txFormattedForTrezor = {};
       const formatParams = isLegacy
         ? omit(params, 'from')
@@ -1485,6 +1554,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         coin: activeNetwork.currency,
         slip44: activeNetwork.slip44,
       });
+      assertCurrent();
       if (signature.success) {
         try {
           const txFormattedForEthers = isLegacy
@@ -1505,8 +1575,8 @@ export class EthereumTransactions implements IEthereumTransactions {
             txFormattedForEthers,
             signature.payload
           );
-          beforeBroadcast();
-          const finalTx = await this.web3Provider.sendTransaction(signedTx);
+          assertBeforeBroadcast();
+          const finalTx = await provider.sendTransaction(signedTx);
 
           return finalTx;
         } catch (error) {
@@ -1518,6 +1588,7 @@ export class EthereumTransactions implements IEthereumTransactions {
     };
 
     const sendEVMTransaction = async () => {
+      assertCurrent();
       const { address, decryptedPrivateKey } = this.getDecryptedPrivateKey();
 
       // Validate that we have the correct private key for the active account to prevent race conditions
@@ -1536,10 +1607,11 @@ export class EthereumTransactions implements IEthereumTransactions {
 
       try {
         const transaction = await sendLocalEvmTransaction(
-          this.web3Provider,
+          provider,
           decryptedPrivateKey,
           tx,
-          beforeBroadcast
+          assertBeforeBroadcast,
+          assertCurrent
         );
         // The broadcast response already has the hash. Pending transactions
         // have no block number, so a block lookup can fail after a successful
@@ -2020,25 +2092,35 @@ export class EthereumTransactions implements IEthereumTransactions {
     gasLimit,
     saveTrezorTx,
   }: ISendSignedErcTransactionProps): Promise<IResponseFromSendErcSignedTransaction> => {
-    const { decryptedPrivateKey } = this.getDecryptedPrivateKey();
-    const { accounts, activeAccountType, activeAccountId, activeNetwork } =
-      this.getState();
-    const { address: activeAccountAddress } =
-      accounts[activeAccountType][activeAccountId];
+    const {
+      activeAccount,
+      activeAccountType,
+      activeAccountId,
+      activeNetwork,
+      provider,
+      assertCurrent,
+    } = this.captureEvmSigningContext();
+    const activeAccountAddress = activeAccount.address;
     ({ gasPrice, isLegacy, maxFeePerGas, maxPriorityFeePerGas } =
-      await this.resolveEvmFeeParams({
-        gasPrice,
-        isLegacy,
-        maxFeePerGas,
-        maxPriorityFeePerGas,
-      }));
+      await this.resolveEvmFeeParams(
+        {
+          gasPrice,
+          isLegacy,
+          maxFeePerGas,
+          maxPriorityFeePerGas,
+        },
+        provider
+      ));
+    assertCurrent();
 
     const sendERC20Token = async () => {
+      assertCurrent();
+      const { decryptedPrivateKey } = this.getDecryptedPrivateKey();
       try {
         const _contract = new Contract(
           tokenAddress,
           getErc20Abi(),
-          this.web3Provider as any
+          provider as any
         );
         // Preserve zero-decimal tokens: use provided decimals when defined (including 0).
         const resolvedDecimals =
@@ -2050,7 +2132,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         let transferMethod;
         if (isLegacy) {
           const overrides = {
-            nonce: await this.web3Provider.getTransactionCount(
+            nonce: await provider.getTransactionCount(
               activeAccountAddress,
               'pending'
             ),
@@ -2065,7 +2147,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           );
         } else {
           const overrides = {
-            nonce: await this.web3Provider.getTransactionCount(
+            nonce: await provider.getTransactionCount(
               activeAccountAddress,
               'pending'
             ),
@@ -2082,14 +2164,16 @@ export class EthereumTransactions implements IEthereumTransactions {
         }
 
         return await sendLocalEvmTransaction(
-          this.web3Provider,
+          provider,
           decryptedPrivateKey,
           {
             ...transferMethod,
             chainId: activeNetwork.chainId,
             from: activeAccountAddress,
             value: '0x0',
-          }
+          },
+          assertCurrent,
+          assertCurrent
         );
       } catch (error) {
         throw error;
@@ -2097,14 +2181,17 @@ export class EthereumTransactions implements IEthereumTransactions {
     };
 
     const sendERC20TokenOnLedger = async () => {
-      const transactionNonce = await this.getRecommendedNonce(
-        activeAccountAddress
+      assertCurrent();
+      const transactionNonce = await provider.getTransactionCount(
+        activeAccountAddress,
+        'pending'
       );
+      assertCurrent();
       try {
         const _contract = new Contract(
           tokenAddress,
           getErc20Abi(),
-          this.web3Provider as any
+          provider as any
         );
 
         const resolvedDecimals =
@@ -2155,6 +2242,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           accountIndex: activeAccountId,
         });
 
+        assertCurrent();
         const formattedSignature = {
           r: `0x${signature.r}`,
           s: `0x${signature.s}`,
@@ -2166,7 +2254,8 @@ export class EthereumTransactions implements IEthereumTransactions {
               txFormattedForEthers,
               formattedSignature
             );
-            const finalTx = await this.web3Provider.sendTransaction(signedTx);
+            assertCurrent();
+            const finalTx = await provider.sendTransaction(signedTx);
 
             saveTrezorTx && saveTrezorTx(finalTx);
 
@@ -2183,14 +2272,17 @@ export class EthereumTransactions implements IEthereumTransactions {
     };
 
     const sendERC20TokenOnTrezor = async () => {
-      const transactionNonce = await this.getRecommendedNonce(
-        activeAccountAddress
+      assertCurrent();
+      const transactionNonce = await provider.getTransactionCount(
+        activeAccountAddress,
+        'pending'
       );
+      assertCurrent();
       try {
         const _contract = new Contract(
           tokenAddress,
           getErc20Abi(),
-          this.web3Provider as any
+          provider as any
         );
 
         const resolvedDecimals =
@@ -2242,6 +2334,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           slip44: activeNetwork.slip44,
         });
 
+        assertCurrent();
         if (signature.success) {
           try {
             let txFormattedForEthers;
@@ -2274,7 +2367,8 @@ export class EthereumTransactions implements IEthereumTransactions {
               txFormattedForEthers,
               signature.payload
             );
-            const finalTx = await this.web3Provider.sendTransaction(signedTx);
+            assertCurrent();
+            const finalTx = await provider.sendTransaction(signedTx);
 
             saveTrezorTx && saveTrezorTx(finalTx);
 
@@ -2310,35 +2404,45 @@ export class EthereumTransactions implements IEthereumTransactions {
     gasPrice,
     gasLimit,
   }: ISendSignedErcTransactionProps): Promise<IResponseFromSendErcSignedTransaction> => {
-    const { decryptedPrivateKey } = this.getDecryptedPrivateKey();
-    const { accounts, activeAccountType, activeAccountId, activeNetwork } =
-      this.getState();
-    const { address: activeAccountAddress } =
-      accounts[activeAccountType][activeAccountId];
+    const {
+      activeAccount,
+      activeAccountType,
+      activeAccountId,
+      activeNetwork,
+      provider,
+      assertCurrent,
+    } = this.captureEvmSigningContext();
+    const activeAccountAddress = activeAccount.address;
     if (tokenId === undefined || tokenId === null) {
       throw new Error('ERC721 tokenId is required');
     }
     ({ gasPrice, isLegacy, maxFeePerGas, maxPriorityFeePerGas } =
-      await this.resolveEvmFeeParams({
-        gasPrice,
-        isLegacy,
-        maxFeePerGas,
-        maxPriorityFeePerGas,
-      }));
+      await this.resolveEvmFeeParams(
+        {
+          gasPrice,
+          isLegacy,
+          maxFeePerGas,
+          maxPriorityFeePerGas,
+        },
+        provider
+      ));
+    assertCurrent();
     const normalizedTokenId = BigNumber.from(tokenId).toBigInt();
 
     const sendERC721Token = async () => {
+      assertCurrent();
+      const { decryptedPrivateKey } = this.getDecryptedPrivateKey();
       let transferMethod;
       try {
         const _contract = new Contract(
           tokenAddress,
           getErc21Abi(),
-          this.web3Provider as any
+          provider as any
         );
 
         if (isLegacy) {
           const overrides = {
-            nonce: await this.web3Provider.getTransactionCount(
+            nonce: await provider.getTransactionCount(
               activeAccountAddress,
               'pending'
             ),
@@ -2354,7 +2458,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           );
         } else {
           const overrides = {
-            nonce: await this.web3Provider.getTransactionCount(
+            nonce: await provider.getTransactionCount(
               activeAccountAddress,
               'pending'
             ),
@@ -2371,14 +2475,16 @@ export class EthereumTransactions implements IEthereumTransactions {
         }
 
         return await sendLocalEvmTransaction(
-          this.web3Provider,
+          provider,
           decryptedPrivateKey,
           {
             ...transferMethod,
             chainId: activeNetwork.chainId,
             from: activeAccountAddress,
             value: '0x0',
-          }
+          },
+          assertCurrent,
+          assertCurrent
         );
       } catch (error) {
         throw error;
@@ -2386,14 +2492,17 @@ export class EthereumTransactions implements IEthereumTransactions {
     };
 
     const sendERC721TokenOnLedger = async () => {
-      const transactionNonce = await this.getRecommendedNonce(
-        activeAccountAddress
+      assertCurrent();
+      const transactionNonce = await provider.getTransactionCount(
+        activeAccountAddress,
+        'pending'
       );
+      assertCurrent();
       try {
         const _contract = new Contract(
           tokenAddress,
           getErc21Abi(),
-          this.web3Provider as any
+          provider as any
         );
         const txData = _contract.interface.encodeFunctionData('transferFrom', [
           activeAccountAddress,
@@ -2437,6 +2546,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           accountIndex: activeAccountId,
         });
 
+        assertCurrent();
         const formattedSignature = {
           r: `0x${signature.r}`,
           s: `0x${signature.s}`,
@@ -2449,7 +2559,8 @@ export class EthereumTransactions implements IEthereumTransactions {
               txFormattedForEthers,
               formattedSignature
             );
-            const finalTx = await this.web3Provider.sendTransaction(signedTx);
+            assertCurrent();
+            const finalTx = await provider.sendTransaction(signedTx);
 
             return finalTx as any;
           } catch (error) {
@@ -2464,14 +2575,17 @@ export class EthereumTransactions implements IEthereumTransactions {
     };
 
     const sendERC721TokenOnTrezor = async () => {
-      const transactionNonce = await this.getRecommendedNonce(
-        activeAccountAddress
+      assertCurrent();
+      const transactionNonce = await provider.getTransactionCount(
+        activeAccountAddress,
+        'pending'
       );
+      assertCurrent();
       try {
         const _contract = new Contract(
           tokenAddress,
           getErc21Abi(),
-          this.web3Provider as any
+          provider as any
         );
         const txData = _contract.interface.encodeFunctionData('transferFrom', [
           activeAccountAddress,
@@ -2520,6 +2634,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           slip44: activeNetwork.slip44,
         });
 
+        assertCurrent();
         if (signature.success) {
           try {
             let txFormattedForEthers;
@@ -2552,7 +2667,8 @@ export class EthereumTransactions implements IEthereumTransactions {
               txFormattedForEthers,
               signature.payload
             );
-            const finalTx = await this.web3Provider.sendTransaction(signedTx);
+            assertCurrent();
+            const finalTx = await provider.sendTransaction(signedTx);
 
             return finalTx as any;
           } catch (error) {
@@ -2589,26 +2705,36 @@ export class EthereumTransactions implements IEthereumTransactions {
     gasPrice,
     gasLimit,
   }: ISendSignedErcTransactionProps): Promise<IResponseFromSendErcSignedTransaction> => {
-    const { decryptedPrivateKey } = this.getDecryptedPrivateKey();
-    const { accounts, activeAccountType, activeAccountId, activeNetwork } =
-      this.getState();
-    const { address: activeAccountAddress } =
-      accounts[activeAccountType][activeAccountId];
+    const {
+      activeAccount,
+      activeAccountType,
+      activeAccountId,
+      activeNetwork,
+      provider,
+      assertCurrent,
+    } = this.captureEvmSigningContext();
+    const activeAccountAddress = activeAccount.address;
     ({ gasPrice, isLegacy, maxFeePerGas, maxPriorityFeePerGas } =
-      await this.resolveEvmFeeParams({
-        gasPrice,
-        isLegacy,
-        maxFeePerGas,
-        maxPriorityFeePerGas,
-      }));
+      await this.resolveEvmFeeParams(
+        {
+          gasPrice,
+          isLegacy,
+          maxFeePerGas,
+          maxPriorityFeePerGas,
+        },
+        provider
+      ));
+    assertCurrent();
 
     const sendERC1155Token = async () => {
+      assertCurrent();
+      const { decryptedPrivateKey } = this.getDecryptedPrivateKey();
       let transferMethod;
       try {
         const _contract = new Contract(
           tokenAddress,
           getErc55Abi(),
-          this.web3Provider as any
+          provider as any
         );
 
         // Use BigNumber to avoid JS number overflow/precision loss
@@ -2617,7 +2743,7 @@ export class EthereumTransactions implements IEthereumTransactions {
         let overrides;
         if (isLegacy) {
           overrides = {
-            nonce: await this.web3Provider.getTransactionCount(
+            nonce: await provider.getTransactionCount(
               activeAccountAddress,
               'pending'
             ),
@@ -2627,7 +2753,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           };
         } else {
           overrides = {
-            nonce: await this.web3Provider.getTransactionCount(
+            nonce: await provider.getTransactionCount(
               activeAccountAddress,
               'pending'
             ),
@@ -2646,14 +2772,16 @@ export class EthereumTransactions implements IEthereumTransactions {
           normalizeEthersOverrides(overrides)
         );
         return await sendLocalEvmTransaction(
-          this.web3Provider,
+          provider,
           decryptedPrivateKey,
           {
             ...transferMethod,
             chainId: activeNetwork.chainId,
             from: activeAccountAddress,
             value: '0x0',
-          }
+          },
+          assertCurrent,
+          assertCurrent
         );
       } catch (error) {
         throw error;
@@ -2661,14 +2789,17 @@ export class EthereumTransactions implements IEthereumTransactions {
     };
 
     const sendERC1155TokenOnLedger = async () => {
-      const transactionNonce = await this.getRecommendedNonce(
-        activeAccountAddress
+      assertCurrent();
+      const transactionNonce = await provider.getTransactionCount(
+        activeAccountAddress,
+        'pending'
       );
+      assertCurrent();
       try {
         const _contract = new Contract(
           tokenAddress,
           getErc55Abi(),
-          this.web3Provider as any
+          provider as any
         );
 
         const amount = BigNumber.from(tokenAmount ?? '1');
@@ -2714,6 +2845,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           accountIndex: activeAccountId,
         });
 
+        assertCurrent();
         const formattedSignature = {
           r: `0x${signature.r}`,
           s: `0x${signature.s}`,
@@ -2726,7 +2858,8 @@ export class EthereumTransactions implements IEthereumTransactions {
               txFormattedForEthers,
               formattedSignature
             );
-            const finalTx = await this.web3Provider.sendTransaction(signedTx);
+            assertCurrent();
+            const finalTx = await provider.sendTransaction(signedTx);
 
             return finalTx as any;
           } catch (error) {
@@ -2741,14 +2874,17 @@ export class EthereumTransactions implements IEthereumTransactions {
     };
 
     const sendERC1155TokenOnTrezor = async () => {
-      const transactionNonce = await this.getRecommendedNonce(
-        activeAccountAddress
+      assertCurrent();
+      const transactionNonce = await provider.getTransactionCount(
+        activeAccountAddress,
+        'pending'
       );
+      assertCurrent();
       try {
         const _contract = new Contract(
           tokenAddress,
           getErc55Abi(),
-          this.web3Provider as any
+          provider as any
         );
 
         const amount = BigNumber.from(tokenAmount ?? '1');
@@ -2795,6 +2931,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           slip44: activeNetwork.slip44,
         });
 
+        assertCurrent();
         if (signature.success) {
           try {
             let txFormattedForEthers;
@@ -2827,7 +2964,8 @@ export class EthereumTransactions implements IEthereumTransactions {
               txFormattedForEthers,
               signature.payload
             );
-            const finalTx = await this.web3Provider.sendTransaction(signedTx);
+            assertCurrent();
+            const finalTx = await provider.sendTransaction(signedTx);
 
             return finalTx as any;
           } catch (error) {
