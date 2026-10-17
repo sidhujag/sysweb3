@@ -138,7 +138,9 @@ export function parseService(value: unknown): ServiceAddress {
 
 /** Core clears this current-state field after operator rotation. It is never a valid proposed service. */
 export function currentServiceText(value: unknown): string {
-  return value === '0.0.0.0:0' ? value : parseService(value).text;
+  return value === '0.0.0.0:0' || value === '[::]:0'
+    ? value
+    : parseService(value).text;
 }
 
 export function normalizeNEVM(value: unknown): string {
