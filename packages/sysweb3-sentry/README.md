@@ -52,6 +52,9 @@ whether a node is banned/unconfirmed. Those are fresh RPC/mempool checks.
 * Current Core policy requires IPv4 service addresses. The internal endpoint
   codec understands IPv6/CJDNS for transcript portability, but service requests
   using those families are rejected until Core policy supports them.
+  Core's reset current-state value `0.0.0.0:0` is recognized after operator
+  rotation; restoring service requires an explicit valid replacement endpoint.
+  The reset value is never accepted as a proposed service address.
 * Genesis is cryptographically in the PQ transcript. BLS consensus has no genesis
   field; wallet network binding does not retroactively alter that legacy digest.
 * PQ is a pinned candidate adapter, not evidence that an unactivated chain accepts

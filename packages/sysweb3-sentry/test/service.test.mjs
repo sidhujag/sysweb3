@@ -5,6 +5,7 @@ import {
   decodeSentryTransaction,
   estimateSentrySignedVBytes,
   getSentryCapabilities,
+  importSentryOperatorKey,
   inspectSentryOperation,
   matchesSentryTransactionIntent,
   reviewSentryOperation,
@@ -120,6 +121,76 @@ test('omitted NEVM preserves existing binding; explicit empty string removes it'
     ).changes.nevmAddress.next,
     ''
   );
+});
+
+test('restores a reset Core service with the new operator while keeping proposed endpoints strict', async () => {
+  const f = await legacyFixture();
+  const newOperator = await importSentryOperatorKey(
+    'bls-basic',
+    '00'.repeat(31) + '02'
+  );
+  const transaction = decodeSentryTransaction(f.request.transactionHex);
+  const node = {
+    ...f.context.node,
+    operatorPublicKey: newOperator.publicKey,
+    service: '0.0.0.0:0',
+  };
+  const context = { ...f.context, node };
+  const options = {
+    chain: context.chain,
+    node,
+    inputs: transaction.inputs,
+    outputs: transaction.outputs.filter(
+      (output) => !output.scriptHex.startsWith('6a')
+    ),
+  };
+  const request = buildSentryServiceUpdate({
+    ...options,
+    service: '127.0.0.2:18367',
+  });
+  assert.deepEqual(reviewSentryOperation(request, context).changes.service, {
+    previous: '0.0.0.0:0',
+    next: '127.0.0.2:18367',
+  });
+  await assert.rejects(
+    signSentryOperation(request, context, f.key),
+    /registered operator/i
+  );
+  const signed = await signSentryOperation(request, context, newOperator);
+  assert.equal(
+    await verifySentryOperation(
+      {
+        ...request,
+        transactionHex: signed.transactionHex,
+      },
+      context
+    ),
+    true
+  );
+  assert.equal(
+    matchesSentryTransactionIntent(request, {
+      ...request,
+      transactionHex: signed.transactionHex,
+    }),
+    true
+  );
+  assert.throws(() => buildSentryServiceUpdate(options), /service port/i);
+  for (const service of ['0.0.0.0:0', '127.0.0.1:0', '[::]:0']) {
+    assert.throws(
+      () => buildSentryServiceUpdate({ ...options, service }),
+      /service port/i
+    );
+  }
+  for (const service of ['127.0.0.1:0', '[::]:0', 'not-a-service']) {
+    assert.throws(
+      () =>
+        reviewSentryOperation(request, {
+          ...context,
+          node: { ...node, service },
+        }),
+      /service|IPv4/i
+    );
+  }
 });
 
 test('canonical services compare compressed IPv6 by bytes; reject DNS and invalid ports', () => {

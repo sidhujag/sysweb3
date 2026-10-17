@@ -552,3 +552,36 @@ test('owner enrollment preparation cannot change payout, voting or operator befo
     /preparation fields/
   );
 });
+
+test('owner preparation preserves absent, zero and enrolled PQ voting keys exactly', async () => {
+  const f = await fixture();
+  for (const current of [undefined, '00'.repeat(32), 'bb'.repeat(32)]) {
+    const node = { ...f.node, pqVotingPublicKey: current };
+    const context = { ...f.context, node, allowOwnerPreparation: true };
+    const options = {
+      chain: f.chain,
+      node,
+      inputs,
+      outputs,
+      ownerPreparation: true,
+      pqOwnerPublicKey: 'aa'.repeat(32),
+    };
+    const request = buildSentryRegistrarUpdate(options);
+    const review = reviewSentryManagementOperation(request, context);
+    assert.equal(review.fields.pqVotingPublicKey, current ?? '00'.repeat(32));
+    for (const proposed of ['cc'.repeat(32), '00'.repeat(32)]) {
+      if (proposed === (current ?? '00'.repeat(32))) continue;
+      assert.throws(
+        () =>
+          reviewSentryManagementOperation(
+            buildSentryRegistrarUpdate({
+              ...options,
+              pqVotingPublicKey: proposed,
+            }),
+            context
+          ),
+        /preparation fields/
+      );
+    }
+  }
+});

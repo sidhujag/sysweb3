@@ -1,5 +1,6 @@
 import { ripemd160 } from '@noble/hashes/legacy.js';
 import { sha256 } from '@noble/hashes/sha2.js';
+
 import {
   concat,
   fail,
@@ -17,8 +18,6 @@ import {
   encodeTransaction,
   opReturn,
 } from './codec.js';
-import { importSentryOperatorKey } from './signing.js';
-import { reviewFunding, serializePQRecord } from './review.js';
 import {
   MANAGEMENT_TX_VERSION,
   managementPayload,
@@ -29,6 +28,9 @@ import {
   validateSentryManagementRequest,
   type ManagementPayload,
 } from './management-codec.js';
+import { reviewFunding, serializePQRecord } from './review.js';
+import { importSentryOperatorKey } from './signing.js';
+
 import type {
   SentryAuthorityKey,
   SentryAuthorityRole,
@@ -382,9 +384,14 @@ export function reviewSentryManagementOperation(
           !nonzero(p.pqOwnerPublicKey) ||
           hex(p.votingKeyId) !== node.votingKeyId.toLowerCase() ||
           hex(p.payoutScript) !== node.payoutScript.toLowerCase() ||
-          (node.pqVotingPublicKey &&
-            nonzero(fromHex(node.pqVotingPublicKey)) &&
-            hex(p.pqVotingPublicKey) !== node.pqVotingPublicKey.toLowerCase())
+          hex(p.pqVotingPublicKey) !==
+            hex(
+              fromHex(
+                node.pqVotingPublicKey ?? '00'.repeat(32),
+                'current PQ voting key',
+                32
+              )
+            )
         ) {
           fail(
             'ERA_MISMATCH',

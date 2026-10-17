@@ -21,11 +21,12 @@ import {
   encodeTransaction,
   locateServicePayload,
   normalizeNEVM,
-  parseService,
+  currentServiceText,
   opReturn,
   payloadBytes,
   validateNode,
 } from './codec.js';
+
 import type {
   SentryChain,
   SentryOperationRequest,
@@ -313,7 +314,7 @@ export function reviewSentryOperation(
     proTxHash: payload.proTxHash,
     changes: {
       service: {
-        previous: parseService(context.node.service).text,
+        previous: currentServiceText(context.node.service),
         next: payload.service.text,
       },
       operatorPayoutScript: {

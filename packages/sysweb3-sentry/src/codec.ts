@@ -17,6 +17,7 @@ import {
   uint,
   vector,
 } from './bytes.js';
+
 import type {
   BuildSentryServiceUpdate,
   DecodedSentryTransaction,
@@ -133,6 +134,11 @@ export function parseService(value: unknown): ServiceAddress {
       ? concat(new Uint8Array(10), Uint8Array.of(255, 255), ip)
       : ip;
   return serviceFromBytes(concat(encoded, integerBytes(port, 2, true)));
+}
+
+/** Core clears this current-state field after operator rotation. It is never a valid proposed service. */
+export function currentServiceText(value: unknown): string {
+  return value === '0.0.0.0:0' ? value : parseService(value).text;
 }
 
 export function normalizeNEVM(value: unknown): string {
@@ -418,7 +424,7 @@ function validateChain(chain: SentryChain): void {
 export function validateNode(node: SentryNodeState, chain: SentryChain): void {
   validateChain(chain);
   hashBytes(node.proTxHash, 'proTxHash');
-  parseService(node.service);
+  currentServiceText(node.service);
   const payout = fromHex(node.operatorPayoutScript, 'operator payout script');
   if (payout.length > MAX_SCRIPT)
     fail('LIMIT', 'Operator payout script too large');
