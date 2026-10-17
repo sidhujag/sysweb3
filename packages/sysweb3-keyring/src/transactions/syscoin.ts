@@ -22,6 +22,12 @@ import {
   getAccountDerivationPath,
   convertExtendedKeyVersion,
 } from '../utils/derivation-paths';
+import {
+  ExcludedOutpoint,
+  excludedOutpointIds,
+  filterExcludedUtxos,
+  assertNoExcludedInputs,
+} from '../utils/excluded-utxos';
 import { PsbtUtils } from '../utils/psbt';
 import { assertPsbtAccountScope } from '../utils/psbt-account-scope';
 
@@ -60,6 +66,7 @@ type EstimateFeeParams = {
   outputs: { address: string; value: any; subtractFeeFrom?: boolean }[];
   txOptions: any;
   xpub: string;
+  fundingUtxos?: any;
 };
 
 export class SyscoinTransactions implements ISyscoinTransactions {
@@ -133,7 +140,14 @@ export class SyscoinTransactions implements ISyscoinTransactions {
   }
 
   private getTransactionPSBT = async (
-    { txOptions, outputs, changeAddress, feeRateBN, xpub }: EstimateFeeParams,
+    {
+      txOptions,
+      outputs,
+      changeAddress,
+      feeRateBN,
+      xpub,
+      fundingUtxos,
+    }: EstimateFeeParams,
     main: any
   ) => {
     try {
@@ -143,7 +157,8 @@ export class SyscoinTransactions implements ISyscoinTransactions {
         changeAddress,
         outputs,
         feeRateBN,
-        xpub // sysFromXpubOrAddress
+        xpub, // sysFromXpubOrAddress
+        ...(fundingUtxos ? [fundingUtxos] : [])
       );
 
       if (result && result.psbt) {
@@ -219,12 +234,14 @@ export class SyscoinTransactions implements ISyscoinTransactions {
       receivingAddress,
       feeRateBN,
       source,
+      excluded,
     }: {
       txOptions: any;
       changeAddress: string;
       receivingAddress: string;
       feeRateBN: any;
       source: string;
+      excluded: ReadonlySet<string>;
     },
     main: any
   ): Promise<ISyscoinTransactionFeeQuote> => {
@@ -232,7 +249,11 @@ export class SyscoinTransactions implements ISyscoinTransactions {
       main.blockbookURL,
       source
     );
-    const rows = Array.isArray(raw) ? raw : raw?.utxos;
+    const rows = excluded.size
+      ? filterExcludedUtxos(raw, excluded).utxos
+      : Array.isArray(raw)
+      ? raw
+      : raw?.utxos;
     if (!Array.isArray(rows))
       throw sweepError(
         'INVALID_NATIVE_SWEEP_UTXOS',
@@ -345,6 +366,7 @@ export class SyscoinTransactions implements ISyscoinTransactions {
     receivingAddress,
     feeRateBN,
     token = null,
+    excludedOutpoints = [],
   }: {
     amount: number | string; // Accept both for safer precision handling
     feeRateBN: any; // BigNumber in satoshis/byte
@@ -353,6 +375,7 @@ export class SyscoinTransactions implements ISyscoinTransactions {
     txOptions?: any;
     isMax?: boolean | false;
     nativeSweep?: boolean;
+    excludedOutpoints?: readonly ExcludedOutpoint[];
   }): Promise<ISyscoinTransactionFeeQuote> => {
     // Ensure RBF is enabled by default if not explicitly set
     const finalTxOptions = { rbf: true, ...txOptions };
@@ -399,6 +422,7 @@ export class SyscoinTransactions implements ISyscoinTransactions {
       : await this.getAddress(xpub, true);
 
     try {
+      const excluded = excludedOutpointIds(excludedOutpoints);
       if (nativeSweep) {
         return await this.createNativeSweepPSBT(
           {
@@ -407,10 +431,20 @@ export class SyscoinTransactions implements ISyscoinTransactions {
             receivingAddress,
             feeRateBN,
             source: sourceForUtxoLookup,
+            excluded,
           },
           main
         );
       }
+      const fundingUtxos = excluded.size
+        ? filterExcludedUtxos(
+            await syscoinjs.utils.fetchBackendUTXOS(
+              main.blockbookURL,
+              sourceForUtxoLookup
+            ),
+            excluded
+          )
+        : undefined;
       if (token && token.guid) {
         // Token transaction: use assetAllocationSend
         // Create a Map for the asset allocation
@@ -432,8 +466,11 @@ export class SyscoinTransactions implements ISyscoinTransactions {
           assetMap,
           changeAddress,
           feeRateBN,
-          sourceForUtxoLookup // Pass source (address for WIF imports, zpub/vpub for HD)
+          sourceForUtxoLookup, // Pass source (address for WIF imports, zpub/vpub for HD)
+          ...(fundingUtxos ? [fundingUtxos] : [])
         );
+
+        if (excluded.size) assertNoExcludedInputs(result.psbt, excluded);
 
         // Return PSBT and fee
         return { psbt: result.psbt, fee: result.fee };
@@ -454,9 +491,12 @@ export class SyscoinTransactions implements ISyscoinTransactions {
             changeAddress,
             feeRateBN,
             xpub: sourceForUtxoLookup,
+            fundingUtxos,
           },
           main
         );
+
+        if (excluded.size) assertNoExcludedInputs(result.psbt, excluded);
 
         return result;
       }
@@ -875,6 +915,7 @@ export class SyscoinTransactions implements ISyscoinTransactions {
     receivingAddress,
     feeRate,
     token = null,
+    excludedOutpoints = [],
   }: {
     amount: number | string; // Accept both for safer precision handling
     feeRate?: number;
@@ -884,6 +925,7 @@ export class SyscoinTransactions implements ISyscoinTransactions {
     txOptions?: any;
     isMax?: boolean | false;
     nativeSweep?: boolean;
+    excludedOutpoints?: readonly ExcludedOutpoint[];
   }) => {
     try {
       if (
@@ -922,6 +964,7 @@ export class SyscoinTransactions implements ISyscoinTransactions {
         receivingAddress,
         feeRateBN,
         token,
+        excludedOutpoints,
       });
 
       return {

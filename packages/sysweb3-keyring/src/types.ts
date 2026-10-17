@@ -183,6 +183,7 @@ export interface ISyscoinTransactions {
     token,
     isMax,
     nativeSweep,
+    excludedOutpoints,
   }: {
     amount: number | string;
     feeRate?: number;
@@ -192,6 +193,8 @@ export interface ISyscoinTransactions {
     isMax?: boolean | false;
     /** Resolve explicit native MAX from one current funding snapshot. Requires isMax and token:null. */
     nativeSweep?: boolean;
+    /** Coin-control exclusions supplied by a trusted wallet policy, not transaction outputs. */
+    excludedOutpoints?: readonly { txid: string; vout: number }[];
   }) => Promise<ISyscoinTransactionFeeQuote>; // Returns UNSIGNED psbt - may throw ISyscoinTransactionError
   getRecommendedFee: (explorerUrl: string) => Promise<number>;
   decodeRawTransaction: (psbtOrHex: any, isRawHex?: boolean) => any;
