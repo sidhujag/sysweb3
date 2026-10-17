@@ -157,3 +157,55 @@ Only trusted Core preparation capabilities may set `allowOwnerPreparation` or
 PQ operator `candidate` includes the exact canonical child-tree commitment and
 must have activation height zero. The node's separate setup process generates
 the corresponding WOTS tree; this transaction codec does not invent one.
+
+## Legacy governance funding votes
+
+`SentryGovernanceVoteRequest` is a separate typed protocol, not a transaction or
+an arbitrary hash-signing method. Its exact fields are:
+
+```ts
+{
+  version: 1,
+  chain: { genesisHash, era: 'legacy-v3' },
+  proposalHash,
+  signal: 'funding',
+  outcome: 'yes' | 'no' | 'abstain',
+  timestamp, // safe integer Unix seconds
+  nodes: [{ proTxHash, collateralOutpoint: { txid, vout } }] // 1–20 unique nodes
+}
+```
+
+Hashes are nonzero lowercase 32-byte hex. The collateral index is a nonnegative
+signed-32-bit integer, matching `voteraw`'s RPC parser. Unknown fields, duplicate
+node IDs/outpoints and unsupported schemes/eras/signals fail closed.
+
+`reviewSentryGovernanceVote(request, context)` requires independently resolved
+`chain`, `now`, `proposalHash` and exactly matching `nodes`, each with the current
+`votingKeyId` and `valid: true`. Optional `proposal: {name, url?}` is display
+metadata only. New wallet approvals require the timestamp within one hour of
+`now` in either direction. This is stricter than Core, which only checks the
+future bound.
+
+`signSentryGovernanceVote(request, context, proTxHash, key)` returns one
+`SentryGovernanceVoteResponse`: `{proTxHash, collateralOutpoint, voteSig,
+signatureHash, voteHash}`. The local key must have role `voting`, scheme
+`secp256k1` and match the verified registration. `voteSig` is canonical base64 of
+the 65-byte recoverable signature. `signatureHash` and `voteHash` use Core's
+display byte order; `governanceVoteDigest(fields)` returns raw signing-digest
+hex. `governanceVoteHash(fields)` returns the display-order identity hash.
+`verifySentryGovernanceVote(request, context, response)` checks the same binding
+and rejects high-S/noncanonical signatures.
+
+`await governanceVotingKeyIds(compressedPublicKey)` returns `{compressed,
+uncompressed}` Hash160 identities for legacy voting registration discovery.
+The stored key's public representation remains compressed. Signing chooses the
+Core compact header for the actual registered encoding (27–30 uncompressed,
+31–34 compressed); this does not alter transaction-management key semantics.
+
+Core's signature hashes the serialized collateral outpoint, proposal hash,
+outcome, signal and timestamp. **It does not include network/genesis or
+proTxHash.** Wallets must independently enforce the trusted envelope and verify
+fresh registration context; the signature itself cannot provide those bindings.
+`GetHash` orders signal before outcome, unlike `GetSignatureHash`. Native Core
+golden vectors cover both orders, all three outcomes and both key encodings.
+They exercise signature verification, not live governance-object acceptance.
