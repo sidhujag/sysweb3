@@ -12,6 +12,8 @@ import {
   sentryKeyId,
   reviewSentryManagementOperation,
   signSentryManagementOperation,
+  verifySentryManagementOperation,
+  matchesSentryManagementIntent,
 } from '../dist/index.js';
 import {
   managementPayload,
@@ -407,6 +409,33 @@ test(
       hex(hash256(managementPayload(signed.transactionHex).payload.ownerProof)),
       vectors.globalPQOwner.signatureHash
     );
+    assert.equal(signed.complete, false);
+    const completedInitial = await signSentryManagementOperation(
+      { ...initial, transactionHex: signed.transactionHex },
+      initialContext,
+      operator,
+      'newOperator'
+    );
+    assert.equal(completedInitial.complete, true);
+    const completedRequest = {
+      ...initial,
+      transactionHex: completedInitial.transactionHex,
+    };
+    assert.equal(
+      await verifySentryManagementOperation(completedRequest, initialContext),
+      true
+    );
+    assert.equal(matchesSentryManagementIntent(initial, completedRequest), true);
+    const completedTransaction = decodeSentryTransaction(
+      completedInitial.transactionHex
+    );
+    const dataOutput = completedTransaction.outputs.find((output) =>
+      output.scriptHex.startsWith('6a')
+    );
+    // Core's PQ-owner exception permits two SLH signatures in these exact
+    // canonical special payload versions, without raising ordinary limits.
+    assert.ok(dataOutput.scriptHex.length / 2 > 10_000);
+    assert.ok(dataOutput.scriptHex.length / 2 <= 2 * 7856 + 1024);
     const rotate = buildSentryOperatorUpdate({
       chain: activeChain,
       node,
