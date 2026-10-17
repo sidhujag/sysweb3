@@ -88,7 +88,10 @@ Exports (synchronous codec/review, asynchronous crypto to allow lazy loading):
   LOCAL encrypted storage only. BLS key is 32 bytes; SLH key is the exact 64-byte
   Core key (or 48-byte generation seed via separate `deriveSentryOperatorKey`).
 * `deriveSentryOperatorKey(scheme, seedHex): Promise<SentryImportedKey>` generates
-  deterministic keys using vetted scheme keygen, not SA SHA2 keys.
+  deterministic keys from exactly 32 BLS seed bytes or 48 SLH seed bytes, not
+  SA SHA2 keys. BLS matches Core `BasicSchemeMPL::KeyGen` using its exact
+  HKDF-SHA256 salt, IKM suffix, expansion and scalar-field reduction; it does
+  not treat the seed as a private scalar or use Noble's 48-byte entropy API.
 * `signSentryOperation(request, context, importedKey): Promise<SentryOperationResponse>`
   repeats review, verifies key matches registration, locally signs the decoded
   protocol authorization and inserts the signature without changing other bytes.
