@@ -11,6 +11,7 @@ import {
   reviewSentryOperation,
   validateSentryOperationRequest,
 } from './review.js';
+
 import type {
   SentryImportedKey,
   SentryOperationResponse,
@@ -89,7 +90,29 @@ export async function deriveSentryOperatorKey(
   try {
     if (scheme === 'bls-basic') {
       const { bls12_381 } = await import('@noble/curves/bls12-381.js');
-      secret = bls12_381.longSignatures.keygen(seed).secretKey;
+      const { bytesToNumberBE } = await import('@noble/curves/utils.js');
+      const { hkdf } = await import('@noble/hashes/hkdf.js');
+      const { sha256 } = await import('@noble/hashes/sha2.js');
+      // Match Core's BasicSchemeMPL::KeyGen / HDKeys::KeyGen exactly.
+      // Noble keygen consumes 48 bytes of direct entropy; it is not this
+      // 32-byte IKM -> HKDF-SHA256 -> Fr derivation.
+      const ikm = new Uint8Array(seed.length + 1);
+      ikm.set(seed);
+      let okm: Uint8Array | undefined;
+      try {
+        okm = hkdf(
+          sha256,
+          ikm,
+          new TextEncoder().encode('BLS-SIG-KEYGEN-SALT-'),
+          Uint8Array.of(0, 48),
+          48
+        );
+        const field = bls12_381.fields.Fr;
+        secret = field.toBytes(field.create(bytesToNumberBE(okm)));
+      } finally {
+        ikm.fill(0);
+        okm?.fill(0);
+      }
     } else {
       const { slh_dsa_shake_128s } = await import(
         '@noble/post-quantum/slh-dsa.js'

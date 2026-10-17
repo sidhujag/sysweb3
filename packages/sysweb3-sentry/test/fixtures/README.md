@@ -39,3 +39,11 @@ Its external registration collateral hash is intentionally fictitious: that
 part of the vector tests the protocol encoding/message only, never an on-chain
 registration claim. Complete collateral validation is covered separately by the
 management integration tests.
+
+`bls-keygen-vectors.cpp` and `bls-keygen-vectors.json` cover the separate BLS
+seed-generation contract. They were generated with the same Core
+`BasicSchemeMPL::KeyGen` / `HDKeys::KeyGen` implementation (unchanged at legacy
+merge `d738769e5b3d1320127670a3dc1a028c9ecbaeed`). Inputs are synthetic 32-byte
+all-zero, all-one, all-FF and ascending-byte seeds. These compare the exact
+private scalar and compressed public key, not just sign/verify self-consistency.
+The all-zero seed vector also matches the bundled Dash BLS Chia test vector.
