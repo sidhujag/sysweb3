@@ -242,6 +242,7 @@ test('rejects mutated or noncanonical signatures and swapped node identity', asy
     (r) => r.collateralOutpoint.vout++,
     (r) => (r.voteSig += '\n'),
     (r) => (r.voteSig = r.voteSig.slice(0, -1)),
+    (r) => (r.voteSig = 'A'.repeat(1_000_000)),
     (r) => (r.voteSig = Buffer.alloc(65).toString('base64')),
     (r) => (r.extra = true),
   ]) {

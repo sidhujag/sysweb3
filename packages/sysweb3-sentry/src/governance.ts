@@ -387,7 +387,8 @@ export async function verifySentryGovernanceVote(
       p.vout !== n.collateralOutpoint.vout ||
       r.signatureHash !== displayHash(fromHex(n.digest)) ||
       r.voteHash !== n.voteHash ||
-      typeof r.voteSig !== 'string'
+      typeof r.voteSig !== 'string' ||
+      r.voteSig.length !== 88
     )
       return false;
     const signature = base64.decode(r.voteSig);
