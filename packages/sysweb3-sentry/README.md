@@ -100,3 +100,14 @@ Pre-activation owner/operator enrollment is accepted only when the wallet's
 independently resolved Core context enables the corresponding preparation
 capability. A dapp cannot activate this policy with a request flag. Pure voting
 messages, governance actions and private node operation are separate protocols.
+
+## Governance voting
+
+The typed governance helpers support batches of up to 20 legacy proposal-funding
+votes. Wallets review fresh, independently fetched node/voting-key and proposal
+context before signing with local secp256k1 voting keys. Both historical
+uncompressed and compressed voting identities are supported without changing
+the stored key representation. PQ governance signing remains disabled.
+
+See `INTERFACE.md` for exact request/response contracts and the distinction
+between Core's signed fields and the wallet-enforced network/node envelope.

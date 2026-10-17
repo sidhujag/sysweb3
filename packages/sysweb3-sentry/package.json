@@ -1,6 +1,6 @@
 {
   "name": "@sidhujag/sysweb3-sentry",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Local operator authorization and canonical transaction codecs for Syscoin Sentry nodes",
   "type": "module",
   "sideEffects": false,

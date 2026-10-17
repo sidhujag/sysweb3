@@ -21,6 +21,7 @@ export {
   verifySentryOperation,
 } from './signing.js';
 export * from './management-types.js';
+export * from './governance.js';
 export {
   buildSentryRegistration,
   buildSentryRegistrarUpdate,
