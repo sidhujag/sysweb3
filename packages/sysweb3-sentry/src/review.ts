@@ -113,7 +113,10 @@ export function matchesSentryTransactionIntent(
   }
 }
 
-export function serializePQRecord(record: SentryPQRecord): Uint8Array {
+export function serializePQRecord(
+  record: SentryPQRecord,
+  allowUnactivated = false
+): Uint8Array {
   if (
     record.version !== 1 ||
     record.profile !== 1 ||
@@ -149,7 +152,10 @@ export function serializePQRecord(record: SentryPQRecord): Uint8Array {
     fail('INVALID_PQ_RECORD', 'Invalid registered child commitment');
   }
   reader.end();
-  if (uint(record.activatedHeight, 32, 'activatedHeight') === 0)
+  if (
+    uint(record.activatedHeight, 32, 'activatedHeight') === 0 &&
+    !allowUnactivated
+  )
     fail('INVALID_PQ_RECORD', 'Operator key has not activated');
   return concat(
     integerBytes(record.version, 2),
@@ -214,9 +220,13 @@ export function serviceAuthorizationDigest(
   );
 }
 
-function reviewFunding(
-  request: SentryOperationRequest,
-  context: SentryReviewContext
+export function reviewFunding(
+  request: { transactionHex: string },
+  context: {
+    previousTransactions: string[];
+    maxFeeSatoshis: string;
+    node?: { collateralOutpoint?: { txid: string; vout: number } };
+  }
 ): bigint {
   if (
     !Array.isArray(context.previousTransactions) ||
@@ -238,7 +248,7 @@ function reviewFunding(
   for (const input of tx.inputs) {
     hashBytes(input.txid, 'input txid');
     const key = `${input.txid}:${input.vout}`;
-    const collateral = context.node.collateralOutpoint;
+    const collateral = context.node?.collateralOutpoint;
     if (
       collateral &&
       input.txid === collateral.txid.toLowerCase() &&

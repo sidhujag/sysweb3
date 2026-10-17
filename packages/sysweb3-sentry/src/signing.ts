@@ -108,6 +108,23 @@ export async function signSentryOperation(
   context: SentryReviewContext,
   importedKey: SentryImportedKey
 ): Promise<SentryOperationResponse> {
+  // Do not let account/RPC cache mutation during lazy crypto loading alter the
+  // reviewed context. The caller still rechecks liveness before broadcasting.
+  context = {
+    ...context,
+    chain: { ...context.chain },
+    previousTransactions: [...context.previousTransactions],
+    node: {
+      ...context.node,
+      pqRecord: context.node.pqRecord
+        ? { ...context.node.pqRecord }
+        : undefined,
+      collateralOutpoint: context.node.collateralOutpoint
+        ? { ...context.node.collateralOutpoint }
+        : undefined,
+    },
+  };
+  importedKey = { ...importedKey };
   const request = validateSentryOperationRequest(value);
   const review = reviewSentryOperation(request, context);
   if (review.scheme !== importedKey.scheme)

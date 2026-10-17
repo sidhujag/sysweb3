@@ -20,3 +20,22 @@ export {
   signSentryOperation,
   verifySentryOperation,
 } from './signing.js';
+export * from './management-types.js';
+export {
+  buildSentryRegistration,
+  buildSentryRegistrarUpdate,
+  buildSentryRevocation,
+  buildSentryOperatorUpdate,
+  validateSentryManagementRequest,
+  sentryKeyIdFromAddress,
+} from './management-codec.js';
+export {
+  importSentryAuthorityKey,
+  sentryKeyId,
+  reviewSentryManagementOperation,
+  signSentryManagementOperation,
+  verifySentryManagementOperation,
+  matchesSentryManagementIntent,
+  inspectSentryManagementOperation,
+  getSentryManagementCapabilities,
+} from './management.js';

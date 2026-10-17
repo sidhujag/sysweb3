@@ -22,3 +22,20 @@ The SDK tests compare exact byte preimages, registered-record serialization,
 input hashes, authorization digests, public keys and deterministic signatures in
 both implementations. Separate integration tests use correctly hashed synthetic
 funding transactions for the complete wallet review/sign/verify flow.
+
+`generate-management-vectors.cpp` and `management-core-vectors.json` extend this
+coverage to registration, registrar updates, revocation, owner proofs and global
+operator enrollment/rotation. The generator uses Core CDataStream field layouts,
+Core Bech32 address encoding, the same libsecp256k1 recoverable RFC6979 signing
+routine as CKey::SignCompact, BasicSchemeMPL, and the actual Core global/PQ
+authorization functions. Registration/registrar owner domains are serialized
+explicitly as specified in Core's providertx.cpp. Long secondary SLH signatures
+are represented by SHA256d hashes in this fixture to limit checked-in size; the
+SDK tests recompute the full signature and compare its hash.
+
+The management funding transaction is a synthetic coinbase with a correctly
+computed transaction ID, enabling full SDK fee review in those vector tests.
+Its external registration collateral hash is intentionally fictitious: that
+part of the vector tests the protocol encoding/message only, never an on-chain
+registration claim. Complete collateral validation is covered separately by the
+management integration tests.

@@ -245,7 +245,7 @@ export function extractOpReturn(script: Uint8Array): Uint8Array {
       : -1;
   if (
     length < 0 ||
-    length > MAX_SCRIPT ||
+    length > MAX_TX_BYTES ||
     (push === 76 && length < 76) ||
     (push === 77 && length <= 255) ||
     (push === 78 && length <= 65535)
@@ -337,7 +337,7 @@ export function decodeSentryTransaction(
       fail('INVALID_AMOUNT', 'Transaction output value exceeds MAX_MONEY');
     outputs.push({
       valueSatoshis: value.toString(),
-      scriptHex: hex(reader.vector(MAX_SCRIPT)),
+      scriptHex: hex(reader.vector(MAX_TX_BYTES)),
     });
   }
   if (witness) {

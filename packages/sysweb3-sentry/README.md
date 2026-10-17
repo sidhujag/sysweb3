@@ -1,8 +1,10 @@
 # sysweb3-sentry
 
 Strict transaction review and local operator signing for Syscoin Sentry nodes.
-The package currently implements service/NEVM updates for active BLS payload v3
-and the PQ payload v4 in Core PR #609. It is not an Ethereum signer, a smart-account
+The package implements service/NEVM updates for active BLS payload v3
+and the PQ payload v4 in Core PR #609, plus external-collateral registration,
+owner/registrar updates, revocation and PQ global-operator enrollment/rotation.
+It is not an Ethereum signer, a smart-account
 SLH signer, a node-hosting client, or an arbitrary-hash signing interface.
 
 See [INTERFACE.md](./INTERFACE.md) for the frozen public envelope. Secrets are
@@ -65,7 +67,33 @@ isolated worker without blocking the approval UI.
 `npm ci && npm test` inside this package. Tests use synthetic funding fixtures and
 public test keys; no live wallet, RPC, secret or broadcast is involved.
 
-Only `updateService` is advertised today. Registration/collateral ownership,
-owner updates, voting, key migration/rotation and revocation require their
-separate role-specific protocol adapters; they must not be approximated using
-an operator service signature.
+## Other management operations
+
+`getSentryManagementCapabilities` advertises separate management APIs. The
+builders `buildSentryRegistration`, `buildSentryRegistrarUpdate`,
+`buildSentryRevocation` and `buildSentryOperatorUpdate` return strict public
+requests consumed by `reviewSentryManagementOperation` and
+`signSentryManagementOperation`. These are not operator-service signatures:
+
+* Existing collateral registration requires the collateral's secp256k1 key and,
+  for PQ registration, a separate new-owner proof.
+* Registrar changes use the currently enrolled owner: legacy ECDSA or PQ
+  SHAKE-128s. Owner replacement additionally requires the new owner's proof.
+  An enrolled PQ owner cannot fall back to ECDSA.
+* Revocation uses the currently registered operator, BLS or PQ as appropriate.
+* Initial PQ operator enrollment/recovery requires owner authorization plus
+  proof by the new operator key. Active rotation uses the current operator.
+  All version, generation, chain and child-commitment bindings follow Core.
+
+`SentryAuthorityKey` retains explicit owner/operator/collateral/voting roles.
+The new operator's 80-byte child-tree commitment must come from the operator's
+key-setup process: this package does not generate or manage the WOTS tree and
+must not pretend a random commitment is usable. The transaction approves its
+exact public commitment; node setup must retain the corresponding secrets.
+External collateral is supported; creating and spending a new collateral
+output is intentionally a distinct normal wallet transaction.
+
+Pre-activation owner/operator enrollment is accepted only when the wallet's
+independently resolved Core context enables the corresponding preparation
+capability. A dapp cannot activate this policy with a request flag. Pure voting
+messages, governance actions and private node operation are separate protocols.

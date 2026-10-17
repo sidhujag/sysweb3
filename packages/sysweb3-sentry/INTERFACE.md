@@ -114,7 +114,43 @@ The wallet obtains `context` independently, then obtains local key material from
 its vault. A provider may be the fee payer; do not represent the returned operator
 authorization as a fully UTXO-signed/broadcastable transaction.
 
-Initial supported vertical slice is current legacy update-service payload v3 and
-PQ PR #609 payload v4. Historical v1/v2 and not-yet-implemented owner/collateral
-operations fail closed and are absent from capabilities. They are not silently
-treated as updateService or signed with an operator key.
+The service API supports current legacy update-service payload v3 and PQ PR
+#609 payload v4. Historical service payloads v1/v2 fail closed. Other management
+operations use the separate role-aware API below, never a service signature.
+
+## Role-aware management API
+
+Separate `SentryManagementRequest` keeps the public envelope shape above but
+supports `register`, `updateRegistrar`, `revoke`, `registerOperator` and
+`rotateOperator`. Exact exported TypeScript contracts are in
+`src/management-types.ts`; these are additive and do not change the service API.
+
+* Builders: `buildSentryRegistration`, `buildSentryRegistrarUpdate`,
+  `buildSentryRevocation`, `buildSentryOperatorUpdate`.
+* Discovery/validation: `validateSentryManagementRequest`,
+  `inspectSentryManagementOperation` (syntactic only),
+  `getSentryManagementCapabilities`.
+* Review/verification: `reviewSentryManagementOperation`,
+  `verifySentryManagementOperation`, `matchesSentryManagementIntent`.
+* Local-only keys: `importSentryAuthorityKey(role, scheme, secretKeyHex)`;
+  `role` is owner/operator/collateral/voting, `scheme` adds secp256k1.
+* Local signing: `signSentryManagementOperation(request, context, key,
+  authorizationId?)`. It fills exactly one required authorization slot. Its
+  response has `complete: false` until all role-specific signatures verify.
+  The fee-payer signs inputs only after `complete: true`.
+
+Review returns all public fields and an `authorizations` list with ID, role,
+scheme, key identity, digest, FIPS context and whether signature bytes are
+present. `signed` is a presence marker, not a substitute for verification.
+Wallet UI chooses local keys by role and must not offer an operator key as an
+owner/collateral key. Never forward the key object into a dapp message.
+
+The context additionally supplies trusted network address prefixes for the
+Core collateral signing message, a complete node owner/voting state, or the
+exact external collateral transaction and chain's required collateral value.
+Only trusted Core preparation capabilities may set `allowOwnerPreparation` or
+`allowOperatorPreparation`; these are not public request fields.
+
+PQ operator `candidate` includes the exact canonical child-tree commitment and
+must have activation height zero. The node's separate setup process generates
+the corresponding WOTS tree; this transaction codec does not invent one.
