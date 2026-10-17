@@ -1,0 +1,31 @@
+name: Sentry protocol SDK
+on:
+  pull_request:
+    paths:
+      - 'packages/sysweb3-sentry/**'
+      - '.github/workflows/sentry.yml'
+  push:
+    branches: [master, main]
+    paths:
+      - 'packages/sysweb3-sentry/**'
+      - '.github/workflows/sentry.yml'
+permissions:
+  contents: read
+jobs:
+  sentry-protocol:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: packages/sysweb3-sentry
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: packages/sysweb3-sentry/package-lock.json
+      - run: npm ci --ignore-scripts --workspaces=false
+      - run: npm test

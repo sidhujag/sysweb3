@@ -164,6 +164,140 @@ describe('explicit native sweep quotes', () => {
     ).toBe(true);
   });
 
+  it('spends rewards at the same address without spending linked collateral on MAX', async () => {
+    const collateral = utxo('10000000000000', 2);
+    fetchUtxos.mockResolvedValue([collateral, utxo('1000000')]);
+    const quote = await sdk.getEstimateSysTransactionFee({
+      ...request,
+      excludedOutpoints: [{ txid: collateral.txid, vout: 0 }],
+    });
+    expect(quote.grossAmount).toBe('0.01');
+    const psbt = PsbtUtils.fromPali(quote.psbt, {
+      slip44: 1,
+      currency: 'TSYS',
+    });
+    expect(psbt.txInputs).toHaveLength(1);
+    expect(Buffer.from(psbt.txInputs[0].hash).reverse().toString('hex')).toBe(
+      utxo().txid
+    );
+    expect(fetchUtxos).toHaveBeenCalledTimes(1);
+  });
+
+  it('excludes collateral for ordinary sends and fails if only collateral could fund the request', async () => {
+    const collateral = utxo('10000000000000', 2);
+    fetchUtxos.mockResolvedValue([collateral, utxo('1000000')]);
+    const excludedOutpoints = [{ txid: collateral.txid, vout: 0 }];
+    const quote = await sdk.getEstimateSysTransactionFee({
+      ...request,
+      nativeSweep: false,
+      isMax: false,
+      amount: '0.001',
+      excludedOutpoints,
+    });
+    const psbt = PsbtUtils.fromPali(quote.psbt, {
+      slip44: 1,
+      currency: 'TSYS',
+    });
+    expect(psbt.txInputs).toHaveLength(1);
+    expect(Buffer.from(psbt.txInputs[0].hash).reverse().toString('hex')).toBe(
+      utxo().txid
+    );
+    await expect(
+      sdk.getEstimateSysTransactionFee({
+        ...request,
+        nativeSweep: false,
+        isMax: false,
+        amount: '1',
+        excludedOutpoints,
+      })
+    ).rejects.toMatchObject({ code: 'INSUFFICIENT_FUNDS' });
+  });
+
+  it('preserves SPT metadata when filtering collateral from fee funding', async () => {
+    const collateral = utxo('10000000000000', 2);
+    const assets = new Map([['123', { symbol: 'TEST', decimals: 8 }]]);
+    fetchUtxos.mockResolvedValue({ utxos: [collateral, utxo()], assets });
+    const allocate = jest.spyOn(main, 'assetAllocationSend').mockResolvedValue({
+      psbt: new syscoinjs.utils.bitcoinjs.Psbt({ network }),
+      fee: 226,
+    });
+    await sdk.getEstimateSysTransactionFee({
+      ...request,
+      nativeSweep: false,
+      token: { guid: '123' },
+      excludedOutpoints: [{ txid: collateral.txid, vout: 0 }],
+    });
+    expect(allocate.mock.calls[0][5]).toEqual({ utxos: [utxo()], assets });
+    expect(fetchUtxos).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([true, false])(
+    'builds an actual SPT transfer with top-level metadata=%s and unprotected fee funds',
+    async (withTopLevelMetadata) => {
+      const collateral = utxo('10000000000000', 2);
+      const carrier = utxo('1000', 3, {
+        assetInfo: { assetGuid: '123', value: '1000' },
+      });
+      fetchUtxos.mockResolvedValue(
+        withTopLevelMetadata
+          ? {
+              utxos: [collateral, utxo(), carrier],
+              assets: [
+                { assetGuid: '123', maxSupply: '1000000000', decimals: 8 },
+              ],
+            }
+          : [collateral, utxo(), carrier]
+      );
+      const quote = await sdk.getEstimateSysTransactionFee({
+        ...request,
+        amount: '0.00000005',
+        nativeSweep: false,
+        isMax: false,
+        token: { guid: '123' },
+        excludedOutpoints: [{ txid: collateral.txid, vout: 0 }],
+      });
+      const psbt = PsbtUtils.fromPali(quote.psbt, {
+        slip44: 1,
+        currency: 'TSYS',
+      });
+      const ids = psbt.txInputs.map((input) =>
+        Buffer.from(input.hash).reverse().toString('hex')
+      );
+      expect(ids).toContain(carrier.txid);
+      expect(ids).not.toContain(collateral.txid);
+      expect(fetchUtxos).toHaveBeenCalledTimes(1);
+      expect(getSigner).not.toHaveBeenCalled();
+    }
+  );
+
+  it('rejects a builder returning protected inputs despite the filtered funding set', async () => {
+    const collateral = utxo('10000000000000', 2);
+    fetchUtxos.mockResolvedValue([collateral, utxo()]);
+    const psbt = new syscoinjs.utils.bitcoinjs.Psbt({ network });
+    psbt.addInput({
+      hash: collateral.txid,
+      index: 0,
+      witnessUtxo: {
+        script: syscoinjs.utils.bitcoinjs.address.toOutputScript(
+          address,
+          network
+        ),
+        value: BigInt(collateral.value),
+      },
+    });
+    jest
+      .spyOn(main, 'assetAllocationSend')
+      .mockResolvedValue({ psbt, fee: 226 });
+    await expect(
+      sdk.getEstimateSysTransactionFee({
+        ...request,
+        nativeSweep: false,
+        token: { guid: '123' },
+        excludedOutpoints: [{ txid: collateral.txid, vout: 0 }],
+      })
+    ).rejects.toMatchObject({ code: 'PROTECTED_COLLATERAL' });
+  });
+
   it('includes an uneconomic native outpoint in the complete sweep', async () => {
     fetchUtxos.mockResolvedValue({ utxos: [utxo('1000000'), utxo('1', 2)] });
     const quote = await sdk.getEstimateSysTransactionFee(request);
