@@ -43,6 +43,7 @@ import {
   IResponseFromSendErcSignedTransaction,
   ISendSignedErcTransactionProps,
   IEthereumTransactions,
+  IEvmCancellationOptions,
   IEvmReplacementOptions,
   SimpleTransactionRequest,
   KeyringAccountType,
@@ -923,18 +924,39 @@ export class EthereumTransactions implements IEthereumTransactions {
   };
   cancelSentTransaction = async (
     txHash: string,
-    isLegacy?: boolean,
-    fallbackNonce?: number
+    isLegacy: boolean | undefined,
+    fallbackNonce: number | undefined,
+    options: IEvmCancellationOptions
   ): Promise<{
     error?: boolean;
     isCanceled: boolean;
     transaction?: TransactionResponse;
   }> => {
-    const { activeAccountType, activeAccountId, accounts, activeNetwork } =
-      this.getState();
-    const activeAccount = accounts[activeAccountType][activeAccountId];
+    // Cancellation is a signing operation too. Keep its account, network and
+    // provider fixed across RPC requests and hardware approval.
+    if (typeof options?.assertCurrentContext !== 'function') {
+      throw new Error('Cancellation context required');
+    }
+    const assertHostContext = options.assertCurrentContext;
+    assertHostContext();
+    const {
+      activeAccount,
+      activeAccountType,
+      activeAccountId,
+      activeNetwork,
+      provider,
+      assertCurrent: assertKeyringContext,
+    } = this.captureEvmSigningContext();
+    const assertCurrent = () => {
+      assertHostContext();
+      assertKeyringContext();
+    };
+    assertCurrent();
     const currentEip1559Fees = async () => {
-      const feeData = await this.getFeeDataWithDynamicMaxPriorityFeePerGas();
+      const feeData = await this.getFeeDataWithDynamicMaxPriorityFeePerGas(
+        provider
+      );
+      assertCurrent();
       const maxFeePerGas = nonNegativeFeeQuantity(
         feeData.maxFeePerGas,
         'cancellation maximum fee'
@@ -949,9 +971,10 @@ export class EthereumTransactions implements IEthereumTransactions {
       return { maxFeePerGas, maxPriorityFeePerGas };
     };
 
-    let tx = (await this.web3Provider.getTransaction(
+    let tx = (await provider.getTransaction(
       txHash
     )) as Deferrable<TransactionResponse>;
+    assertCurrent();
 
     // If transaction not found, create a minimal tx object with current gas prices
     // This handles cases where tx with 0 gas never made it to the mempool
@@ -959,9 +982,10 @@ export class EthereumTransactions implements IEthereumTransactions {
       // Fetch current network gas prices for the cancellation
       if (isLegacy) {
         const currentGasPrice = nonNegativeFeeQuantity(
-          await this.web3Provider.getGasPrice(),
+          await provider.getGasPrice(),
           'cancellation gas price'
         );
+        assertCurrent();
         tx = {
           from: activeAccount.address,
           to: activeAccount.address,
@@ -1002,9 +1026,10 @@ export class EthereumTransactions implements IEthereumTransactions {
 
     if (isLegacy) {
       const currentGasPrice = nonNegativeFeeQuantity(
-        await this.web3Provider.getGasPrice(),
+        await provider.getGasPrice(),
         'cancellation gas price'
       );
+      assertCurrent();
       if (oldTxsGasValues.gasPrice != null) {
         oldTxsGasValues.gasPrice = nonNegativeFeeQuantity(
           oldTxsGasValues.gasPrice,
@@ -1105,9 +1130,11 @@ export class EthereumTransactions implements IEthereumTransactions {
     // Ledger cancel handler
     const cancelWithLedger = async () => {
       try {
+        assertCurrent();
         const resolvedParams = await resolveProperties(
           omit(changedTxToCancel, 'from')
         );
+        assertCurrent();
         const formatParams = {
           ...resolvedParams,
           nonce: resolvedParams.nonce
@@ -1131,6 +1158,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           rawTx: rawTx.replace('0x', ''),
           accountIndex: activeAccountId,
         });
+        assertCurrent();
 
         const formattedSignature = {
           r: `0x${signature.r}`,
@@ -1143,9 +1171,8 @@ export class EthereumTransactions implements IEthereumTransactions {
             txFormattedForEthers,
             formattedSignature
           );
-          const transactionResponse = await this.web3Provider.sendTransaction(
-            signedTx
-          );
+          assertCurrent();
+          const transactionResponse = await provider.sendTransaction(signedTx);
 
           return {
             isCanceled: true,
@@ -1168,11 +1195,13 @@ export class EthereumTransactions implements IEthereumTransactions {
     // Trezor cancel handler
     const cancelWithTrezor = async () => {
       try {
+        assertCurrent();
         const trezorCoin =
           activeNetwork.slip44 === 60 ? 'eth' : activeNetwork.currency;
         const formattedTx = await resolveProperties(
           omit(changedTxToCancel, 'from')
         );
+        assertCurrent();
 
         const txFormattedForTrezor: any = {
           ...formattedTx,
@@ -1211,15 +1240,15 @@ export class EthereumTransactions implements IEthereumTransactions {
           index: activeAccountId.toString(),
           slip44: activeNetwork.slip44,
         });
+        assertCurrent();
 
         if (signature.success) {
           const signedTx = serializeTransaction(
             txFormattedForTrezor,
             signature.payload
           );
-          const transactionResponse = await this.web3Provider.sendTransaction(
-            signedTx
-          );
+          assertCurrent();
+          const transactionResponse = await provider.sendTransaction(signedTx);
 
           return {
             isCanceled: true,
@@ -1242,11 +1271,17 @@ export class EthereumTransactions implements IEthereumTransactions {
     // Regular wallet cancel handler
     const cancelWithPrivateKey = async () => {
       try {
-        const { decryptedPrivateKey } = this.getDecryptedPrivateKey();
+        assertCurrent();
+        const { address, decryptedPrivateKey } = this.getDecryptedPrivateKey();
+        if (address?.toLowerCase() !== activeAccount.address.toLowerCase()) {
+          throw new Error('Wallet signing context changed');
+        }
         const transactionResponse = await sendLocalEvmTransaction(
-          this.web3Provider,
+          provider,
           decryptedPrivateKey,
-          changedTxToCancel
+          changedTxToCancel,
+          assertCurrent,
+          assertCurrent
         );
 
         if (transactionResponse) {
