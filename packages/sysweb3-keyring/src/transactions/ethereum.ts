@@ -924,9 +924,9 @@ export class EthereumTransactions implements IEthereumTransactions {
   };
   cancelSentTransaction = async (
     txHash: string,
-    isLegacy?: boolean,
-    fallbackNonce?: number,
-    options: IEvmCancellationOptions = {}
+    isLegacy: boolean | undefined,
+    fallbackNonce: number | undefined,
+    options: IEvmCancellationOptions
   ): Promise<{
     error?: boolean;
     isCanceled: boolean;
@@ -934,8 +934,11 @@ export class EthereumTransactions implements IEthereumTransactions {
   }> => {
     // Cancellation is a signing operation too. Keep its account, network and
     // provider fixed across RPC requests and hardware approval.
+    if (typeof options?.assertCurrentContext !== 'function') {
+      throw new Error('Cancellation context required');
+    }
     const assertHostContext = options.assertCurrentContext;
-    assertHostContext?.();
+    assertHostContext();
     const {
       activeAccount,
       activeAccountType,
@@ -945,7 +948,7 @@ export class EthereumTransactions implements IEthereumTransactions {
       assertCurrent: assertKeyringContext,
     } = this.captureEvmSigningContext();
     const assertCurrent = () => {
-      assertHostContext?.();
+      assertHostContext();
       assertKeyringContext();
     };
     assertCurrent();

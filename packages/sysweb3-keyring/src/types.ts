@@ -67,7 +67,7 @@ export interface IEvmReplacementOptions {
 
 export interface IEvmCancellationOptions {
   /** Synchronous host guard for selection or session state outside the keyring. */
-  assertCurrentContext?: () => void;
+  assertCurrentContext: () => void;
 }
 
 // Version type is now replaced by SignTypedDataVersion from @metamask/eth-sig-util
@@ -75,9 +75,9 @@ export interface IEvmCancellationOptions {
 export interface IEthereumTransactions {
   cancelSentTransaction: (
     txHash: string,
-    isLegacy?: boolean,
-    fallbackNonce?: number,
-    options?: IEvmCancellationOptions
+    isLegacy: boolean | undefined,
+    fallbackNonce: number | undefined,
+    options: IEvmCancellationOptions
   ) => Promise<{
     error?: boolean;
     isCanceled: boolean;

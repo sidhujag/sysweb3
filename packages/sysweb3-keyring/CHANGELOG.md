@@ -3,9 +3,24 @@
 ## 1.0.622
 
 - Bind EVM cancellation to its captured account, network, provider and available wallet-session guard. Reject context changes after RPC reads, after hardware approval, and before signing or broadcasting.
-- Accept an optional fourth `cancelSentTransaction` argument with a synchronous `assertCurrentContext` host callback. Hosts whose selected account differs from a temporary keyring gas-payer selection should use this callback to guard their real selection and session.
+- Require a fourth `cancelSentTransaction` argument with a synchronous `assertCurrentContext` host callback. Missing or invalid context is rejected before RPC, key or device access. Hosts whose selected account differs from a temporary keyring gas-payer selection must guard their real selection and session with this callback.
 - Preserve cancellation's original/fallback nonce, zero-value self-transfer, fixed 42000 gas limit and exact replacement fee arithmetic for software, Ledger and Trezor accounts. Keep an acknowledged transaction hash if context changes after submission.
 - Automated tests use deterministic public fixture keys, fake RPC providers and simulated device responses. They do not establish physical-device certification or live-network transaction acceptance.
+
+### Required cancellation caller migration
+
+Cancellation has one guarded entry point. Callers must supply the original transaction hash, an explicit fee-mode value, the original nonce or `undefined`, and a context guard that throws synchronously if their approved account, network or wallet session changes:
+
+```ts
+await keyring.ethereumTransaction.cancelSentTransaction(
+  originalHash,
+  isLegacy,
+  originalNonce,
+  { assertCurrentContext }
+);
+```
+
+The former two/three-argument cancellation call is rejected. The host guard supplements the SDK's captured keyring context; it is not a second execution path. This release changes no deployed smart-account contract, storage layout or account migration mechanism.
 
 ## 1.0.617
 

@@ -529,9 +529,13 @@ describe('EVM cancellation signing context', () => {
   let ledger: any;
   let trezor: any;
   let signed: Transaction[];
+  let hostCurrent: boolean;
+  let assertHostContext: () => void;
 
   const run = (legacy = true, fallbackNonce?: number) =>
-    sdk.cancelSentTransaction(HASH, legacy, fallbackNonce);
+    sdk.cancelSentTransaction(HASH, legacy, fallbackNonce, {
+      assertCurrentContext: assertHostContext,
+    });
   const original = (nonce = 7) => ({
     hash: HASH,
     from: PAYER,
@@ -590,6 +594,10 @@ describe('EVM cancellation signing context', () => {
   beforeEach(() => {
     signed = [];
     session = {};
+    hostCurrent = true;
+    assertHostContext = () => {
+      if (!hostCurrent) throw new Error('Host selection changed');
+    };
     state = {
       activeAccountType: KeyringAccountType.HDAccount,
       activeAccountId: 0,
@@ -1045,6 +1053,46 @@ describe('EVM cancellation signing context', () => {
       },
     });
     expect(result).toEqual({ isCanceled: false, error: true });
+    expect(provider.sendTransaction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    undefined,
+    null,
+    {},
+    { assertCurrentContext: null },
+    { assertCurrentContext: true },
+  ])(
+    'rejects missing or invalid required host context %p before runtime access',
+    async (options) => {
+      const capture = jest.spyOn(sdk as any, 'captureEvmSigningContext');
+      await expect(
+        sdk.cancelSentTransaction(HASH, true, 7, options as any)
+      ).rejects.toThrow('Cancellation context required');
+      expect(capture).not.toHaveBeenCalled();
+      expect(provider.getTransaction).not.toHaveBeenCalled();
+      expect(provider.getGasPrice).not.toHaveBeenCalled();
+      expect(getKey).not.toHaveBeenCalled();
+      expect(ledger.evm.signEVMTransaction).not.toHaveBeenCalled();
+      expect(trezor.signEthTransaction).not.toHaveBeenCalled();
+      expect(provider.sendTransaction).not.toHaveBeenCalled();
+    }
+  );
+
+  it('rejects the former three-argument invocation before runtime access', async () => {
+    await expect(
+      (sdk.cancelSentTransaction as any)(HASH, true, 7)
+    ).rejects.toThrow('Cancellation context required');
+    expect(provider.getTransaction).not.toHaveBeenCalled();
+    expect(getKey).not.toHaveBeenCalled();
+    expect(provider.sendTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects an already-stale explicit host context before runtime access', async () => {
+    hostCurrent = false;
+    await expect(run()).rejects.toThrow('Host selection changed');
+    expect(provider.getTransaction).not.toHaveBeenCalled();
+    expect(getKey).not.toHaveBeenCalled();
     expect(provider.sendTransaction).not.toHaveBeenCalled();
   });
 });

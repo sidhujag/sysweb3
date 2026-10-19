@@ -520,12 +520,23 @@ describe('formatted standard transaction fee-model retention', () => {
 
 describe('cancellation recommendations keep base fee separate from replacement tip', () => {
   const cancelFields = () => localSend.mock.calls[0][2];
+  const contextFor = (sdk: EthereumTransactions, provider: unknown) => ({
+    assertCurrentContext: () => {
+      if (sdk.web3Provider !== provider)
+        throw new Error('Fixture provider changed');
+    },
+  });
 
   it('bumps a zero-tip original by one wei, never by the full gas-price recommendation', async () => {
     const { sdk, provider } = fixture();
-    await expect(sdk.cancelSentTransaction(HASH, false)).resolves.toMatchObject(
-      { isCanceled: true }
-    );
+    await expect(
+      sdk.cancelSentTransaction(
+        HASH,
+        false,
+        undefined,
+        contextFor(sdk, provider)
+      )
+    ).resolves.toMatchObject({ isCanceled: true });
     expect(cancelFields().maxFeePerGas.toString()).toBe('120');
     expect(cancelFields().maxPriorityFeePerGas.toString()).toBe('1');
     expect(cancelFields()).toMatchObject({ from: FROM, to: FROM, nonce: 0 });
@@ -546,7 +557,12 @@ describe('cancellation recommendations keep base fee separate from replacement t
         maxPriorityFeePerGas: BigNumber.from(oldTip),
       });
       provider.send.mockResolvedValue(recommendation);
-      await sdk.cancelSentTransaction(HASH, false);
+      await sdk.cancelSentTransaction(
+        HASH,
+        false,
+        undefined,
+        contextFor(sdk, provider)
+      );
       expect(cancelFields().maxPriorityFeePerGas.toString()).toBe(expected);
       expect(cancelFields().maxFeePerGas.toString()).toBe('120');
     }
@@ -560,7 +576,12 @@ describe('cancellation recommendations keep base fee separate from replacement t
       ...original,
       maxFeePerGas: BigNumber.from(oldMaximum),
     });
-    await sdk.cancelSentTransaction(HASH, false);
+    await sdk.cancelSentTransaction(
+      HASH,
+      false,
+      undefined,
+      contextFor(sdk, provider)
+    );
     expect(cancelFields().maxFeePerGas.toString()).toBe(
       ((oldMaximum * 120n) / 100n).toString()
     );
@@ -571,7 +592,7 @@ describe('cancellation recommendations keep base fee separate from replacement t
     const { sdk, provider } = fixture();
     provider.getTransaction.mockResolvedValue(null as any);
     await expect(
-      sdk.cancelSentTransaction(HASH, false, 9)
+      sdk.cancelSentTransaction(HASH, false, 9, contextFor(sdk, provider))
     ).resolves.toMatchObject({ isCanceled: true });
     expect(cancelFields().nonce).toBe(9);
     expect(cancelFields().maxPriorityFeePerGas.toString()).toBe('1');
@@ -581,7 +602,14 @@ describe('cancellation recommendations keep base fee separate from replacement t
   it('does not request fees or sign when the original and fallback nonce are both absent', async () => {
     const { sdk, provider, getKey } = fixture();
     provider.getTransaction.mockResolvedValue(null as any);
-    await expect(sdk.cancelSentTransaction(HASH, false)).resolves.toEqual({
+    await expect(
+      sdk.cancelSentTransaction(
+        HASH,
+        false,
+        undefined,
+        contextFor(sdk, provider)
+      )
+    ).resolves.toEqual({
       isCanceled: false,
       error: true,
     });
@@ -598,7 +626,14 @@ describe('cancellation recommendations keep base fee separate from replacement t
       if (stage === 'gas') provider.getGasPrice.mockRejectedValue(error);
       if (stage === 'block') provider.getBlock.mockRejectedValue(error);
       if (stage === 'priority') provider.send.mockRejectedValue(error);
-      await expect(sdk.cancelSentTransaction(HASH, false)).rejects.toBe(error);
+      await expect(
+        sdk.cancelSentTransaction(
+          HASH,
+          false,
+          undefined,
+          contextFor(sdk, provider)
+        )
+      ).rejects.toBe(error);
       expect(getKey).not.toHaveBeenCalled();
       expect(localSend).not.toHaveBeenCalled();
     }
@@ -621,7 +656,7 @@ describe('cancellation recommendations keep base fee separate from replacement t
   ])(
     'rejects missing or corrupt current EIP recommendations without a zero/default substitution: %p',
     async (fields) => {
-      const { sdk, getKey } = fixture();
+      const { sdk, provider, getKey } = fixture();
       jest
         .spyOn(sdk, 'getFeeDataWithDynamicMaxPriorityFeePerGas')
         .mockResolvedValue({
@@ -630,7 +665,14 @@ describe('cancellation recommendations keep base fee separate from replacement t
           maxPriorityFeePerGas: BigNumber.from(0),
           ...fields,
         } as any);
-      await expect(sdk.cancelSentTransaction(HASH, false)).rejects.toThrow();
+      await expect(
+        sdk.cancelSentTransaction(
+          HASH,
+          false,
+          undefined,
+          contextFor(sdk, provider)
+        )
+      ).rejects.toThrow();
       expect(getKey).not.toHaveBeenCalled();
       expect(localSend).not.toHaveBeenCalled();
     }
@@ -639,7 +681,12 @@ describe('cancellation recommendations keep base fee separate from replacement t
   it('preserves a normal positive legacy cancellation price and self-transfer nonce', async () => {
     const { sdk, provider } = fixture();
     provider.getGasPrice.mockResolvedValue(BigNumber.from(10));
-    await sdk.cancelSentTransaction(HASH, true);
+    await sdk.cancelSentTransaction(
+      HASH,
+      true,
+      undefined,
+      contextFor(sdk, provider)
+    );
     expect(cancelFields().gasPrice.toString()).toBe('12');
     expect(cancelFields()).toMatchObject({
       type: 0,
@@ -655,7 +702,14 @@ describe('cancellation recommendations keep base fee separate from replacement t
     async (price) => {
       const { sdk, provider, getKey } = fixture();
       provider.getGasPrice.mockResolvedValue(price as any);
-      await expect(sdk.cancelSentTransaction(HASH, true)).rejects.toThrow();
+      await expect(
+        sdk.cancelSentTransaction(
+          HASH,
+          true,
+          undefined,
+          contextFor(sdk, provider)
+        )
+      ).rejects.toThrow();
       expect(getKey).not.toHaveBeenCalled();
       expect(localSend).not.toHaveBeenCalled();
     }
