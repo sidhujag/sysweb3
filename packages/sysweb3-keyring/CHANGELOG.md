@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.622
+
+- Bind EVM cancellation to its captured account, network, provider and available wallet-session guard. Reject context changes after RPC reads, after hardware approval, and before signing or broadcasting.
+- Accept an optional fourth `cancelSentTransaction` argument with a synchronous `assertCurrentContext` host callback. Hosts whose selected account differs from a temporary keyring gas-payer selection should use this callback to guard their real selection and session.
+- Preserve cancellation's original/fallback nonce, zero-value self-transfer, fixed 42000 gas limit and exact replacement fee arithmetic for software, Ledger and Trezor accounts. Keep an acknowledged transaction hash if context changes after submission.
+- Automated tests use deterministic public fixture keys, fake RPC providers and simulated device responses. They do not establish physical-device certification or live-network transaction acceptance.
+
 ## 1.0.617
 
 - Preserve valid zero-priority EIP-1559 fees and supported BigNumberish fee overrides without silently changing the transaction fee model.
