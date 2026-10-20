@@ -68,6 +68,14 @@ export interface IEvmReplacementOptions {
 export interface IEvmCancellationOptions {
   /** Synchronous host guard for selection or session state outside the keyring. */
   assertCurrentContext: () => void;
+  /**
+   * Required synchronous host admission for the reviewed pending original.
+   * Non-null values contain detached, authenticated signed fields. Null means
+   * the RPC did not find the original: admit it only when the supplied fallbackNonce
+   * belongs to trusted, still-current local submission data; otherwise throw.
+   * Invalid non-null RPC replies never become a null/fallback admission.
+   */
+  validateOriginal: (transaction: TransactionResponse | null) => void;
 }
 
 // Version type is now replaced by SignTypedDataVersion from @metamask/eth-sig-util
