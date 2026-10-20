@@ -1,3 +1,10 @@
+jest.resetModules();
+(global as any).window.location = { href: 'http://localhost/' };
+jest.mock('../../../src/providers', () => ({
+  ...jest.requireActual('../../../src/providers'),
+  CustomJsonRpcProvider: jest.fn(),
+}));
+
 import { Interface } from 'ethers/abi';
 import { Transaction } from 'ethers/transaction';
 import { Wallet } from 'ethers/wallet';
@@ -500,7 +507,7 @@ describe('EVM cancellation signing context', () => {
   const wallet = new Wallet(`0x${'01'.repeat(32)}`);
   const otherWallet = new Wallet(`0x${'02'.repeat(32)}`);
   const PAYER = wallet.address;
-  const HASH = `0x${'11'.repeat(32)}`;
+  let HASH: string;
   const CHAIN = 5700;
   const accountTypes = [
     KeyringAccountType.HDAccount,
@@ -535,16 +542,45 @@ describe('EVM cancellation signing context', () => {
   const run = (legacy = true, fallbackNonce?: number) =>
     sdk.cancelSentTransaction(HASH, legacy, fallbackNonce, {
       assertCurrentContext: assertHostContext,
+      validateOriginal: () => undefined,
     });
-  const original = (nonce = 7) => ({
-    hash: HASH,
-    from: PAYER,
-    nonce,
-    gasPrice: BigNumber.from(100),
-    maxFeePerGas: BigNumber.from(100),
-    maxPriorityFeePerGas: BigNumber.from(10),
-    gasLimit: BigNumber.from(21000),
-  });
+  const original = (nonce = 7, fields: any = {}) => {
+    const type = fields.type ?? 2;
+    const tx = Transaction.from({
+      type,
+      chainId: CHAIN,
+      nonce,
+      to: PAYER,
+      value: 0,
+      data: '0x',
+      gasLimit: 21000,
+      ...(type === 0
+        ? { gasPrice: (fields.gasPrice ?? 100).toString() }
+        : {
+            maxFeePerGas: (fields.maxFeePerGas ?? 100).toString(),
+            maxPriorityFeePerGas: (
+              fields.maxPriorityFeePerGas ?? 10
+            ).toString(),
+          }),
+    });
+    tx.signature = wallet.signingKey.sign(tx.unsignedHash);
+    HASH = tx.hash!;
+    return {
+      ...tx.toJSON(),
+      signature: tx.signature,
+      hash: HASH,
+      from: PAYER,
+      nonce,
+      gasPrice: BigNumber.from(tx.gasPrice ?? fields.gasPrice ?? 100),
+      maxFeePerGas:
+        tx.maxFeePerGas === null ? undefined : BigNumber.from(tx.maxFeePerGas),
+      maxPriorityFeePerGas:
+        tx.maxPriorityFeePerGas === null
+          ? undefined
+          : BigNumber.from(tx.maxPriorityFeePerGas),
+      gasLimit: BigNumber.from(21000),
+    };
+  };
   const mutate = (change: string) => {
     switch (change) {
       case 'account':
@@ -692,7 +728,7 @@ describe('EVM cancellation signing context', () => {
   )('preserves cancellation payload and exact fees for %j', async (test) => {
     state.activeAccountType = test.type;
     provider.getTransaction.mockResolvedValue(
-      test.missing ? null : original(test.nonce)
+      test.missing ? null : original(test.nonce, { type: test.legacy ? 0 : 2 })
     );
     sdk.setGasOverrides({ minGasLimit: '99999' });
     const result = await run(test.legacy, test.nonce);
@@ -860,10 +896,12 @@ describe('EVM cancellation signing context', () => {
     'keeps the one-wei minimum bump (legacy=%s)',
     async (legacy) => {
       provider.getTransaction.mockResolvedValue({
-        ...original(),
-        gasPrice: BigNumber.from(0),
-        maxFeePerGas: BigNumber.from(1),
-        maxPriorityFeePerGas: BigNumber.from(0),
+        ...original(7, {
+          type: legacy ? 0 : 2,
+          gasPrice: BigNumber.from(0),
+          maxFeePerGas: BigNumber.from(1),
+          maxPriorityFeePerGas: BigNumber.from(0),
+        }),
       });
       provider.getGasPrice.mockResolvedValue(BigNumber.from(0));
       jest
@@ -888,9 +926,11 @@ describe('EVM cancellation signing context', () => {
     async (legacy) => {
       const large = BigNumber.from('1000000000000000003');
       provider.getTransaction.mockResolvedValue({
-        ...original(),
-        gasPrice: large,
-        maxFeePerGas: large,
+        ...original(7, {
+          type: legacy ? 0 : 2,
+          gasPrice: large,
+          maxFeePerGas: large,
+        }),
       });
       expect((await run(legacy)).isCanceled).toBe(true);
       const fee = legacy ? signed[0].gasPrice : signed[0].maxFeePerGas;
@@ -975,6 +1015,7 @@ describe('EVM cancellation signing context', () => {
       });
       const pending = sdk.cancelSentTransaction(HASH, true, 7, {
         assertCurrentContext,
+        validateOriginal: () => undefined,
       });
       const rejected = expect(pending).rejects.toThrow(
         'Host selection changed'
@@ -1003,6 +1044,7 @@ describe('EVM cancellation signing context', () => {
         return { hash: Transaction.from(raw).hash };
       });
       const result = await sdk.cancelSentTransaction(HASH, true, 7, {
+        validateOriginal: () => undefined,
         assertCurrentContext: () => {
           if (!current) throw new Error('Host selection changed');
         },
@@ -1030,6 +1072,7 @@ describe('EVM cancellation signing context', () => {
         return implementation(params);
       });
       const pending = sdk.cancelSentTransaction(HASH, true, 7, {
+        validateOriginal: () => undefined,
         assertCurrentContext: () => {
           if (!current) throw new Error('Host selection changed');
         },
@@ -1048,6 +1091,7 @@ describe('EVM cancellation signing context', () => {
       current = false;
     });
     const result = await sdk.cancelSentTransaction(HASH, true, 7, {
+      validateOriginal: () => undefined,
       assertCurrentContext: () => {
         if (!current) throw new Error('Host selection changed');
       },

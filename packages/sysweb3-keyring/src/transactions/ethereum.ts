@@ -143,6 +143,64 @@ const normalizeEthersOverrides = (overrides: Record<string, any>) => {
   return normalized;
 };
 
+/** Bind all replacement input fields to the requested signed transaction. */
+const authenticateReplacementOriginal = (
+  transaction: TransactionResponse,
+  requestedHash: string,
+  expectedSender: string,
+  chainId: number
+): TransactionResponse => {
+  const fields = normalizeTransactionRequest(transaction);
+  if (fields.hash != null) fields.hash = fields.hash.toLowerCase();
+  const type =
+    fields.type ??
+    (fields.maxFeePerGas != null ? 2 : fields.accessList != null ? 1 : 0);
+  if (![0, 1, 2].includes(type)) {
+    throw new Error('Unsupported replacement transaction type');
+  }
+  fields.signature = fields.signature ?? {
+    r: fields.r,
+    s: fields.s,
+    v: fields.v ?? fields.yParity,
+  };
+  fields.type = type;
+  fields.data = fields.data ?? fields.input ?? '0x';
+  if (type === 2) delete fields.gasPrice; // Not signed in type 2.
+  const original = Transaction.from(fields);
+  if (
+    !original.signature ||
+    original.hash !== requestedHash ||
+    original.from?.toLowerCase() !== expectedSender ||
+    original.chainId !== BigInt(chainId)
+  ) {
+    throw new Error('Original transaction is not authenticated');
+  }
+  // Do not retain mutable RPC fields across subsequent asynchronous work.
+  return wrapTransactionResponse({
+    ...original.toJSON(),
+    hash: original.hash,
+    from: original.from,
+    gasPrice: original.gasPrice ?? 0,
+    maxFeePerGas: original.maxFeePerGas ?? 0,
+    maxPriorityFeePerGas: original.maxPriorityFeePerGas ?? 0,
+    signature: original.signature,
+    blockNumber: transaction.blockNumber,
+  });
+};
+
+const assertSynchronousOriginalValidation = (result: unknown): void => {
+  if (
+    result !== null &&
+    (typeof result === 'object' || typeof result === 'function') &&
+    typeof (result as PromiseLike<unknown>).then === 'function'
+  ) {
+    // A void callback type also accepts async functions. Decline their pending
+    // decision and consume a later rejection without allowing signing to start.
+    void Promise.resolve(result).catch(() => undefined);
+    throw new Error('Original transaction validator must be synchronous');
+  }
+};
+
 export class EthereumTransactions implements IEthereumTransactions {
   private _web3Provider: CustomJsonRpcProvider;
   private _web3ProviderKey?: string;
@@ -937,6 +995,15 @@ export class EthereumTransactions implements IEthereumTransactions {
     if (typeof options?.assertCurrentContext !== 'function') {
       throw new Error('Cancellation context required');
     }
+    if (typeof options.validateOriginal !== 'function') {
+      throw new Error('Cancellation original validator required');
+    }
+    if (
+      fallbackNonce !== undefined &&
+      (!Number.isSafeInteger(fallbackNonce) || fallbackNonce < 0)
+    ) {
+      throw new Error('Invalid cancellation fallback nonce');
+    }
     const assertHostContext = options.assertCurrentContext;
     assertHostContext();
     const {
@@ -971,9 +1038,23 @@ export class EthereumTransactions implements IEthereumTransactions {
       return { maxFeePerGas, maxPriorityFeePerGas };
     };
 
-    let tx = (await provider.getTransaction(
-      txHash
-    )) as Deferrable<TransactionResponse>;
+    const response = await provider.getTransaction(txHash);
+    assertCurrent();
+    if (response?.blockNumber != null || response?.blockHash != null) {
+      throw new Error('Original transaction is already mined');
+    }
+    let tx: Deferrable<TransactionResponse> | null =
+      response === null
+        ? null
+        : authenticateReplacementOriginal(
+            response,
+            txHash.toLowerCase(),
+            activeAccount.address.toLowerCase(),
+            activeNetwork.chainId
+          );
+    assertSynchronousOriginalValidation(
+      options.validateOriginal(tx as TransactionResponse | null)
+    );
     assertCurrent();
 
     // If transaction not found, create a minimal tx object with current gas prices
@@ -994,7 +1075,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           gasPrice: currentGasPrice,
           gasLimit: BigNumber.from(42000),
           data: '0x',
-        } as any;
+        } as Deferrable<TransactionResponse>;
       } else {
         const feeData = await currentEip1559Fees();
         tx = {
@@ -1006,7 +1087,7 @@ export class EthereumTransactions implements IEthereumTransactions {
           maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
           gasLimit: BigNumber.from(42000),
           data: '0x',
-        } as any;
+        } as Deferrable<TransactionResponse>;
       }
     } else if (!tx) {
       // No fallback nonce provided and tx not found
@@ -1727,31 +1808,13 @@ export class EthereumTransactions implements IEthereumTransactions {
     const validateLookup = (transaction: TransactionResponse | null) => {
       assertCurrent();
       if (!transaction) return null;
-      const fields = normalizeTransactionRequest(transaction);
-      if (fields.hash != null) fields.hash = fields.hash.toLowerCase();
-      const type =
-        fields.type ??
-        (fields.maxFeePerGas != null ? 2 : fields.accessList != null ? 1 : 0);
-      if (![0, 1, 2].includes(type)) {
-        throw new Error('Unsupported replacement transaction type');
-      }
-      fields.signature = fields.signature ?? {
-        r: fields.r,
-        s: fields.s,
-        v: fields.v ?? fields.yParity,
-      };
-      fields.type = type;
-      fields.data = fields.data ?? fields.input ?? '0x';
-      if (type === 2) delete fields.gasPrice; // Effective RPC gas price is not signed in type 2.
-      const original = Transaction.from(fields);
-      if (
-        !original.signature ||
-        original.hash !== requestedHash ||
-        original.from?.toLowerCase() !== expectedSender ||
-        original.chainId !== BigInt(activeNetwork.chainId)
-      ) {
-        throw new Error('Original transaction is not authenticated');
-      }
+      const authenticated = authenticateReplacementOriginal(
+        transaction,
+        requestedHash,
+        expectedSender,
+        activeNetwork.chainId
+      );
+      const type = authenticated.type;
       if (type !== 1) isLegacy = type === 0;
       if (
         isLegacy &&
@@ -1760,18 +1823,7 @@ export class EthereumTransactions implements IEthereumTransactions {
       ) {
         throw new Error('Trezor does not support type 1 replacement signing');
       }
-      // Read only detached, authenticated signed fields after asynchronous work.
-      const authenticated = wrapTransactionResponse({
-        ...original.toJSON(),
-        hash: original.hash,
-        from: original.from,
-        gasPrice: original.gasPrice ?? 0,
-        maxFeePerGas: original.maxFeePerGas ?? 0,
-        maxPriorityFeePerGas: original.maxPriorityFeePerGas ?? 0,
-        signature: original.signature,
-        blockNumber: transaction.blockNumber,
-      });
-      validateOriginal?.(authenticated);
+      assertSynchronousOriginalValidation(validateOriginal?.(authenticated));
       assertCurrent();
       return authenticated;
     };

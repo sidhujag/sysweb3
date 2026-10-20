@@ -4,6 +4,10 @@ jest.mock('../../../src/transactions/evm-local-signer', () => ({
   ...jest.requireActual('../../../src/transactions/evm-local-signer'),
   sendLocalEvmTransaction: jest.fn(),
 }));
+jest.mock('../../../src/providers', () => ({
+  ...jest.requireActual('../../../src/providers'),
+  CustomJsonRpcProvider: jest.fn(),
+}));
 
 import { INetworkType } from '@sidhujag/sysweb3-network';
 import { spawnSync } from 'child_process';
@@ -17,15 +21,18 @@ import {
 } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { Transaction } from 'ethers/transaction';
+import { Wallet } from 'ethers/wallet';
 
 import { BigNumber, normalizeTransactionRequest } from '../../../src/ethers-v6';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import { sendLocalEvmTransaction } from '../../../src/transactions/evm-local-signer';
 import { KeyringAccountType } from '../../../src/types';
 
-const FROM = `0x${'11'.repeat(20)}`;
+const originalWallet = new Wallet(`0x${'11'.repeat(32)}`);
+const FROM = originalWallet.address;
 const TO = `0x${'22'.repeat(20)}`;
-const HASH = `0x${'33'.repeat(32)}`;
+let HASH = `0x${'33'.repeat(32)}`;
 const network = {
   chainId: 5700,
   kind: INetworkType.Ethereum,
@@ -41,6 +48,31 @@ const transaction = {
   data: '0x1234',
 };
 const localSend = sendLocalEvmTransaction as jest.Mock;
+const cancellationOriginal = (fields: any = {}) => {
+  const tx = Transaction.from({
+    type: 2,
+    chainId: network.chainId,
+    nonce: 0,
+    to: TO,
+    value: 7,
+    data: '0x1234',
+    gasLimit: 21000,
+    maxFeePerGas: (fields.maxFeePerGas ?? 100).toString(),
+    maxPriorityFeePerGas: (fields.maxPriorityFeePerGas ?? 0).toString(),
+  });
+  tx.signature = originalWallet.signingKey.sign(tx.unsignedHash);
+  HASH = tx.hash!;
+  return {
+    ...tx.toJSON(),
+    hash: HASH,
+    from: FROM,
+    signature: tx.signature,
+    gasLimit: BigNumber.from(21000),
+    gasPrice: BigNumber.from(7),
+    maxFeePerGas: BigNumber.from(tx.maxFeePerGas!),
+    maxPriorityFeePerGas: BigNumber.from(tx.maxPriorityFeePerGas!),
+  };
+};
 
 describe('package release preflight', () => {
   it('inspects only dist without lifecycle hooks, publication or a written tarball', () => {
@@ -125,13 +157,7 @@ describe('package release preflight', () => {
 
 function fixture() {
   const provider = {
-    getTransaction: jest.fn().mockResolvedValue({
-      ...transaction,
-      gasLimit: BigNumber.from(21000),
-      gasPrice: BigNumber.from(7),
-      maxFeePerGas: BigNumber.from(100),
-      maxPriorityFeePerGas: BigNumber.from(0),
-    }),
+    getTransaction: jest.fn().mockResolvedValue(cancellationOriginal()),
     getGasPrice: jest.fn().mockResolvedValue(BigNumber.from(7)),
     getBlock: jest.fn().mockResolvedValue({ baseFeePerGas: BigNumber.from(5) }),
     getFeeData: jest.fn().mockResolvedValue({
@@ -521,6 +547,7 @@ describe('formatted standard transaction fee-model retention', () => {
 describe('cancellation recommendations keep base fee separate from replacement tip', () => {
   const cancelFields = () => localSend.mock.calls[0][2];
   const contextFor = (sdk: EthereumTransactions, provider: unknown) => ({
+    validateOriginal: () => undefined,
     assertCurrentContext: () => {
       if (sdk.web3Provider !== provider)
         throw new Error('Fixture provider changed');
@@ -551,11 +578,11 @@ describe('cancellation recommendations keep base fee separate from replacement t
     'retains the real positive replacement tip bump: original %s / recommendation %s',
     async (oldTip, recommendation, expected) => {
       const { sdk, provider } = fixture();
-      const original = await provider.getTransaction();
-      provider.getTransaction.mockResolvedValue({
-        ...original,
-        maxPriorityFeePerGas: BigNumber.from(oldTip),
-      });
+      provider.getTransaction.mockResolvedValue(
+        cancellationOriginal({
+          maxPriorityFeePerGas: BigNumber.from(oldTip),
+        })
+      );
       provider.send.mockResolvedValue(recommendation);
       await sdk.cancelSentTransaction(
         HASH,
@@ -570,12 +597,12 @@ describe('cancellation recommendations keep base fee separate from replacement t
 
   it('keeps exact integer replacement arithmetic above the safe-number range', async () => {
     const { sdk, provider } = fixture();
-    const original = await provider.getTransaction();
     const oldMaximum = (1n << 60n) + 3n;
-    provider.getTransaction.mockResolvedValue({
-      ...original,
-      maxFeePerGas: BigNumber.from(oldMaximum),
-    });
+    provider.getTransaction.mockResolvedValue(
+      cancellationOriginal({
+        maxFeePerGas: BigNumber.from(oldMaximum),
+      })
+    );
     await sdk.cancelSentTransaction(
       HASH,
       false,
