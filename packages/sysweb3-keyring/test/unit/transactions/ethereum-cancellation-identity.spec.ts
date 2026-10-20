@@ -290,4 +290,100 @@ describe('cancellation original identity admission', () => {
     );
     expect(deny).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ['lookup', 'resolve'],
+    ['lookup', 'reject'],
+    ['fallback', 'resolve'],
+    ['fallback', 'reject'],
+  ])(
+    'rejects async %s admission before a delayed %s',
+    async (source, outcome) => {
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const validation = (async () => {
+        await held;
+        if (outcome === 'reject') throw new Error('Delayed host rejection');
+      })();
+      const then = jest.spyOn(validation, 'then');
+      validateOriginal.mockReturnValue(validation);
+      if (source === 'fallback')
+        provider.getTransaction.mockResolvedValue(null);
+      try {
+        await expect(
+          run(source === 'fallback' ? 0 : undefined)
+        ).rejects.toThrow('Original transaction validator must be synchronous');
+        // The SDK attaches rejection handling before declining asynchronous
+        // admission, even though the callback has not settled yet.
+        expect(then).toHaveBeenCalled();
+        expect(provider.getGasPrice).not.toHaveBeenCalled();
+        expect(getKey).not.toHaveBeenCalled();
+        expect(sendLocalEvmTransaction).not.toHaveBeenCalled();
+        expect(deny).not.toHaveBeenCalled();
+      } finally {
+        // Only the pre-fix run needs test-owned cleanup. The passing run must
+        // rely on the SDK's handler for the delayed rejection below.
+        if (then.mock.calls.length === 0) validation.catch(() => undefined);
+        release();
+        await held;
+        await Promise.resolve();
+      }
+    }
+  );
+
+  it('declines a custom thenable and consumes its eventual rejection', async () => {
+    const then = jest.fn((_resolve, reject) =>
+      reject(new Error('Thenable rejection'))
+    );
+    validateOriginal.mockReturnValue({ then });
+    await expect(run()).rejects.toThrow(
+      'Original transaction validator must be synchronous'
+    );
+    await Promise.resolve();
+    expect(then).toHaveBeenCalledTimes(1);
+    expect(provider.getGasPrice).not.toHaveBeenCalled();
+    expect(getKey).not.toHaveBeenCalled();
+    expect(sendLocalEvmTransaction).not.toHaveBeenCalled();
+    expect(deny).not.toHaveBeenCalled();
+  });
+
+  it.each(['resolve', 'reject'])(
+    'rejects async speed-up validation before a delayed %s',
+    async (outcome) => {
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const validation = (async () => {
+        await held;
+        if (outcome === 'reject') throw new Error('Delayed speed-up rejection');
+      })();
+      const then = jest.spyOn(validation, 'then');
+      validateOriginal.mockReturnValue(validation);
+      provider.getBalance = jest
+        .fn()
+        .mockResolvedValue(BigNumber.from('1000000000000000000000000'));
+      try {
+        await expect(
+          sdk.sendTransactionWithEditedFee(HASH, true, {
+            previewOnly: true,
+            validateOriginal,
+          })
+        ).rejects.toThrow('Original transaction validator must be synchronous');
+        expect(then).toHaveBeenCalled();
+        expect(provider.getBalance).not.toHaveBeenCalled();
+        expect(provider.getGasPrice).not.toHaveBeenCalled();
+        expect(getKey).not.toHaveBeenCalled();
+        expect(sendLocalEvmTransaction).not.toHaveBeenCalled();
+        expect(deny).not.toHaveBeenCalled();
+      } finally {
+        if (then.mock.calls.length === 0) validation.catch(() => undefined);
+        release();
+        await held;
+        await Promise.resolve();
+      }
+    }
+  );
 });

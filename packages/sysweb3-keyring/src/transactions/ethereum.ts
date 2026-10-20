@@ -188,6 +188,19 @@ const authenticateReplacementOriginal = (
   });
 };
 
+const assertSynchronousOriginalValidation = (result: unknown): void => {
+  if (
+    result !== null &&
+    (typeof result === 'object' || typeof result === 'function') &&
+    typeof (result as PromiseLike<unknown>).then === 'function'
+  ) {
+    // A void callback type also accepts async functions. Decline their pending
+    // decision and consume a later rejection without allowing signing to start.
+    void Promise.resolve(result).catch(() => undefined);
+    throw new Error('Original transaction validator must be synchronous');
+  }
+};
+
 export class EthereumTransactions implements IEthereumTransactions {
   private _web3Provider: CustomJsonRpcProvider;
   private _web3ProviderKey?: string;
@@ -1039,7 +1052,9 @@ export class EthereumTransactions implements IEthereumTransactions {
             activeAccount.address.toLowerCase(),
             activeNetwork.chainId
           );
-    options.validateOriginal(tx as TransactionResponse | null);
+    assertSynchronousOriginalValidation(
+      options.validateOriginal(tx as TransactionResponse | null)
+    );
     assertCurrent();
 
     // If transaction not found, create a minimal tx object with current gas prices
@@ -1808,7 +1823,7 @@ export class EthereumTransactions implements IEthereumTransactions {
       ) {
         throw new Error('Trezor does not support type 1 replacement signing');
       }
-      validateOriginal?.(authenticated);
+      assertSynchronousOriginalValidation(validateOriginal?.(authenticated));
       assertCurrent();
       return authenticated;
     };

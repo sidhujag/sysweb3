@@ -61,6 +61,7 @@ export interface IEvmReplacementOptions {
   targetAccount?: { id: number; type: KeyringAccountType };
   /** Host guard for the current account, network, session and pending original. */
   assertCurrentContext?: () => void;
+  /** Synchronous original admission; Promise/thenable returns are rejected, never awaited. */
   validateOriginal?: (transaction: TransactionResponse) => void;
   beforeBroadcast?: () => void;
 }
@@ -74,6 +75,7 @@ export interface IEvmCancellationOptions {
    * the RPC did not find the original: admit it only when the supplied fallbackNonce
    * belongs to trusted, still-current local submission data; otherwise throw.
    * Invalid non-null RPC replies never become a null/fallback admission.
+   * Promise/thenable returns are rejected, never awaited.
    */
   validateOriginal: (transaction: TransactionResponse | null) => void;
 }
