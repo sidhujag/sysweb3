@@ -37,3 +37,7 @@ jobs:
             test/unit/transactions/ethereum-replacement.spec.ts \
             test/unit/transactions/syscoin-transactions.spec.ts \
             test/unit/transactions/native-sweep.spec.ts
+      - name: Validate network RPC regressions
+        working-directory: packages/sysweb3-network
+        run: |
+          NODE_ENV=test node ../../node_modules/jest/bin/jest.js --config jest.config.js --runInBand --silent
