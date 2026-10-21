@@ -249,7 +249,6 @@ export const getEthRpc = async (
 ): Promise<{
   formattedNetwork: INetwork;
 }> => {
-  const endsWithSlash = /\/$/;
   const { valid, hexChainId, details } = await validateEthRpc(
     data.url,
     isInCooldown
@@ -264,9 +263,12 @@ export const getEthRpc = async (
   } else if (data.explorer) {
     explorer = data.explorer;
   }
-  if (!endsWithSlash.test(explorer)) {
-    explorer = explorer + '/';
-  }
+  // Preserve query and fragment bytes; only the pathname needs a trailing slash.
+  const explorerString = String(explorer);
+  const explorerPath = explorerString.split(/[?#]/, 1)[0];
+  explorer = explorerPath.endsWith('/')
+    ? explorerString
+    : explorerPath + '/' + explorerString.slice(explorerPath.length);
   if (!details && !data.symbol) throw new Error('Must define a symbol');
   const formattedNetwork = {
     url: data.url,
