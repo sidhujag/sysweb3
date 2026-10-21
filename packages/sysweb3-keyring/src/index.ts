@@ -11,3 +11,7 @@ export * from './hardware-wallet-manager';
 export * from './hardware-wallet-manager-singleton';
 export { PsbtUtils } from './utils/psbt';
 export { invalidateBlockbookAccountCache } from './utils/blockbook-cache';
+export {
+  deriveDescriptorAddress,
+  descriptorChecksum,
+} from './utils/watch-descriptor';

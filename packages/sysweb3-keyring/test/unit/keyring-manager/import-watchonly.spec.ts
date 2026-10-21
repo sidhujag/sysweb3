@@ -1,8 +1,15 @@
 import { INetworkType } from '@sidhujag/sysweb3-network';
+import bs58check from 'bs58check';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
 import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
+
+const XPUB =
+  'xpub6BgBgsespWvERF3LHQu6CnqdvfEvtMcQjYrcRzx53QJjSxarj2afYWcLteoGVky7D3UKDP9QyrLprQ3VCECoY49yfdDEHGCtMMj92pReUsQ';
+const publicPayload = Buffer.from(bs58check.decode(XPUB));
+publicPayload.writeUInt32BE(0x04b24746, 0);
+const ZPUB = bs58check.encode(publicPayload);
 
 describe('Watch-only Import - KeyringManager', () => {
   let keyringManager: KeyringManager;
@@ -12,6 +19,10 @@ describe('Watch-only Import - KeyringManager', () => {
   beforeEach(async () => {
     setupMocks();
     await setupTestVault(FAKE_PASSWORD);
+  });
+
+  afterEach(async () => {
+    await keyringManager?.destroy();
   });
 
   describe('Single-address watch-only (address)', () => {
@@ -32,7 +43,7 @@ describe('Watch-only Import - KeyringManager', () => {
     });
 
     it('imports address as watch-only single-address and blocks derivation', async () => {
-      const addr = 'tsys1qtestaddressxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
+      const addr = 'tsys1qalwlmdxd2ggue4290ekzxl9tetg56neeepgwhk';
       const imported = await (keyringManager as any).importWatchOnly(
         addr,
         'Watch-only'
@@ -90,14 +101,16 @@ describe('Watch-only Import - KeyringManager', () => {
     });
 
     it('imports xpub-like as watch-only and blocks derivation', async () => {
-      // Not a real xpub; importWatchOnly should still accept and mark watch-only
-      const xpub = 'zpub6testxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
+      const xpub = ZPUB;
       const imported = await (keyringManager as any).importWatchOnly(
         xpub,
         'Watch-only XPUB'
       );
       expect(imported.xprv).toBe('');
       expect(imported.xpub).toBe(xpub);
+      expect(imported.address).toBe(
+        'sys1qalwlmdxd2ggue4290ekzxl9tetg56neewnt8yu'
+      );
 
       currentVaultState.accounts[KeyringAccountType.Imported][imported.id] = {
         id: imported.id,
@@ -125,13 +138,16 @@ describe('Watch-only Import - KeyringManager', () => {
     });
 
     it('imports descriptor as watch-only and blocks derivation', async () => {
-      const desc = 'wpkh(xpub6testxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/0/*)';
+      const desc = `wpkh(${XPUB}/0/*)`;
       const imported = await (keyringManager as any).importWatchOnly(
         desc,
         'Watch-only DESC'
       );
       expect(imported.xprv).toBe('');
       expect(imported.xpub).toBe(desc);
+      expect(imported.address).toBe(
+        'sys1qalwlmdxd2ggue4290ekzxl9tetg56neewnt8yu'
+      );
 
       currentVaultState.accounts[KeyringAccountType.Imported][imported.id] = {
         id: imported.id,
@@ -159,7 +175,7 @@ describe('Watch-only Import - KeyringManager', () => {
     });
 
     it('rejects duplicate watch-only import by address', async () => {
-      const addr = 'sys1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq';
+      const addr = 'sys1qalwlmdxd2ggue4290ekzxl9tetg56neewnt8yu';
       const first = await (keyringManager as any).importWatchOnly(addr, 'WO1');
       currentVaultState.accounts[KeyringAccountType.Imported][first.id] = {
         id: first.id,

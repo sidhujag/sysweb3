@@ -66,6 +66,7 @@ import {
   assertPsbtAccountScope,
   createPsbtDerivationGuard,
 } from './utils/psbt-account-scope';
+import { deriveDescriptorAddress } from './utils/watch-descriptor';
 
 export interface ISysAccount {
   address: string;
@@ -661,7 +662,11 @@ export class KeyringManager implements IKeyringManager {
     }
     const { xpub, isImported, address } = account as any;
     // For imported single-address accounts, always return the single address
-    const looksLikeSingleAddress = isImported && xpub === address;
+    const looksLikeSingleAddress =
+      isImported &&
+      xpub === address &&
+      !this.isDescriptor(xpub) &&
+      !this.isXpubLike(xpub);
     if (looksLikeSingleAddress) return address;
     return await this.getAddress(xpub, true); // Don't skip increment - get next unused
   };
@@ -674,7 +679,13 @@ export class KeyringManager implements IKeyringManager {
       throw new Error(`Account with id ${id} not found`);
     }
     const { xpub, isImported, address } = account as any;
-    if (isImported && xpub === address) return address;
+    if (
+      isImported &&
+      xpub === address &&
+      !this.isDescriptor(xpub) &&
+      !this.isXpubLike(xpub)
+    )
+      return address;
     return await this.getAddress(xpub, true);
   };
 
@@ -734,7 +745,13 @@ export class KeyringManager implements IKeyringManager {
       throw new Error('Active account not found');
     }
     const { xpub, isImported, address } = account as any;
-    if (isImported && xpub === address) return address;
+    if (
+      isImported &&
+      xpub === address &&
+      !this.isDescriptor(xpub) &&
+      !this.isXpubLike(xpub)
+    )
+      return address;
     const nextAddress = await this.getAddress(xpub, false);
     // NOTE: Address updates should be dispatched to Redux store, not updated here
     // The calling code should handle the Redux dispatch
@@ -1263,6 +1280,19 @@ export class KeyringManager implements IKeyringManager {
     isChangeAddress: boolean,
     options?: { forceIndex0?: boolean }
   ) => {
+    if (this.isDescriptor(xpub)) {
+      // The BIP84 history scanner below cannot choose a descriptor's next
+      // unused index. Import can derive index zero locally, but rotation must
+      // not reinterpret a descriptor as a BIP84 extended key.
+      if (!options?.forceIndex0) {
+        throw new Error(
+          'Address rotation is not supported for watch-only descriptors'
+        );
+      }
+      return deriveDescriptorAddress(xpub, this.getVault().activeNetwork, {
+        change: isChangeAddress,
+      });
+    }
     const { currentAccount, addressIndex } = await this.fetchCurrentAccountData(
       xpub,
       isChangeAddress
@@ -1361,29 +1391,36 @@ export class KeyringManager implements IKeyringManager {
 
     // Compute address field
     let addressToStore = identifier;
-    if (isXpub) {
+    if (isDesc) {
+      // Keep the descriptor as the history reference, never as a recipient.
+      // Backend-provided address metadata must not select the deposit address.
+      addressToStore = deriveDescriptorAddress(identifier, activeNetwork);
+    } else if (isXpub) {
       // Minimal approach: treat any extended pubkey as BIP84 by converting to zpub/vpub
-      try {
-        const { types } = getNetworkConfig(
-          activeNetwork.slip44,
-          activeNetwork.currency || 'Syscoin'
-        );
-        const target =
-          activeNetwork.slip44 === 1
-            ? (types.zPubType as any).testnet.vpub
-            : types.zPubType.mainnet.zpub;
-        const bip84Key = convertExtendedKeyVersion(identifier, target);
-        addressToStore = await this.getAddress(bip84Key, false, {
-          forceIndex0: true,
-        });
-      } catch (e) {
-        // Fallback to identifier if derivation fails (e.g., malformed)
-        addressToStore = identifier;
-      }
+      const { types } = getNetworkConfig(
+        activeNetwork.slip44,
+        activeNetwork.currency || 'Syscoin'
+      );
+      const target =
+        activeNetwork.slip44 === 1
+          ? (types.zPubType as any).testnet.vpub
+          : types.zPubType.mainnet.zpub;
+      const bip84Key = convertExtendedKeyVersion(identifier, target);
+      addressToStore = await this.getAddress(bip84Key, false, {
+        forceIndex0: true,
+      });
     }
 
     // Validate duplicates across all account buckets, including passkey smart accounts.
-    if (this.accountAddressExists(accounts, addressToStore)) {
+    if (
+      this.accountAddressExists(accounts, addressToStore) ||
+      ((isXpub || isDesc) &&
+        Object.values(accounts || {}).some((bucket) =>
+          Object.values(bucket || {}).some(
+            (account) => account?.xpub === identifier
+          )
+        ))
+    ) {
       throw new Error('Account already exists on your Wallet.');
     }
     // Confirm with Blockbook
