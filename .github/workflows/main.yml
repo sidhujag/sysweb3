@@ -41,3 +41,10 @@ jobs:
         working-directory: packages/sysweb3-network
         run: |
           NODE_ENV=test node ../../node_modules/jest/bin/jest.js --config jest.config.js --runInBand --silent
+      - name: Validate watch-only descriptor regressions
+        working-directory: packages/sysweb3-keyring
+        run: |
+          NODE_ENV=test node ../../node_modules/jest/bin/jest.js --config jest.config.js --runInBand --silent \
+            test/unit/keyring-manager/import-watchonly.spec.ts \
+            test/unit/keyring-manager/watch-descriptor-lifecycle.spec.ts \
+            test/unit/utils/watch-descriptor.spec.ts
