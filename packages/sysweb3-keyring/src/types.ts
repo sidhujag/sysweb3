@@ -14,6 +14,11 @@ import {
   TransactionResponse,
 } from './ethers-v6';
 import { LedgerKeyring } from './ledger';
+import {
+  IDecryptPrivateRecordParams,
+  IEncryptedPrivateRecord,
+  IEncryptPrivateRecordParams,
+} from './private-records';
 import { SyscoinHDSigner } from './signers';
 import { TrezorKeyring } from './trezor';
 
@@ -264,6 +269,13 @@ export interface IKeyringManager {
   syscoinTransaction: ISyscoinTransactions;
   isSeedValid: (seedPhrase: string) => boolean;
   getSeed: (pwd: string) => Promise<string>;
+  getPrivateRecordProfileId: () => Promise<string>;
+  encryptPrivateRecord: (
+    params: IEncryptPrivateRecordParams
+  ) => Promise<IEncryptedPrivateRecord>;
+  decryptPrivateRecord: (
+    params: IDecryptPrivateRecordParams
+  ) => Promise<Uint8Array>;
   deriveSLHDSASetupSecretForAccount: (params: {
     accountIndex: number;
   }) => Promise<{

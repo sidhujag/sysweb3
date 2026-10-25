@@ -223,6 +223,55 @@ Main class for keyring operations:
 - `importTrezorAccount(label?)` - Import Trezor account
 - `importLedgerAccount(isConnected, label?)` - Import Ledger account
 
+### Encrypted private records
+
+An unlocked keyring can seal small application records without returning its
+mnemonic or a derived encryption key:
+
+```typescript
+const domain = 'org.example.wallet.private-records.v1';
+const recordId = crypto.randomUUID();
+const profileId = await keyringManager.getPrivateRecordProfileId();
+const envelope = await keyringManager.encryptPrivateRecord({
+  domain,
+  recordId,
+  plaintext: new TextEncoder().encode('application-owned private data'),
+});
+// Store or back up only envelope; storage is owned by the calling application.
+const plaintext = await keyringManager.decryptPrivateRecord({
+  domain,
+  recordId,
+  envelope,
+});
+// Consume the bytes, then clear them when no longer needed.
+plaintext.fill(0);
+```
+
+`IEncryptedPrivateRecord` contains only `version: 1`, `domain`, `recordId`,
+`profileId`, a base64 nonce and base64 ciphertext including its authentication
+tag. All application metadata should be encrypted inside `plaintext`. Domains
+and record IDs are 1–128 ASCII characters: an alphanumeric first character,
+followed by alphanumerics or `.`, `_`, `:`, `/`, `-`. Records may contain 0–65536
+bytes. `MAX_PRIVATE_RECORD_BYTES` and `MAX_PRIVATE_RECORD_LABEL_BYTES` export
+these bounds.
+
+The API uses native WebCrypto HKDF-SHA256 and AES-256-GCM, with a fresh random
+96-bit nonce and a 128-bit tag. The authenticated tuple binds the format version,
+domain, record ID and profile ID. Profile and encryption derivations have
+separate HKDF labels. The root material is the NFKD-normalized mnemonic or
+extended private key already held by the unlocked session; derivation does not
+depend on the selected account, network or password. Rewrapping the same root
+with a new password therefore preserves access to these records.
+
+Each operation rejects if its source session is locked, replaced or transferred
+before completion, even if the same buffers are later transferred back. These
+methods do not read or write wallet storage. Callers remain responsible for
+record IDs, persistence, backup, rollback detection and clearing returned bytes.
+**The seed alone cannot restore randomly generated records: their encrypted
+backups are also required.** Temporary byte buffers are cleared; JavaScript
+strings and native cryptographic allocations remain subject to runtime garbage
+collection rather than guaranteed memory erasure.
+
 ## Security
 
 - `initializeSession`, `initializeWalletSecurely`, and the initialization factories create a new wallet only when both vault records are absent. Use `unlock()` to restore an existing wallet. Repeating initialization on a matching live session verifies the stored wallet without rewriting it.
