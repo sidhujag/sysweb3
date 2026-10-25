@@ -45,6 +45,7 @@ import {
   IEthereumTransactions,
   IEvmCancellationOptions,
   IEvmReplacementOptions,
+  IEvmSendOptions,
   SimpleTransactionRequest,
   KeyringAccountType,
   accountType,
@@ -188,7 +189,10 @@ const authenticateReplacementOriginal = (
   });
 };
 
-const assertSynchronousOriginalValidation = (result: unknown): void => {
+const assertSynchronousOriginalValidation = (
+  result: unknown,
+  message = 'Original transaction validator must be synchronous'
+): void => {
   if (
     result !== null &&
     (typeof result === 'object' || typeof result === 'function') &&
@@ -197,7 +201,7 @@ const assertSynchronousOriginalValidation = (result: unknown): void => {
     // A void callback type also accepts async functions. Decline their pending
     // decision and consume a later rejection without allowing signing to start.
     void Promise.resolve(result).catch(() => undefined);
-    throw new Error('Original transaction validator must be synchronous');
+    throw new Error(message);
   }
 };
 
@@ -1396,16 +1400,31 @@ export class EthereumTransactions implements IEthereumTransactions {
   //TODO: This function needs to be refactored
   sendFormattedTransaction = async (
     params: SimpleTransactionRequest,
-    isLegacy?: boolean
+    isLegacy?: boolean,
+    options?: IEvmSendOptions
   ) => {
     let broadcastAttempted = false;
     try {
+      if (
+        options !== undefined &&
+        (!options || typeof options !== 'object' || Array.isArray(options))
+      )
+        throw new Error('Invalid transaction context options');
+      // Capture once; later caller mutations cannot replace this invocation's
+      // admission decision while chain checks or device approval are pending.
+      const assertHostCurrent = options?.assertCurrent;
+      if (
+        assertHostCurrent !== undefined &&
+        typeof assertHostCurrent !== 'function'
+      )
+        throw new Error('Invalid transaction context guard');
       return await this.sendFormattedTransactionInternal(
         params,
         isLegacy,
         () => {
           broadcastAttempted = true;
-        }
+        },
+        assertHostCurrent
       );
     } catch (error) {
       // A broadcast transport error may mean the node accepted the signed
@@ -1426,7 +1445,8 @@ export class EthereumTransactions implements IEthereumTransactions {
   private sendFormattedTransactionInternal = async (
     params: SimpleTransactionRequest,
     isLegacy: boolean | undefined,
-    beforeBroadcast: () => void
+    beforeBroadcast: () => void,
+    assertHostCurrent?: () => void
   ) => {
     // Hardware approval may outlive the selected account, network or unlocked
     // session. Keep immutable identities and one provider for this invocation.
@@ -1436,8 +1456,19 @@ export class EthereumTransactions implements IEthereumTransactions {
       activeAccountId,
       activeNetwork,
       provider,
-      assertCurrent,
+      assertCurrent: assertKeyringCurrent,
     } = this.captureEvmSigningContext();
+    const assertCurrent = () => {
+      const result: unknown = assertHostCurrent?.();
+      if (result !== undefined) {
+        assertSynchronousOriginalValidation(
+          result,
+          'Transaction context guard must be synchronous'
+        );
+        throw new Error('Transaction context guard must return undefined');
+      }
+      assertKeyringCurrent();
+    };
     const assertBeforeBroadcast = () => {
       assertCurrent();
       beforeBroadcast();

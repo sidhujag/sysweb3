@@ -218,6 +218,13 @@ Main class for keyring operations:
 - `syscoinTransaction` - UTXO transaction operations
 - `ethereumTransaction` - EVM transaction operations
 
+For application-specific approval rules, pass an optional third argument to
+`ethereumTransaction.sendFormattedTransaction(params, isLegacy, { assertCurrent })`.
+The guard must return `undefined` synchronously or throw to deny the operation.
+It supplements the SDK's account, network and session checks and is rechecked
+after asynchronous preparation, immediately before signing, and before broadcast.
+It is not called after a broadcast acknowledgement to reclassify a sent transaction.
+
 ### Hardware Wallet Support
 
 - `importTrezorAccount(label?)` - Import Trezor account
