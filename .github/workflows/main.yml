@@ -41,6 +41,11 @@ jobs:
         working-directory: packages/sysweb3-network
         run: |
           NODE_ENV=test node ../../node_modules/jest/bin/jest.js --config jest.config.js --runInBand --silent
+      - name: Build keyring and validate private record custody
+        run: |
+          node node_modules/typescript/bin/tsc -p packages/sysweb3-keyring/tsconfig.json
+          cd packages/sysweb3-keyring
+          NODE_ENV=test node ../../node_modules/jest/bin/jest.js --config jest.config.js --runInBand --silent test/unit/keyring-manager/private-records.spec.ts
       - name: Validate watch-only descriptor regressions
         working-directory: packages/sysweb3-keyring
         run: |
