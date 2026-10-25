@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.625
+
+- Add session-bound encryption for application-owned private records using native HKDF-SHA256 and AES-256-GCM, without exporting the wallet root or encryption keys.
+- Authenticate record domain, ID, version and profile; reject asynchronous results when the source session is locked, replaced or transferred.
+- Keep storage and backups in the host application. Random records require their encrypted backups; the seed alone cannot recreate missing records.
+
 ## 1.0.622
 
 - Bind EVM cancellation to its captured account, network, provider and available wallet-session guard. Reject context changes after RPC reads, after hardware approval, and before signing or broadcasting.

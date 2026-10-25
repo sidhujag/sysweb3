@@ -35,6 +35,14 @@ import {
   initialActiveTrezorAccountState,
 } from './initial-state';
 import { LedgerKeyring } from './ledger';
+import {
+  decryptPrivateRecordBytes,
+  encryptPrivateRecordBytes,
+  privateRecordProfileId,
+  IDecryptPrivateRecordParams,
+  IEncryptedPrivateRecord,
+  IEncryptPrivateRecordParams,
+} from './private-records';
 import { getSyscoinSigners, SyscoinHDSigner } from './signers';
 import {
   getDecryptedVault,
@@ -203,6 +211,7 @@ export class KeyringManager implements IKeyringManager {
   // Secure session data - using Buffers that can be explicitly cleared
   private sessionPassword: SecureBuffer | null = null;
   private sessionMnemonic: SecureBuffer | null = null; // can be a mnemonic or a zprv, can be changed to a zprv when using an imported wallet
+  private privateRecordSessionRevision = 0;
 
   /**
    * @param sharedHardwareWalletManager Optional shared HardwareWalletManager instance.
@@ -305,6 +314,7 @@ export class KeyringManager implements IKeyringManager {
     !!this.sessionPassword && !this.sessionPassword.isCleared();
 
   public lockWallet = async () => {
+    this.privateRecordSessionRevision++;
     // Clear secure session data
     if (this.sessionPassword) {
       this.sessionPassword.clear();
@@ -353,6 +363,7 @@ export class KeyringManager implements IKeyringManager {
     if (!this.sessionPassword || !this.sessionMnemonic) {
       throw new Error('Session data is missing during transfer');
     }
+    this.privateRecordSessionRevision++;
 
     targetKeyringImpl.receiveSessionOwnership(
       this.sessionPassword,
@@ -369,6 +380,7 @@ export class KeyringManager implements IKeyringManager {
     sessionPassword: SecureBuffer,
     sessionMnemonic: SecureBuffer
   ): void => {
+    this.privateRecordSessionRevision++;
     // Clear any existing data first
     if (this.sessionPassword) {
       this.sessionPassword.clear();
@@ -973,6 +985,84 @@ export class KeyringManager implements IKeyringManager {
       return plainText;
     });
   };
+
+  private privateRecordSession() {
+    const password = this.sessionPassword;
+    const mnemonic = this.sessionMnemonic;
+    const revision = this.privateRecordSessionRevision;
+    const assertCurrent = () => {
+      if (
+        !password ||
+        !mnemonic ||
+        password.isCleared() ||
+        mnemonic.isCleared() ||
+        this.sessionPassword !== password ||
+        this.sessionMnemonic !== mnemonic ||
+        this.privateRecordSessionRevision !== revision
+      ) {
+        throw new Error('Private record session changed');
+      }
+    };
+    assertCurrent();
+    const root = this.getDecryptedMnemonic().normalize('NFKD');
+    if (!root || root.length > 4096)
+      throw new Error('Invalid private record root');
+    return { secret: new TextEncoder().encode(root), assertCurrent };
+  }
+
+  /** Stable local profile identifier; never an account address or a key. */
+  public async getPrivateRecordProfileId(): Promise<string> {
+    const session = this.privateRecordSession();
+    try {
+      const profile = await privateRecordProfileId(
+        session.secret,
+        session.assertCurrent
+      );
+      session.assertCurrent();
+      return profile;
+    } finally {
+      session.secret.fill(0);
+    }
+  }
+
+  /** Encrypt caller-owned bytes; persistence and encrypted backup belong to the caller. */
+  public async encryptPrivateRecord(
+    params: IEncryptPrivateRecordParams
+  ): Promise<IEncryptedPrivateRecord> {
+    const session = this.privateRecordSession();
+    try {
+      const envelope = await encryptPrivateRecordBytes(
+        session.secret,
+        params,
+        session.assertCurrent
+      );
+      session.assertCurrent();
+      return envelope;
+    } finally {
+      session.secret.fill(0);
+    }
+  }
+
+  public async decryptPrivateRecord(
+    params: IDecryptPrivateRecordParams
+  ): Promise<Uint8Array> {
+    const session = this.privateRecordSession();
+    let plaintext: Uint8Array | undefined;
+    try {
+      plaintext = await decryptPrivateRecordBytes(
+        session.secret,
+        params,
+        session.assertCurrent
+      );
+      session.assertCurrent();
+      return plaintext;
+    } catch (error) {
+      plaintext?.fill(0);
+      throw error;
+    } finally {
+      session.secret.fill(0);
+    }
+  }
 
   public setSignerNetwork = async (
     network: INetwork
@@ -2556,6 +2646,7 @@ export class KeyringManager implements IKeyringManager {
 
       // Encrypt session data with sessionPassword hash for consistency
       // This allows keyring manager to decrypt with this.sessionPassword
+      this.privateRecordSessionRevision++;
       this.sessionPassword = new SecureBuffer(saltedHashPassword);
       // Encrypt the mnemonic with session password for consistency with the rest of the code
       const encryptedMnemonic = CryptoJS.AES.encrypt(
