@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.626
+
+- Add an optional synchronous host guard to formatted EVM transaction submission. The SDK captures it once and rechecks it with the existing account, network and session guards before signing and broadcast.
+- Reject asynchronous or invalid host guards before signing. Preserve acknowledged transaction results and the existing classification of ambiguous broadcast failures.
+
 ## 1.0.625
 
 - Add session-bound encryption for application-owned private records using native HKDF-SHA256 and AES-256-GCM, without exporting the wallet root or encryption keys.

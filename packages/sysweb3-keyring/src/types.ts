@@ -57,6 +57,11 @@ export type EvmLocalAccount = {
   publicKey: string;
 };
 
+export interface IEvmSendOptions {
+  /** Synchronous host admission, rechecked immediately before signing and broadcast. */
+  assertCurrent?: () => void;
+}
+
 export interface IEvmReplacementOptions {
   /** Read-only preview; never requests credentials, a device signature or broadcast. */
   previewOnly?: boolean;
@@ -124,7 +129,8 @@ export interface IEthereumTransactions {
   parsePersonalMessage: (hexMsg: string) => string;
   sendFormattedTransaction: (
     params: SimpleTransactionRequest,
-    isLegacy?: boolean
+    isLegacy?: boolean,
+    options?: IEvmSendOptions
   ) => Promise<TransactionResponse>;
   sendSignedErc1155Transaction: ({
     receiver,
