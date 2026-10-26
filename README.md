@@ -13,14 +13,11 @@ This monorepo contains the following packages:
 
 ## Setup
 
-### Prerequisites
-
-- Node.js 10 or later
-- Yarn v1 or v2
-
 ### Installation
 
-To install the packages, run:
+Install the published packages with your application's package manager. Browser
+consumers do not require a Node.js runtime; Node consumers must satisfy the
+requirements of the packages and dependencies they use.
 
 ```bash
 yarn add @sidhujag/sysweb3-keyring @sidhujag/sysweb3-network @sidhujag/sysweb3-utils @sidhujag/sysweb3-core
@@ -73,6 +70,10 @@ console.log(sysweb3);
 ```
 
 ## Development
+
+Use Node.js 26.12.1, pinned in `.nvmrc`, and Yarn 1.22.22 for repository builds and
+tests. Run `nvm install && nvm use` before installing dependencies. This build
+toolchain pin does not change the published SDK packages' runtime requirements.
 
 ### Scripts
 

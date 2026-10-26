@@ -67,6 +67,9 @@ isolated worker without blocking the approval UI.
 
 ## Build and tests
 
+Repository development and CI use Node.js 26.12.1, pinned in the root `.nvmrc`.
+The package's Node consumer requirement remains the range in its `engines` field.
+
 `npm ci && npm test` inside this package. Tests use synthetic funding fixtures and
 public test keys; no live wallet, RPC, secret or broadcast is involved.
 
