@@ -2,11 +2,13 @@ name: Sentry protocol SDK
 on:
   pull_request:
     paths:
+      - '.nvmrc'
       - 'packages/sysweb3-sentry/**'
       - '.github/workflows/sentry.yml'
   push:
     branches: [master, main]
     paths:
+      - '.nvmrc'
       - 'packages/sysweb3-sentry/**'
       - '.github/workflows/sentry.yml'
 permissions:
@@ -24,7 +26,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version-file: '.nvmrc'
           cache: npm
           cache-dependency-path: packages/sysweb3-sentry/package-lock.json
       - run: npm ci --ignore-scripts --workspaces=false
