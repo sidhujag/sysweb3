@@ -65,6 +65,12 @@
       ],
       "cjs/evm-fees.js": [
         "types/evm-fees.d.ts"
+      ],
+      "cjs/utils/watch-descriptor": [
+        "types/utils/watch-descriptor.d.ts"
+      ],
+      "cjs/utils/watch-descriptor.js": [
+        "types/utils/watch-descriptor.d.ts"
       ]
     }
   },
