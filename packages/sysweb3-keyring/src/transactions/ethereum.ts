@@ -3288,6 +3288,7 @@ export class EthereumTransactions<
 
     try {
       // First attempt: standard estimation
+      assertCurrent();
       const estimated = await provider.estimateGas(request);
 
       return checked(

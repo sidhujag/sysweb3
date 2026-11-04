@@ -58,6 +58,14 @@ describe('SDK estimates honor shared activated gas bounds', () => {
       expect(f.provider.estimateGas).toHaveBeenCalledTimes(1);
     }
   );
+  it('rejects an already-aborted estimate before dispatch', async () => {
+    const f = make();
+    (f.sdk as any).abortController.abort();
+    await expect(f.sdk.getTxGasLimit({})).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    expect(f.provider.estimateGas).not.toHaveBeenCalled();
+  });
   it('preserves the same buffered estimate on unrelated chains', async () => {
     const f = make(5700);
     f.provider.estimateGas.mockResolvedValue(BigNumber.from('14000000'));
