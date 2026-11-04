@@ -18,6 +18,12 @@
       "cjs/transactions/syscoin-core.js": [
         "types/transactions/syscoin-core.d.ts"
       ],
+      "cjs/transactions/evm-submission": [
+        "types/transactions/evm-submission.d.ts"
+      ],
+      "cjs/transactions/evm-submission.js": [
+        "types/transactions/evm-submission.d.ts"
+      ],
       "cjs/transactions/ethereum": [
         "types/transactions/ethereum.d.ts"
       ],
