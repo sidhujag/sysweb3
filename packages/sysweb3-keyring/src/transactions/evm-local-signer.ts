@@ -275,12 +275,15 @@ export const sendLocalEvmTransaction = async (
     void Promise.resolve(validation).catch(() => undefined);
     throw new Error('Transaction validation must be synchronous');
   }
-  const signedTx = signTransaction(tx, privateKey);
+  const finalTransaction = normalizeGasLimitedTransaction(tx);
+  const expectedUnsignedTransaction = serializeTransaction(finalTransaction);
+  const signedTx = signTransaction(finalTransaction, privateKey);
   return submitSignedEvmTransaction(
     signedTx,
     (raw) => provider.sendTransaction(raw),
     submission,
-    beforeBroadcast
+    beforeBroadcast,
+    expectedUnsignedTransaction
   );
 };
 

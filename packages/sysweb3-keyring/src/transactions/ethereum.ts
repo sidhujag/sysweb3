@@ -16,7 +16,8 @@ import {
   getErc21Abi,
   getErc55Abi,
 } from '@sidhujag/sysweb3-utils';
-import { Transaction } from 'ethers/transaction';
+import { accessListify, Transaction } from 'ethers/transaction';
+import { hexlify } from 'ethers/utils';
 import omit from 'lodash/omit';
 
 import {
@@ -1408,7 +1409,9 @@ export class EthereumTransactions<
           const transactionResponse = await submitSignedEvmTransaction(
             signedTx,
             (raw) => provider.sendTransaction(raw),
-            submission
+            submission,
+            undefined,
+            rawTx
           );
 
           return {
@@ -1474,6 +1477,8 @@ export class EthereumTransactions<
 
         assertApprovedEnvelope(txFormattedForTrezor);
         assertTransactionGasLimit(txFormattedForTrezor);
+        const expectedUnsignedTransaction =
+          serializeTransaction(txFormattedForTrezor);
         const signature = await this.requireTrezorSigner().signEthTransaction({
           coin: trezorCoin,
           tx: txFormattedForTrezor,
@@ -1492,7 +1497,9 @@ export class EthereumTransactions<
           const transactionResponse = await submitSignedEvmTransaction(
             signedTx,
             (raw) => provider.sendTransaction(raw),
-            submission
+            submission,
+            undefined,
+            expectedUnsignedTransaction
           );
 
           return {
@@ -1653,6 +1660,39 @@ export class EthereumTransactions<
       assertCurrent
     );
 
+    // Detach supplied values before any RPC/device await. Autofill updates only
+    // this invocation; caller mutations cannot replace already supplied fields.
+    if (!params || typeof params !== 'object' || Array.isArray(params))
+      throw new TypeError('Invalid EVM transaction request');
+    const supplied: Record<string, any> = { ...params };
+    // Validate original scalar spellings before conversion. Normalization's
+    // permissive zero coercion must not bypass the bounded wire parser.
+    for (const field of [
+      'chainId',
+      'nonce',
+      'gasLimit',
+      'gasPrice',
+      'maxFeePerGas',
+      'maxPriorityFeePerGas',
+      'value',
+      'type',
+    ] as const) {
+      if (supplied[field] != null) {
+        const value = parseEvmFeeQuantity(supplied[field], field);
+        if (field === 'nonce' || field === 'type') {
+          if (value > BigInt(Number.MAX_SAFE_INTEGER))
+            throw new Error(`Invalid transaction ${field}`);
+          supplied[field] = Number(value);
+        } else supplied[field] = value;
+      }
+    }
+    if (supplied.data != null) supplied.data = hexlify(supplied.data);
+    if (supplied.accessList != null)
+      supplied.accessList = accessListify(supplied.accessList);
+    params = supplied as SimpleTransactionRequest;
+
+    assertCurrent();
+
     // Capture the reviewed nonce before any fee/RPC await. Hardware and the
     // final serializer must use the same immutable integer, including zero.
     let explicitHardwareNonce: number | undefined;
@@ -1700,7 +1740,7 @@ export class EthereumTransactions<
 
     // Only apply a minimum gas limit when a network-specific override is set.
     // Otherwise keep the user/dapp-approved gas limit unchanged.
-    if (params.gasLimit && this.gasOverrides.minGasLimit) {
+    if (params.gasLimit != null && this.gasOverrides.minGasLimit) {
       const minGasLimit = this.gasOverrides.minGasLimit;
       const currentGasLimit = BigNumber.from(params.gasLimit);
       if (currentGasLimit.lt(minGasLimit)) {
@@ -1723,7 +1763,7 @@ export class EthereumTransactions<
           },
           ['gasPrice']
         );
-    if (!params.gasLimit) {
+    if (params.gasLimit == null) {
       params.gasLimit = await provider.estimateGas(txForEstimation);
       assertCurrent();
     }
@@ -1732,7 +1772,7 @@ export class EthereumTransactions<
       chainId: activeNetwork.chainId,
     });
     if (isLegacy) {
-      if (!params.gasPrice) {
+      if (params.gasPrice == null) {
         params.gasPrice = await provider.getGasPrice();
         assertCurrent();
       }
@@ -1806,7 +1846,8 @@ export class EthereumTransactions<
             signedTx,
             (raw) => provider.sendTransaction(raw),
             submission,
-            assertBeforeBroadcast
+            assertBeforeBroadcast,
+            rawTx
           );
 
           return finalTx;
@@ -1900,6 +1941,10 @@ export class EthereumTransactions<
       }
 
       assertTransactionGasLimit(txFormattedForTrezor);
+      const expectedUnsignedTransaction = serializeTransaction({
+        ...txFormattedForTrezor,
+        type: isLegacy ? 0 : 2,
+      });
       const signature = await this.requireTrezorSigner().signEthTransaction({
         index: `${activeAccountId}`,
         tx: txFormattedForTrezor as EthereumTransactionEIP1559,
@@ -1931,7 +1976,8 @@ export class EthereumTransactions<
             signedTx,
             (raw) => provider.sendTransaction(raw),
             submission,
-            assertBeforeBroadcast
+            assertBeforeBroadcast,
+            expectedUnsignedTransaction
           );
 
           return finalTx;
@@ -2262,7 +2308,8 @@ export class EthereumTransactions<
             signedTx,
             (raw) => provider.sendTransaction(raw),
             submission,
-            assertBeforeBroadcast
+            assertBeforeBroadcast,
+            rawTx
           );
           return {
             isSpeedUp: true,
@@ -2341,6 +2388,8 @@ export class EthereumTransactions<
         }
         assertCurrent();
         assertTransactionGasLimit(txFormattedForTrezor);
+        const expectedUnsignedTransaction =
+          serializeTransaction(txFormattedForTrezor);
         const signature = await this.requireTrezorSigner().signEthTransaction({
           coin: trezorCoin,
           tx: txFormattedForTrezor,
@@ -2358,7 +2407,8 @@ export class EthereumTransactions<
             signedTx,
             (raw) => provider.sendTransaction(raw),
             submission,
-            assertBeforeBroadcast
+            assertBeforeBroadcast,
+            expectedUnsignedTransaction
           );
           return {
             isSpeedUp: true,
@@ -2650,7 +2700,9 @@ export class EthereumTransactions<
                 saveTrezorTx && saveTrezorTx(response);
                 return response;
               },
-              submission
+              submission,
+              undefined,
+              rawTx
             );
 
             return finalTx as any;
@@ -2722,6 +2774,10 @@ export class EthereumTransactions<
         }
 
         assertTransactionGasLimit(txToBeSignedByTrezor);
+        const expectedUnsignedTransaction = serializeTransaction({
+          ...txToBeSignedByTrezor,
+          type: isLegacy ? 0 : 2,
+        });
         const signature = await this.requireTrezorSigner().signEthTransaction({
           index: `${activeAccountId}`,
           tx: txToBeSignedByTrezor,
@@ -2770,7 +2826,9 @@ export class EthereumTransactions<
                 saveTrezorTx && saveTrezorTx(response);
                 return response;
               },
-              submission
+              submission,
+              undefined,
+              expectedUnsignedTransaction
             );
 
             return finalTx as any;
@@ -2977,7 +3035,9 @@ export class EthereumTransactions<
             const finalTx = await submitSignedEvmTransaction(
               signedTx,
               (raw) => provider.sendTransaction(raw),
-              submission
+              submission,
+              undefined,
+              rawTx
             );
 
             return finalTx as any;
@@ -3046,6 +3106,10 @@ export class EthereumTransactions<
         const trezorCoin =
           activeNetwork.slip44 === 60 ? 'eth' : activeNetwork.currency;
         assertTransactionGasLimit(txToBeSignedByTrezor);
+        const expectedUnsignedTransaction = serializeTransaction({
+          ...txToBeSignedByTrezor,
+          type: isLegacy ? 0 : 2,
+        });
         const signature = await this.requireTrezorSigner().signEthTransaction({
           index: `${activeAccountId}`,
           tx: txToBeSignedByTrezor,
@@ -3090,7 +3154,9 @@ export class EthereumTransactions<
             const finalTx = await submitSignedEvmTransaction(
               signedTx,
               (raw) => provider.sendTransaction(raw),
-              submission
+              submission,
+              undefined,
+              expectedUnsignedTransaction
             );
 
             return finalTx as any;
@@ -3298,7 +3364,9 @@ export class EthereumTransactions<
             const finalTx = await submitSignedEvmTransaction(
               signedTx,
               (raw) => provider.sendTransaction(raw),
-              submission
+              submission,
+              undefined,
+              rawTx
             );
 
             return finalTx as any;
@@ -3365,6 +3433,10 @@ export class EthereumTransactions<
         }
 
         assertTransactionGasLimit(txToBeSignedByTrezor);
+        const expectedUnsignedTransaction = serializeTransaction({
+          ...txToBeSignedByTrezor,
+          type: isLegacy ? 0 : 2,
+        });
         const signature = await this.requireTrezorSigner().signEthTransaction({
           index: `${activeAccountId}`,
           tx: txToBeSignedByTrezor,
@@ -3409,7 +3481,9 @@ export class EthereumTransactions<
             const finalTx = await submitSignedEvmTransaction(
               signedTx,
               (raw) => provider.sendTransaction(raw),
-              submission
+              submission,
+              undefined,
+              expectedUnsignedTransaction
             );
 
             return finalTx as any;

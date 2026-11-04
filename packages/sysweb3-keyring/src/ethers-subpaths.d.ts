@@ -16,7 +16,7 @@ declare module 'ethers/providers' {
 }
 
 declare module 'ethers/transaction' {
-  export { Transaction } from 'ethers';
+  export { accessListify, Transaction } from 'ethers';
 }
 
 declare module 'ethers/utils' {

@@ -4,6 +4,7 @@ import { Transaction } from 'ethers/transaction';
 
 import { assertEvmGasLimit } from '../evm-fees';
 import { signTransaction } from './evm-local-signer';
+import { assertSignedEvmTransactionMatches } from './evm-submission';
 
 /**
  * Fully specified type-0/type-2 transaction. Quantities are canonical decimal
@@ -264,14 +265,12 @@ export function signPreparedEvmEnvelope(
   };
   const expected = Transaction.from(unsigned);
   const rawTransaction = signTransaction(unsigned, privateKey);
-  const signed = Transaction.from(rawTransaction);
-  if (
-    !signed.isSigned() ||
-    signed.from !== transaction.from ||
-    signed.unsignedSerialized !== expected.unsignedSerialized ||
-    signed.unsignedHash !== expected.unsignedHash ||
-    signed.hash !== keccak256(rawTransaction)
-  )
+  const signed = assertSignedEvmTransactionMatches(
+    rawTransaction,
+    expected.unsignedSerialized,
+    transaction.from
+  );
+  if (signed.hash !== keccak256(rawTransaction))
     throw new Error(
       'Prepared EVM signature does not match requested transaction'
     );

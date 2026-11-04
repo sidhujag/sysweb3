@@ -1,11 +1,14 @@
 # Changelog
 
-## Unreleased — API removal pending release-version decision
+## 2.1.2
 
-- Remove the duplicate public BIP84 and bounded native-transfer APIs introduced in 2.1.0. Existing descriptor, SJS/HD and generic PSBT paths remain. This removes published exports and is **not** a compatible 2.1.1 patch. Historical 2.1.0 notes below describe the already-published package.
+- Preserve explicit hardware transaction nonces, including zero, instead of replacing them with the pending RPC nonce.
+- Bind software and hardware signed bytes to the complete unsigned envelope captured before signing, before persistence or broadcast. Expose the same comparison through the lightweight shared submission entry.
+- Detach ordinary formatted-send inputs before asynchronous work, preserve strict quantity validation and explicit zero gas prices, and keep nullish fee/nonce autofill on the existing shared path.
 
 ## 2.1.1
 
+- Remove the duplicate public BIP84 and bounded native-transfer APIs introduced in 2.1.0. Existing descriptor, SJS/HD and generic PSBT paths remain. These prototype export removals shipped in 2.1.1; historical 2.1.0 notes below describe that earlier package.
 - Share the existing successful gas-estimate 20% buffer/minimum calculation through `bufferedEvmGasLimit`; SDK and mobile can use the same integer rounding without copying the formula.
 
 - Expose dependency-free `cjs/evm-fees` for the existing standard EVM fee recommendation and make `EthereumTransactions` use the same implementation.
