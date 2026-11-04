@@ -68,6 +68,7 @@ export const LIMITS = Object.freeze({
   inputs: 64,
   parentBytes: 1_000_000,
   totalParentBytes: 2_000_000,
+  parentComponents: 8192,
   unsignedBytes: 8 * 1024,
   signedBytes: 16 * 1024,
   psbtBytes: 64 * 1024,
@@ -269,11 +270,19 @@ function recipientAddress(value: unknown, network: Network): string {
   }
 }
 
-/** Allocation-bounded structural preflight; bitcoinjs remains the decoder/serializer.
- * Counts and lengths cannot make it allocate arrays larger than the bounded bytes.
+/** Bound decoded objects as well as wire bytes before bitcoinjs allocates them.
+ * One component is an input, output, witness vector or witness item.
  */
-function boundedParentEncoding(bytes: Buffer): void {
+function boundedParentEncoding(
+  bytes: Buffer,
+  remainingComponents: number
+): number {
   let offset = 4;
+  let components = 0;
+  const charge = (count: number) => {
+    if (count > remainingComponents - components) return fail('LIMIT_EXCEEDED');
+    components += count;
+  };
   const skip = (length: number) => {
     if (
       !Number.isSafeInteger(length) ||
@@ -300,6 +309,7 @@ function boundedParentEncoding(bytes: Buffer): void {
   }
   if (inputs === 0 || inputs > Math.floor((bytes.length - offset) / 41))
     return fail('INVALID_REQUEST');
+  charge(inputs);
   for (let i = 0; i < inputs; i++) {
     skip(36);
     skip(compact());
@@ -308,17 +318,22 @@ function boundedParentEncoding(bytes: Buffer): void {
   const outputs = compact();
   if (outputs === 0 || outputs > Math.floor((bytes.length - offset) / 9))
     return fail('INVALID_REQUEST');
+  charge(outputs);
   for (let i = 0; i < outputs; i++) {
     skip(8);
     skip(compact());
   }
-  if (witness)
+  if (witness) {
+    charge(inputs);
     for (let i = 0; i < inputs; i++) {
       const items = compact();
+      charge(items);
       for (let j = 0; j < items; j++) skip(compact());
     }
+  }
   skip(4);
   if (offset !== bytes.length) return fail('INVALID_REQUEST');
+  return components;
 }
 
 export type ValidatedBip84Plan = {
@@ -387,14 +402,23 @@ export function validateBip84NativePlan(value: unknown): ValidatedBip84Plan {
         })
         .sort((a, b) => (a.txid < b.txid ? -1 : a.txid > b.txid ? 1 : 0))
     );
-    const parents = new Map<string, Transaction>();
+    // Preflight the whole parent set before the first object-heavy decode.
+    const encodedParents = new Map<string, Buffer>();
+    let parentComponents = 0;
     for (const p of previousTransactions) {
-      if (parents.has(p.txid)) return fail('INVALID_REQUEST');
+      if (encodedParents.has(p.txid)) return fail('INVALID_REQUEST');
       const bytes = Buffer.from(p.rawTransaction, 'hex');
       const version = bytes.readInt32LE(0);
       if (version !== 1 && version !== 2) return fail('UNSUPPORTED_PARENT');
-      boundedParentEncoding(bytes);
-      const parent = Transaction.fromBuffer(bytes);
+      parentComponents += boundedParentEncoding(
+        bytes,
+        LIMITS.parentComponents - parentComponents
+      );
+      encodedParents.set(p.txid, bytes);
+    }
+    const parents = new Map<string, Transaction>();
+    for (const p of previousTransactions) {
+      const parent = Transaction.fromBuffer(encodedParents.get(p.txid)!);
       if (parent.toHex() !== p.rawTransaction || parent.getId() !== p.txid)
         return fail('INPUT_MISMATCH');
       if (parent.isCoinbase()) return fail('UNSUPPORTED_PARENT');

@@ -1,4 +1,5 @@
 import { Transaction, address, networks } from 'bitcoinjs-lib';
+import { encode as encodeVarInt } from 'varuint-bitcoin';
 
 import {
   prepareBip84NativeTransaction,
@@ -44,6 +45,38 @@ function fixture(tx = parent()): Bip84NativePlan {
   };
 }
 const copy = <T>(v: T): T => JSON.parse(JSON.stringify(v));
+function witnessParent(
+  tx: Transaction,
+  items: readonly number[],
+  width?: 4 | 8,
+  nonempty = false
+) {
+  const count = (n: number) => {
+    if (!width) return Buffer.from(encodeVarInt(n).buffer).toString('hex');
+    const bytes = Buffer.alloc(width + 1);
+    bytes[0] = width === 4 ? 0xfe : 0xff;
+    if (width === 4) bytes.writeUInt32LE(n, 1);
+    else bytes.writeBigUInt64LE(BigInt(n), 1);
+    return bytes.toString('hex');
+  };
+  const raw = tx.toHex();
+  return (
+    raw.slice(0, 8) +
+    '0001' +
+    raw.slice(8, -8) +
+    items.map((n) => count(n) + (nonempty ? '01aa' : '00').repeat(n)).join('') +
+    raw.slice(-8)
+  );
+}
+function expectResourceRejectionBeforeDecode(plan: Bip84NativePlan) {
+  const decode = jest.spyOn(Transaction, 'fromBuffer');
+  try {
+    expect(() => prepareBip84NativeTransaction(plan)).toThrow('LIMIT_EXCEEDED');
+    expect(decode).not.toHaveBeenCalled();
+  } finally {
+    decode.mockRestore();
+  }
+}
 const expectFailure = (v: unknown, code?: string) => {
   expect(() => prepareBip84NativeTransaction(v as Bip84NativePlan)).toThrow(
     code || Bip84NativeError
@@ -180,6 +213,98 @@ test.each(['00', 'fdffff', '0001'])(
     expectFailure(p);
   }
 );
+
+test('accepts exactly8192 decoded components and rejects the next empty witness item before decoding', () => {
+  const tx = parent();
+  const plan = fixture(tx);
+  const withItems = (items: number) => ({
+    ...plan,
+    previousTransactions: [
+      { txid: tx.getId(), rawTransaction: witnessParent(tx, [items]) },
+    ],
+  });
+  // One input, one output and one witness vector leave8189 item slots.
+  expect(prepareBip84NativeTransaction(withItems(8189)).feeSatoshis).toBe(
+    '1000'
+  );
+  expectResourceRejectionBeforeDecode(withItems(8190));
+  // Original amplification shape remains within the separate1MB wire limit.
+  expectResourceRejectionBeforeDecode(withItems(900000));
+});
+
+test.each([undefined, 4, 8] as const)(
+  'bounds empty and nonempty witness counts at every wide CompactSize representation: %s',
+  (width) => {
+    const tx = parent();
+    for (const nonempty of [false, true]) {
+      const plan = fixture(tx);
+      expectResourceRejectionBeforeDecode({
+        ...plan,
+        previousTransactions: [
+          {
+            txid: tx.getId(),
+            rawTransaction: witnessParent(tx, [8190], width, nonempty),
+          },
+        ],
+      });
+    }
+  }
+);
+
+test.each(['inputs', 'outputs'] as const)(
+  'counts all parent %s separately from selected spend inputs',
+  (kind) => {
+    const tx = parent();
+    for (let i = 1; i < 8191; i++) {
+      if (kind === 'inputs') tx.addInput(Buffer.alloc(32, 2), i);
+      else tx.addOutput(new Uint8Array(0), 0n);
+    }
+    expect(prepareBip84NativeTransaction(fixture(tx)).feeSatoshis).toBe('1000');
+    if (kind === 'inputs') tx.addInput(Buffer.alloc(32, 2), 8191);
+    else tx.addOutput(new Uint8Array(0), 0n);
+    expectResourceRejectionBeforeDecode(fixture(tx));
+  }
+);
+
+test('counts witness vectors/items across inputs even when each count fits a single byte', () => {
+  const tx = parent();
+  for (let i = 1; i < 33; i++) tx.addInput(Buffer.alloc(32, 2), i);
+  const plan = fixture(tx);
+  expectResourceRejectionBeforeDecode({
+    ...plan,
+    previousTransactions: [
+      {
+        txid: tx.getId(),
+        rawTransaction: witnessParent(tx, Array(33).fill(255)),
+      },
+    ],
+  });
+});
+
+test('preflights the aggregate component boundary before decoding any parent', () => {
+  const first = parent(),
+    second = parent(100000n, 2, 2);
+  const plan: Bip84NativePlan = {
+    ...fixture(first),
+    inputs: [
+      { txid: first.getId(), vout: 0, branch: 0, index: 0 },
+      { txid: second.getId(), vout: 0, branch: 0, index: 0 },
+    ],
+    previousTransactions: [
+      { txid: first.getId(), rawTransaction: witnessParent(first, [4093]) },
+      { txid: second.getId(), rawTransaction: witnessParent(second, [4093]) },
+    ],
+    change: { index: 4, valueSatoshis: '109000' },
+  };
+  expect(prepareBip84NativeTransaction(plan).feeSatoshis).toBe('1000');
+  expectResourceRejectionBeforeDecode({
+    ...plan,
+    previousTransactions: [
+      plan.previousTransactions[0],
+      { txid: second.getId(), rawTransaction: witnessParent(second, [4094]) },
+    ],
+  });
+});
 test('rejects trailing bytes and altered parent outputs despite the claimed txid', () => {
   const p: any = copy(fixture());
   p.previousTransactions[0].rawTransaction += '00';

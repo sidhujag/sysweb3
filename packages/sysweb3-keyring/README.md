@@ -153,7 +153,11 @@ output appears to be native change. Missing provider asset metadata is not proof
 that an output is safe to spend.
 
 The planner allows at most 64 inputs/parents, 1,000,000 bytes per parent and
-2,000,000 aggregate parent bytes. Wallet policy additionally caps absolute fees
+2,000,000 aggregate parent bytes. Before decoding any parent, it also enforces
+an aggregate budget of 8,192 decoded components: parent inputs, outputs, witness
+vectors and witness items each consume one component, including empty items.
+This is a wallet resource policy, not a consensus limit; large scripts remain
+subject to the separate byte limits. Wallet policy additionally caps absolute fees
 at 10,000,000 satoshis and fee rate at 1,000 sat/vB; callers must provide limits
 no higher than those ceilings. Maximum signature size is used only to reject
 fees that cannot possibly satisfy the rate ceiling; final signed size must be
