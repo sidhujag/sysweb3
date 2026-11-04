@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.2.0
+## 2.1.1
 
 - Share the existing successful gas-estimate 20% buffer/minimum calculation through `bufferedEvmGasLimit`; SDK and mobile can use the same integer rounding without copying the formula.
 
