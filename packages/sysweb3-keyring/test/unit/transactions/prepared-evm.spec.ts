@@ -130,19 +130,30 @@ it.each(mutations)('rejects %s before signing', (_name, mutate) => {
   expect(() => snapshotPreparedEvmRequest(input)).toThrow();
 });
 
-it.each(['1', '11155111', '560048'])(
+it.each([
+  ['1', '16777216', '16777217'],
+  ['11155111', '4294967295', '4294967296'],
+  ['560048', '16777216', '16777217'],
+])(
   'bounds prepared gas for activated chain %s',
-  (chainId) => {
+  (chainId, limit, aboveLimit) => {
     const input = request() as any;
     input.network.chainId = input.transaction.chainId = chainId;
-    input.transaction.gasLimit = '16777216';
-    expect(snapshotPreparedEvmRequest(input).transaction.gasLimit).toBe(
-      '16777216'
-    );
-    input.transaction.gasLimit = '16777217';
+    input.transaction.gasLimit = limit;
+    expect(snapshotPreparedEvmRequest(input).transaction.gasLimit).toBe(limit);
+    input.transaction.gasLimit = aboveLimit;
     expect(() => snapshotPreparedEvmRequest(input)).toThrow(EvmGasLimitError);
   }
 );
+
+it('accepts prepared Sepolia total gas above its separate execution-gas cap', () => {
+  const input = request() as any;
+  input.network.chainId = input.transaction.chainId = '11155111';
+  input.transaction.gasLimit = '16800000';
+  expect(snapshotPreparedEvmRequest(input).transaction.gasLimit).toBe(
+    '16800000'
+  );
+});
 
 it('does not infer an Ethereum gas cap on unrelated prepared EVM chains', () => {
   const input = request() as any;
