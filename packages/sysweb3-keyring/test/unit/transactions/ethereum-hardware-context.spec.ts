@@ -216,6 +216,130 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
       });
     }
 
+    it.each([false, true])(
+      'detaches all supplied bytes and quantities before a held fee await (legacy %s)',
+      async (legacy) => {
+        const entered = deferred<void>(),
+          gas = deferred<any>();
+        provider.estimateGas = jest.fn(() => {
+          entered.resolve();
+          return gas.promise;
+        });
+        const value = { _hex: '0x3039' },
+          nonce = { _hex: '0x00' };
+        const bytes = new Uint8Array([0x12, 0x34]);
+        const accessList = [
+          { address: recipient, storageKeys: [`0x${'44'.repeat(32)}`] },
+        ];
+        const params: any = {
+          ...request(legacy),
+          value,
+          nonce,
+          data: bytes,
+          gasLimit: undefined,
+          ...(legacy ? {} : { accessList }),
+        };
+        const pending = sdk.sendFormattedTransaction(params, legacy);
+        await entered.promise;
+        params.to = wallet.address;
+        value._hex = '0xffff';
+        nonce._hex = '0x63';
+        bytes[0] = 0xff;
+        accessList[0].storageKeys[0] = `0x${'55'.repeat(32)}`;
+        gas.resolve(BigNumber.from(100000));
+        await pending;
+        const signed = Transaction.from(
+          provider.sendTransaction.mock.calls[0][0]
+        );
+        expect(signed.to).toBe(recipient);
+        expect(signed.value).toBe(12345n);
+        expect(signed.nonce).toBe(0);
+        expect(signed.data).toBe('0x1234');
+        if (!legacy)
+          expect(signed.accessList).toEqual([
+            { address: recipient, storageKeys: [`0x${'44'.repeat(32)}`] },
+          ]);
+        expect(signed.unsignedSerialized).toBe(
+          Transaction.from(device.mock.calls[0][0]).unsignedSerialized
+        );
+      }
+    );
+
+    if (kind === KeyringAccountType.Trezor)
+      it('rejects a device-mutated Trezor envelope before retaining or dispatching it', async () => {
+        const persistSigned = jest.fn(async () => undefined);
+        (sdk as any).captureSubmissionLifecycle = () => ({
+          assertCurrent: () => undefined,
+          persistSigned,
+        });
+        (sdk as any).trezorSigner.signEthTransaction.mockImplementationOnce(
+          async ({ tx }) => {
+            tx.nonce = '0x63';
+            const signature = wallet.signingKey.sign(
+              Transaction.from(serializeTransaction({ ...tx, type: 2 }))
+                .unsignedHash
+            );
+            return { success: true, payload: signature };
+          }
+        );
+        await expect(
+          sdk.sendFormattedTransaction({ ...request(), nonce: 0 } as any, false)
+        ).rejects.toMatchObject({ transactionNotBroadcast: true });
+        expect(persistSigned).not.toHaveBeenCalled();
+        expect(provider.sendTransaction).not.toHaveBeenCalled();
+      });
+
+    it.each([null, undefined])(
+      'rejects a missing request %s before transaction work',
+      async (params) => {
+        await expect(
+          sdk.sendFormattedTransaction(params as any, true)
+        ).rejects.toMatchObject({ transactionNotBroadcast: true });
+        expect(device).not.toHaveBeenCalled();
+        expect(provider.sendTransaction).not.toHaveBeenCalled();
+      }
+    );
+
+    it('preserves a supplied zero legacy gas price rather than autofilling it', async () => {
+      provider.getGasPrice = jest.fn().mockResolvedValue(BigNumber.from(99));
+      await sdk.sendFormattedTransaction(
+        { ...request(true), nonce: 0, gasPrice: '0x0' } as any,
+        true
+      );
+      expect(
+        Transaction.from(provider.sendTransaction.mock.calls[0][0]).gasPrice
+      ).toBe(0n);
+      expect(provider.getGasPrice).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      'chainId',
+      'nonce',
+      'gasLimit',
+      'gasPrice',
+      'maxFeePerGas',
+      'maxPriorityFeePerGas',
+      'value',
+      'type',
+    ])(
+      'validates original %s scalar spellings before normalization',
+      async (field) => {
+        for (const malformed of ['', ' 0 ', '+0', '0'.repeat(81)]) {
+          const params: any = {
+            ...request(true),
+            nonce: 0,
+            [field]: malformed,
+          };
+          await expect(
+            sdk.sendFormattedTransaction(params, true)
+          ).rejects.toMatchObject({ transactionNotBroadcast: true });
+        }
+        expect(provider.getTransactionCount).not.toHaveBeenCalled();
+        expect(device).not.toHaveBeenCalled();
+        expect(provider.sendTransaction).not.toHaveBeenCalled();
+      }
+    );
+
     it.each([-1, 1.5, Number.MAX_SAFE_INTEGER + 1, '-1', '9007199254740992'])(
       'rejects an invalid explicit nonce %s before RPC, device or broadcast',
       async (nonce) => {
@@ -1201,6 +1325,28 @@ describe('EVM cancellation signing context', () => {
       expect(provider.sendTransaction).not.toHaveBeenCalled();
     }
   );
+
+  it('rejects a Trezor cancellation changed after its unsigned envelope was captured', async () => {
+    state.activeAccountType = KeyringAccountType.Trezor;
+    const persistSigned = jest.fn(async () => undefined);
+    (sdk as any).captureSubmissionLifecycle = () => ({
+      assertCurrent: () => undefined,
+      persistSigned,
+    });
+    trezor.signEthTransaction.mockImplementationOnce(async ({ tx }: any) => {
+      tx.value = '0x1';
+      return { success: true, payload: deviceSignature(tx) };
+    });
+    const result = await run();
+    expect(result).toMatchObject({
+      isCanceled: false,
+      error: true,
+      transactionNotBroadcast: true,
+    });
+    expect(trezor.signEthTransaction).toHaveBeenCalledTimes(1);
+    expect(persistSigned).not.toHaveBeenCalled();
+    expect(provider.sendTransaction).not.toHaveBeenCalled();
+  });
 
   it('checks the host guard before private-key signing after provider preflight', async () => {
     let current = true;

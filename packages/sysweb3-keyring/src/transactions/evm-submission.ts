@@ -127,12 +127,41 @@ export function copyEvmSubmissionFailure(source: unknown, target: Error): void {
   }
 }
 
+/** Compare signed wire bytes with the complete envelope captured before signing. */
+export function assertSignedEvmTransactionMatches(
+  rawTransaction: string,
+  expectedUnsignedTransaction: string,
+  expectedFrom?: string
+): Transaction {
+  if (
+    typeof rawTransaction !== 'string' ||
+    typeof expectedUnsignedTransaction !== 'string'
+  )
+    throw new TypeError('EVM transaction bytes must be strings');
+  const expected = Transaction.from(expectedUnsignedTransaction);
+  const signed = Transaction.from(rawTransaction);
+  if (
+    expected.isSigned() ||
+    expected.unsignedSerialized !== expectedUnsignedTransaction ||
+    !signed.isSigned() ||
+    signed.serialized !== rawTransaction ||
+    signed.unsignedSerialized !== expectedUnsignedTransaction ||
+    (expectedFrom !== undefined &&
+      signed.from?.toLowerCase() !== expectedFrom.toLowerCase())
+  )
+    throw new Error(
+      'Signed EVM transaction does not match expected unsigned envelope'
+    );
+  return signed;
+}
+
 /** The sole local-signature dispatch boundary. No nonce/fee selection or retry. */
 export async function submitSignedEvmTransaction<T>(
   rawTransaction: string,
   broadcast: (rawTransaction: string) => Promise<T>,
   boundary?: EvmSubmissionBoundary,
-  beforeBroadcast?: () => void
+  beforeBroadcast?: () => void,
+  expectedUnsignedTransaction?: string
 ): Promise<T> {
   let dispatched = false;
   let hash: string | undefined;
@@ -154,10 +183,18 @@ export async function submitSignedEvmTransaction<T>(
       if (captured) assertSynchronous(captured.assertCurrent);
     };
     guard();
+    const verified =
+      expectedUnsignedTransaction === undefined
+        ? undefined
+        : assertSignedEvmTransactionMatches(
+            rawTransaction,
+            expectedUnsignedTransaction,
+            captured?.context.account.address
+          );
     if (captured) {
       if (typeof rawTransaction !== 'string')
         throw new TypeError('Signed EVM bytes must be a string');
-      const tx = Transaction.from(rawTransaction);
+      const tx = verified ?? Transaction.from(rawTransaction);
       if (
         !tx.isSigned() ||
         tx.serialized !== rawTransaction ||

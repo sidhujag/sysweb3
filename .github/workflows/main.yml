@@ -38,10 +38,12 @@ jobs:
             test/unit/providers-rpc-integrity.spec.ts \
             test/unit/transactions/ethereum-transactions.spec.ts \
             test/unit/transactions/ethereum-hardware-context.spec.ts \
+            test/unit/transactions/ethereum-trezor-schema.spec.ts \
             test/unit/transactions/ethereum-send-context.spec.ts \
             test/unit/transactions/prepared-evm.spec.ts \
             test/unit/transactions/ethereum-submission-boundary.spec.ts \
             test/unit/transactions/evm-submission.spec.ts \
+            test/unit/transactions/evm-envelope-binding.spec.ts \
             test/unit/transactions/ethereum-submission.spec.ts \
             test/unit/transactions/software-submission.spec.ts \
             test/unit/transactions/ethereum-cancellation-identity.spec.ts \
