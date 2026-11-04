@@ -64,6 +64,14 @@ import {
   signDigestHex,
   signPersonalMessage as signLocalPersonalMessage,
 } from './evm-local-signer';
+import {
+  captureEvmSubmission,
+  submitSignedEvmTransaction,
+  evmSubmissionFailure,
+  copyEvmSubmissionFailure,
+  type CaptureEvmSubmission,
+  type EvmSubmissionContext,
+} from './evm-submission';
 import { getAddressDerivationPath } from '../utils/derivation-paths';
 
 import type { LedgerKeyring } from '../ledger';
@@ -246,6 +254,7 @@ export class EthereumTransactions<
   public ledgerSigner: TLedger;
   private getNetwork: () => INetwork;
   private captureSigningContext?: () => () => void;
+  private readonly captureSubmissionLifecycle?: CaptureEvmSubmission;
   private abortController: AbortController;
   private getDecryptedPrivateKey: (
     targetAccount?: IEvmReplacementOptions['targetAccount']
@@ -294,7 +303,8 @@ export class EthereumTransactions<
     },
     ledgerSigner: TLedger,
     trezorSigner: TTrezor,
-    captureSigningContext?: () => () => void
+    captureSigningContext?: () => () => void,
+    captureSubmissionLifecycle?: CaptureEvmSubmission
   ) {
     this.getNetwork = getNetwork;
     this.getDecryptedPrivateKey = (targetAccount) => {
@@ -310,6 +320,7 @@ export class EthereumTransactions<
     this.trezorSigner = trezorSigner;
     this.ledgerSigner = ledgerSigner;
     this.captureSigningContext = captureSigningContext;
+    this.captureSubmissionLifecycle = captureSubmissionLifecycle;
   }
 
   private requireLedgerSigner = (): EthereumLedgerSigner => {
@@ -335,24 +346,34 @@ export class EthereumTransactions<
       this.requireTrezorSigner();
   };
 
-  private captureEvmSigningContext = () => {
-    this.assertHardwareSignerAvailable();
-    const { activeAccountType, activeAccountId, accounts, activeNetwork } =
-      this.getState();
-    const selectedAccount = accounts[activeAccountType]?.[activeAccountId];
-    if (!selectedAccount) throw new Error('Active account not found');
+  private captureEvmSigningContext = (
+    target?: IEvmReplacementOptions['targetAccount']
+  ) => {
+    this.assertHardwareSignerAvailable(target);
+    const state = this.getState();
+    const selectedType = state.activeAccountType;
+    const selectedId = state.activeAccountId;
+    const selectedAddress = state.accounts[selectedType]?.[selectedId]?.address;
+    const activeAccountType = target?.type ?? selectedType;
+    const activeAccountId = target?.id ?? selectedId;
+    const selectedAccount =
+      state.accounts[activeAccountType]?.[activeAccountId];
+    if (!selectedAccount || !selectedAddress)
+      throw new Error('Active account not found');
     const account = { address: selectedAccount.address };
-    const network = { ...activeNetwork };
+    const network = { ...state.activeNetwork };
     const assertSession = this.captureSigningContext?.();
     const provider = this.web3Provider;
     const assertCurrent = () => {
       assertSession?.();
       const current = this.getState();
       const currentAccount =
-        current.accounts[current.activeAccountType]?.[current.activeAccountId];
+        current.accounts[activeAccountType]?.[activeAccountId];
       if (
-        current.activeAccountId !== activeAccountId ||
-        current.activeAccountType !== activeAccountType ||
+        current.activeAccountId !== selectedId ||
+        current.activeAccountType !== selectedType ||
+        current.accounts[selectedType]?.[selectedId]?.address?.toLowerCase() !==
+          selectedAddress.toLowerCase() ||
         currentAccount?.address?.toLowerCase() !==
           account.address.toLowerCase() ||
         [current.activeNetwork, this.getNetwork()].some(
@@ -376,6 +397,31 @@ export class EthereumTransactions<
       assertCurrent,
     };
   };
+
+  private captureSubmission = (
+    operation: EvmSubmissionContext['operation'],
+    account: { address: string },
+    type: KeyringAccountType,
+    id: number,
+    network: INetwork,
+    assertCurrent: () => void,
+    originalHash?: string
+  ) =>
+    captureEvmSubmission(
+      {
+        operation,
+        account: { address: account.address, type, id },
+        network: {
+          kind: network.kind,
+          chainId: network.chainId,
+          slip44: network.slip44,
+          url: network.url,
+        },
+        ...(originalHash !== undefined ? { originalHash } : {}),
+      },
+      assertCurrent,
+      this.captureSubmissionLifecycle
+    );
 
   // Getter that automatically ensures providers are initialized when accessed
   public get web3Provider(): CustomJsonRpcProvider {
@@ -1002,6 +1048,8 @@ export class EthereumTransactions<
   ): Promise<{
     error?: boolean;
     isCanceled: boolean;
+    transactionNotBroadcast?: boolean;
+    signedTransactionHash?: string;
     maximumFee?: string;
     transaction?: TransactionResponse;
   }> => {
@@ -1083,6 +1131,17 @@ export class EthereumTransactions<
       assertKeyringContext();
     };
     assertCurrent();
+    const submission = previewOnly
+      ? undefined
+      : this.captureSubmission(
+          'cancel',
+          activeAccount,
+          activeAccountType,
+          activeAccountId,
+          activeNetwork,
+          assertCurrent,
+          txHash
+        );
     const currentEip1559Fees = async () => {
       const feeData = await this.getFeeDataWithDynamicMaxPriorityFeePerGas(
         provider
@@ -1346,7 +1405,11 @@ export class EthereumTransactions<
           );
           assertCurrent();
           assertHardwareTransactionSender(signedTx, activeAccount.address);
-          const transactionResponse = await provider.sendTransaction(signedTx);
+          const transactionResponse = await submitSignedEvmTransaction(
+            signedTx,
+            (raw) => provider.sendTransaction(raw),
+            submission
+          );
 
           return {
             isCanceled: true,
@@ -1360,6 +1423,7 @@ export class EthereumTransactions<
         }
       } catch (error) {
         return {
+          ...evmSubmissionFailure(error),
           isCanceled: false,
           error: true,
         };
@@ -1425,7 +1489,11 @@ export class EthereumTransactions<
           );
           assertCurrent();
           assertHardwareTransactionSender(signedTx, activeAccount.address);
-          const transactionResponse = await provider.sendTransaction(signedTx);
+          const transactionResponse = await submitSignedEvmTransaction(
+            signedTx,
+            (raw) => provider.sendTransaction(raw),
+            submission
+          );
 
           return {
             isCanceled: true,
@@ -1439,6 +1507,7 @@ export class EthereumTransactions<
         }
       } catch (error) {
         return {
+          ...evmSubmissionFailure(error),
           isCanceled: false,
           error: true,
         };
@@ -1460,7 +1529,8 @@ export class EthereumTransactions<
           changedTxToCancel,
           assertCurrent,
           assertCurrent,
-          assertApprovedEnvelope
+          assertApprovedEnvelope,
+          submission
         );
 
         if (transactionResponse) {
@@ -1475,6 +1545,7 @@ export class EthereumTransactions<
         }
       } catch (error) {
         return {
+          ...evmSubmissionFailure(error),
           isCanceled: false,
           error: true,
         };
@@ -1526,12 +1597,17 @@ export class EthereumTransactions<
       const submissionError = Object.assign(
         new Error(error instanceof Error ? error.message : String(error)),
         error,
-        { transactionNotBroadcast: !broadcastAttempted }
+        {
+          transactionNotBroadcast:
+            !broadcastAttempted ||
+            evmSubmissionFailure(error).transactionNotBroadcast,
+        }
       );
       if (error instanceof Error) {
         submissionError.name = error.name;
         submissionError.stack = error.stack;
       }
+      copyEvmSubmissionFailure(error, submissionError);
       throw submissionError;
     }
   };
@@ -1568,6 +1644,14 @@ export class EthereumTransactions<
       beforeBroadcast();
     };
     assertCurrent();
+    const submission = this.captureSubmission(
+      'send',
+      activeAccount,
+      activeAccountType,
+      activeAccountId,
+      activeNetwork,
+      assertCurrent
+    );
 
     const explicitEip1559 =
       params.type != null && BigNumber.from(params.type).eq(2);
@@ -1703,8 +1787,12 @@ export class EthereumTransactions<
             formattedSignature
           );
           assertHardwareTransactionSender(signedTx, activeAccount.address);
-          assertBeforeBroadcast();
-          const finalTx = await provider.sendTransaction(signedTx);
+          const finalTx = await submitSignedEvmTransaction(
+            signedTx,
+            (raw) => provider.sendTransaction(raw),
+            submission,
+            assertBeforeBroadcast
+          );
 
           return finalTx;
         } catch (error) {
@@ -1825,8 +1913,12 @@ export class EthereumTransactions<
             trezorSignature(signature.payload)
           );
           assertHardwareTransactionSender(signedTx, activeAccount.address);
-          assertBeforeBroadcast();
-          const finalTx = await provider.sendTransaction(signedTx);
+          const finalTx = await submitSignedEvmTransaction(
+            signedTx,
+            (raw) => provider.sendTransaction(raw),
+            submission,
+            assertBeforeBroadcast
+          );
 
           return finalTx;
         } catch (error) {
@@ -1861,7 +1953,9 @@ export class EthereumTransactions<
           decryptedPrivateKey,
           tx,
           assertBeforeBroadcast,
-          assertCurrent
+          assertCurrent,
+          undefined,
+          submission
         );
         // The broadcast response already has the hash. Pending transactions
         // have no block number, so a block lookup can fail after a successful
@@ -1888,6 +1982,8 @@ export class EthereumTransactions<
     maximumFee?: string;
     error?: boolean;
     isSpeedUp: boolean;
+    transactionNotBroadcast?: boolean;
+    signedTransactionHash?: string;
     transaction?: TransactionResponse;
     code?: string;
     message?: string;
@@ -1907,7 +2003,17 @@ export class EthereumTransactions<
     ) {
       throw new Error('Replacement fee approval required');
     }
-    const assertCurrent = () => assertCurrentContext?.();
+    let signing: ReturnType<typeof this.captureEvmSigningContext> | undefined;
+    const assertCurrent = () => {
+      const result = assertCurrentContext?.() as unknown;
+      assertSynchronousOriginalValidation(
+        result,
+        'Transaction context guard must be synchronous'
+      );
+      if (result !== undefined)
+        throw new Error('Transaction context guard must return undefined');
+      signing?.assertCurrent();
+    };
     const assertBeforeBroadcast = () => {
       assertCurrent();
       beforeBroadcast?.();
@@ -1936,10 +2042,22 @@ export class EthereumTransactions<
     ) {
       throw new Error('Replacement signing account is unavailable');
     }
+    if (!previewOnly) signing = this.captureEvmSigningContext(targetAccount);
     const expectedSender = activeAccount.address.toLowerCase();
     const requestedHash = txHash.toLowerCase();
     const provider = this.web3Provider;
     assertCurrent();
+    const submission = previewOnly
+      ? undefined
+      : this.captureSubmission(
+          'speed-up',
+          activeAccount,
+          activeAccountType,
+          activeAccountId,
+          activeNetwork,
+          assertCurrent,
+          txHash
+        );
     const validateLookup = (transaction: TransactionResponse | null) => {
       assertCurrent();
       if (!transaction) return null;
@@ -2126,8 +2244,12 @@ export class EthereumTransactions<
           );
           assertSignedSender(signedTx);
           assertHardwareTransactionSender(signedTx, activeAccount.address);
-          assertBeforeBroadcast();
-          const transactionResponse = await provider.sendTransaction(signedTx);
+          const transactionResponse = await submitSignedEvmTransaction(
+            signedTx,
+            (raw) => provider.sendTransaction(raw),
+            submission,
+            assertBeforeBroadcast
+          );
           return {
             isSpeedUp: true,
             transaction: transactionResponse,
@@ -2152,6 +2274,7 @@ export class EthereumTransactions<
           ? 'REPLACEMENT_ALREADY_KNOWN'
           : 'REPLACEMENT_SEND_FAILED';
         return {
+          ...evmSubmissionFailure(error),
           isSpeedUp: false,
           error: true,
           code,
@@ -2217,8 +2340,12 @@ export class EthereumTransactions<
           );
           assertSignedSender(signedTx);
           assertHardwareTransactionSender(signedTx, activeAccount.address);
-          assertBeforeBroadcast();
-          const transactionResponse = await provider.sendTransaction(signedTx);
+          const transactionResponse = await submitSignedEvmTransaction(
+            signedTx,
+            (raw) => provider.sendTransaction(raw),
+            submission,
+            assertBeforeBroadcast
+          );
           return {
             isSpeedUp: true,
             transaction: transactionResponse,
@@ -2243,6 +2370,7 @@ export class EthereumTransactions<
           ? 'REPLACEMENT_ALREADY_KNOWN'
           : 'REPLACEMENT_SEND_FAILED';
         return {
+          ...evmSubmissionFailure(error),
           isSpeedUp: false,
           error: true,
           code,
@@ -2265,7 +2393,9 @@ export class EthereumTransactions<
           decryptedPrivateKey,
           txWithEditedFee,
           assertBeforeBroadcast,
-          assertCurrent
+          assertCurrent,
+          undefined,
+          submission
         );
         if (transactionResponse) {
           return {
@@ -2293,6 +2423,7 @@ export class EthereumTransactions<
           ? 'INSUFFICIENT_FUNDS_REPLACEMENT'
           : 'REPLACEMENT_SEND_FAILED';
         return {
+          ...evmSubmissionFailure(error),
           isSpeedUp: false,
           error: true,
           code,
@@ -2331,6 +2462,14 @@ export class EthereumTransactions<
       assertCurrent,
     } = this.captureEvmSigningContext();
     const activeAccountAddress = activeAccount.address;
+    const submission = this.captureSubmission(
+      'erc20',
+      activeAccount,
+      activeAccountType,
+      activeAccountId,
+      activeNetwork,
+      assertCurrent
+    );
     ({ gasPrice, isLegacy, maxFeePerGas, maxPriorityFeePerGas } =
       await this.resolveEvmFeeParams(
         {
@@ -2403,7 +2542,9 @@ export class EthereumTransactions<
             value: '0x0',
           },
           assertCurrent,
-          assertCurrent
+          assertCurrent,
+          undefined,
+          submission
         );
       } catch (error) {
         throw error;
@@ -2488,9 +2629,15 @@ export class EthereumTransactions<
             );
             assertCurrent();
             assertHardwareTransactionSender(signedTx, activeAccount.address);
-            const finalTx = await provider.sendTransaction(signedTx);
-
-            saveTrezorTx && saveTrezorTx(finalTx);
+            const finalTx = await submitSignedEvmTransaction(
+              signedTx,
+              async (raw) => {
+                const response = await provider.sendTransaction(raw);
+                saveTrezorTx && saveTrezorTx(response);
+                return response;
+              },
+              submission
+            );
 
             return finalTx as any;
           } catch (error) {
@@ -2602,9 +2749,15 @@ export class EthereumTransactions<
             );
             assertCurrent();
             assertHardwareTransactionSender(signedTx, activeAccount.address);
-            const finalTx = await provider.sendTransaction(signedTx);
-
-            saveTrezorTx && saveTrezorTx(finalTx);
+            const finalTx = await submitSignedEvmTransaction(
+              signedTx,
+              async (raw) => {
+                const response = await provider.sendTransaction(raw);
+                saveTrezorTx && saveTrezorTx(response);
+                return response;
+              },
+              submission
+            );
 
             return finalTx as any;
           } catch (error) {
@@ -2647,6 +2800,14 @@ export class EthereumTransactions<
       assertCurrent,
     } = this.captureEvmSigningContext();
     const activeAccountAddress = activeAccount.address;
+    const submission = this.captureSubmission(
+      'erc721',
+      activeAccount,
+      activeAccountType,
+      activeAccountId,
+      activeNetwork,
+      assertCurrent
+    );
     if (tokenId === undefined || tokenId === null) {
       throw new Error('ERC721 tokenId is required');
     }
@@ -2718,7 +2879,9 @@ export class EthereumTransactions<
             value: '0x0',
           },
           assertCurrent,
-          assertCurrent
+          assertCurrent,
+          undefined,
+          submission
         );
       } catch (error) {
         throw error;
@@ -2797,7 +2960,11 @@ export class EthereumTransactions<
             );
             assertCurrent();
             assertHardwareTransactionSender(signedTx, activeAccount.address);
-            const finalTx = await provider.sendTransaction(signedTx);
+            const finalTx = await submitSignedEvmTransaction(
+              signedTx,
+              (raw) => provider.sendTransaction(raw),
+              submission
+            );
 
             return finalTx as any;
           } catch (error) {
@@ -2906,7 +3073,11 @@ export class EthereumTransactions<
             );
             assertCurrent();
             assertHardwareTransactionSender(signedTx, activeAccount.address);
-            const finalTx = await provider.sendTransaction(signedTx);
+            const finalTx = await submitSignedEvmTransaction(
+              signedTx,
+              (raw) => provider.sendTransaction(raw),
+              submission
+            );
 
             return finalTx as any;
           } catch (error) {
@@ -2952,6 +3123,14 @@ export class EthereumTransactions<
       assertCurrent,
     } = this.captureEvmSigningContext();
     const activeAccountAddress = activeAccount.address;
+    const submission = this.captureSubmission(
+      'erc1155',
+      activeAccount,
+      activeAccountType,
+      activeAccountId,
+      activeNetwork,
+      assertCurrent
+    );
     ({ gasPrice, isLegacy, maxFeePerGas, maxPriorityFeePerGas } =
       await this.resolveEvmFeeParams(
         {
@@ -3019,7 +3198,9 @@ export class EthereumTransactions<
             value: '0x0',
           },
           assertCurrent,
-          assertCurrent
+          assertCurrent,
+          undefined,
+          submission
         );
       } catch (error) {
         throw error;
@@ -3100,7 +3281,11 @@ export class EthereumTransactions<
             );
             assertCurrent();
             assertHardwareTransactionSender(signedTx, activeAccount.address);
-            const finalTx = await provider.sendTransaction(signedTx);
+            const finalTx = await submitSignedEvmTransaction(
+              signedTx,
+              (raw) => provider.sendTransaction(raw),
+              submission
+            );
 
             return finalTx as any;
           } catch (error) {
@@ -3207,7 +3392,11 @@ export class EthereumTransactions<
             );
             assertCurrent();
             assertHardwareTransactionSender(signedTx, activeAccount.address);
-            const finalTx = await provider.sendTransaction(signedTx);
+            const finalTx = await submitSignedEvmTransaction(
+              signedTx,
+              (raw) => provider.sendTransaction(raw),
+              submission
+            );
 
             return finalTx as any;
           } catch (error) {

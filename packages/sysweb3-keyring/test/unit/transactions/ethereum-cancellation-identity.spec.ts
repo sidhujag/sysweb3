@@ -113,7 +113,11 @@ describe('cancellation original identity admission', () => {
   afterEach(() => jest.restoreAllMocks());
 
   it('healthy control: admits the authenticated original only to the denied unsigned boundary', async () => {
-    expect(await run()).toEqual({ isCanceled: false, error: true });
+    expect(await run()).toEqual({
+      isCanceled: false,
+      error: true,
+      transactionNotBroadcast: true,
+    });
     expect(sendLocalEvmTransaction).toHaveBeenCalledTimes(1);
     expect(jest.mocked(sendLocalEvmTransaction).mock.calls[0][2]).toMatchObject(
       { nonce: parsed.nonce, from: PAYER, to: PAYER }
@@ -181,7 +185,11 @@ describe('cancellation original identity admission', () => {
           undefined,
           options()
         )
-      ).toEqual({ isCanceled: false, error: true });
+      ).toEqual({
+        isCanceled: false,
+        error: true,
+        transactionNotBroadcast: true,
+      });
       expect(validateOriginal).toHaveBeenCalledWith(
         expect.objectContaining({ hash: original.hash, nonce: original.nonce })
       );
@@ -227,7 +235,11 @@ describe('cancellation original identity admission', () => {
 
   it('passes explicit null to the host before admitting fallback nonce zero', async () => {
     provider.getTransaction.mockResolvedValue(null);
-    expect(await run(0)).toEqual({ isCanceled: false, error: true });
+    expect(await run(0)).toEqual({
+      isCanceled: false,
+      error: true,
+      transactionNotBroadcast: true,
+    });
     expect(validateOriginal).toHaveBeenCalledWith(null);
     expect(jest.mocked(sendLocalEvmTransaction).mock.calls[0][2].nonce).toBe(0);
     expect(provider.sendTransaction).not.toHaveBeenCalled();
@@ -247,7 +259,10 @@ describe('cancellation original identity admission', () => {
 
   it('retains missing-original/no-fallback behavior after explicit null validation', async () => {
     provider.getTransaction.mockResolvedValue(null);
-    expect(await run()).toEqual({ isCanceled: false, error: true });
+    expect(await run()).toEqual({
+      isCanceled: false,
+      error: true,
+    });
     expect(validateOriginal).toHaveBeenCalledWith(null);
     expect(getKey).not.toHaveBeenCalled();
     expect(deny).not.toHaveBeenCalled();
@@ -281,7 +296,11 @@ describe('cancellation original identity admission', () => {
       original.from = `0x${'44'.repeat(20)}`;
       return BigNumber.from(1);
     });
-    expect(await run()).toEqual({ isCanceled: false, error: true });
+    expect(await run()).toEqual({
+      isCanceled: false,
+      error: true,
+      transactionNotBroadcast: true,
+    });
     expect(jest.mocked(sendLocalEvmTransaction).mock.calls[0][2]).toMatchObject(
       {
         nonce: parsed.nonce,

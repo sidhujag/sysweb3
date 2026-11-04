@@ -1,0 +1,371 @@
+// Reload the shared setup's SDK imports so this file uses its real provider response wrapper.
+jest.resetModules();
+(global as any).window.location = { href: 'http://localhost/' };
+
+import { Wallet, Transaction } from 'ethers';
+
+import { BigNumber, serializeTransaction } from '../../../src/ethers-v6';
+import { EthereumTransactions } from '../../../src/transactions/ethereum';
+import { evmSubmissionFailure } from '../../../src/transactions/evm-submission';
+import { KeyringAccountType } from '../../../src/types';
+
+import type {
+  CaptureEvmSubmission,
+  EvmSignedSubmission,
+} from '../../../src/transactions/evm-submission';
+
+jest.mock('../../../src/providers', () => ({
+  ...jest.requireActual('../../../src/providers'),
+  CustomJsonRpcProvider: jest.fn(),
+}));
+
+jest.mock('../../../src/ethers-v6', () => {
+  const actual = jest.requireActual('../../../src/ethers-v6');
+  return {
+    ...actual,
+    Contract: jest.fn().mockImplementation((address) => ({
+      interface: { encodeFunctionData: () => '0x12345678' },
+      transfer: {
+        populateTransaction: async (
+          _to: any,
+          _amount: any,
+          overrides: any
+        ) => ({ to: address, data: '0x12345678', ...overrides }),
+      },
+      transferFrom: {
+        populateTransaction: async (
+          _from: any,
+          _to: any,
+          _id: any,
+          overrides: any
+        ) => ({ to: address, data: '0x12345678', ...overrides }),
+      },
+      safeTransferFrom: {
+        populateTransaction: async (
+          _from: any,
+          _to: any,
+          _id: any,
+          _amount: any,
+          _data: any,
+          overrides: any
+        ) => ({ to: address, data: '0x12345678', ...overrides }),
+      },
+    })),
+  };
+});
+
+const key = `0x${'11'.repeat(32)}`,
+  wallet = new Wallet(key),
+  to = `0x${'22'.repeat(20)}`;
+const deferred = () => {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+};
+const kinds = [
+  KeyringAccountType.HDAccount,
+  KeyringAccountType.Imported,
+  KeyringAccountType.Ledger,
+  KeyringAccountType.Trezor,
+];
+const operations = [
+  'send',
+  'cancel',
+  'speed-up',
+  'erc20',
+  'erc721',
+  'erc1155',
+] as const;
+function fixture(kind: KeyringAccountType, capture: CaptureEvmSubmission) {
+  const network = {
+    kind: 'ethereum',
+    chainId: 7654321,
+    slip44: 60,
+    url: 'https://offline.invalid',
+    currency: 'eth',
+  } as any;
+  const state: any = {
+    activeAccountType: kind,
+    activeAccountId: 0,
+    activeNetwork: network,
+    accounts: { [kind]: { 0: { address: wallet.address } } },
+  };
+  let sessionCurrent = true;
+  const device = jest.fn(async (raw: string) =>
+    wallet.signingKey.sign(Transaction.from(raw).unsignedHash)
+  );
+  const ledger: any = {
+    evm: {
+      signEVMTransaction: jest.fn(async ({ rawTx }) => {
+        const sig = await device(`0x${rawTx}`);
+        return { r: sig.r.slice(2), s: sig.s.slice(2), v: sig.v.toString(16) };
+      }),
+    },
+  };
+  const trezor: any = {
+    signEthTransaction: jest.fn(async ({ tx }) => ({
+      success: true,
+      payload: await device(
+        serializeTransaction({ ...tx, type: tx.gasPrice !== undefined ? 0 : 2 })
+      ),
+    })),
+  };
+  const sdk = new EthereumTransactions(
+    () => network,
+    () => ({ address: wallet.address, decryptedPrivateKey: key }),
+    () => state,
+    ledger,
+    trezor,
+    () => () => {
+      if (!sessionCurrent) throw Error('session locked');
+    },
+    capture
+  );
+  const provider: any = {
+    verifyConfiguredChainId: jest.fn(async () => undefined),
+    getNetwork: jest.fn(async () => ({ chainId: network.chainId })),
+    getTransactionCount: jest.fn(async () => 7),
+    getBalance: jest.fn(async () => BigNumber.from('1000000000000000000')),
+    getFeeData: jest.fn(async () => ({
+      gasPrice: BigNumber.from(2),
+      maxFeePerGas: BigNumber.from(3),
+      maxPriorityFeePerGas: BigNumber.from(1),
+    })),
+    getGasPrice: jest.fn(async () => BigNumber.from(2)),
+    getBlock: jest.fn(async () => ({ baseFeePerGas: BigNumber.from(1) })),
+    estimateGas: jest.fn(async () => BigNumber.from(42000)),
+    send: jest.fn(async () => '0x1'),
+    sendTransaction: jest.fn(async (raw: string) => ({
+      hash: Transaction.from(raw).hash,
+    })),
+    getTransaction: jest.fn(),
+  };
+  Object.defineProperty(sdk, 'web3Provider', { get: () => provider });
+  const original = wallet.signTransaction({
+    to,
+    value: 123,
+    nonce: 7,
+    chainId: network.chainId,
+    type: 2,
+    gasLimit: 42000,
+    maxFeePerGas: 3,
+    maxPriorityFeePerGas: 1,
+  });
+  const submit = async (
+    operation: (typeof operations)[number],
+    previewOnly = false,
+    saveTrezorTx?: () => void
+  ) => {
+    const originalTx = Transaction.from(await original);
+    provider.getTransaction.mockResolvedValue({
+      ...originalTx.toJSON(),
+      signature: originalTx.signature,
+      hash: originalTx.hash,
+      from: originalTx.from,
+      blockNumber: null,
+    });
+    const options = {
+      previewOnly,
+      approvedMaximumFee: '1000000000',
+      assertCurrentContext: () => undefined,
+      validateOriginal: () => undefined,
+    };
+    if (operation === 'cancel')
+      return sdk.cancelSentTransaction(originalTx.hash!, false, 7, options);
+    if (operation === 'speed-up')
+      return sdk.sendTransactionWithEditedFee(originalTx.hash!, false, options);
+    if (operation === 'send')
+      return sdk.sendFormattedTransaction(
+        {
+          from: wallet.address,
+          to,
+          chainId: network.chainId,
+          value: 123,
+          nonce: 7,
+          gasLimit: 42000,
+          maxFeePerGas: 3,
+          maxPriorityFeePerGas: 1,
+        } as any,
+        false
+      );
+    return sdk[
+      operation === 'erc20'
+        ? 'sendSignedErc20Transaction'
+        : operation === 'erc721'
+        ? 'sendSignedErc721Transaction'
+        : 'sendSignedErc1155Transaction'
+    ]({
+      networkUrl: network.url,
+      saveTrezorTx,
+      receiver: to,
+      tokenAddress: to,
+      tokenAmount: '1',
+      tokenId: '1',
+      decimals: 0,
+      gasLimit: 42000,
+      maxFeePerGas: 3,
+      maxPriorityFeePerGas: 1,
+    });
+  };
+  return {
+    sdk,
+    state,
+    network,
+    provider,
+    submit,
+    lock: () => {
+      sessionCurrent = false;
+    },
+  };
+}
+
+afterEach(() => jest.restoreAllMocks());
+for (const kind of kinds)
+  for (const operation of operations) {
+    it(`${kind} ${operation} waits for exact-byte persistence before its single dispatch`, async () => {
+      const entered = deferred(),
+        ack = deferred();
+      let saved!: EvmSignedSubmission;
+      const capture = jest.fn(() => ({
+        assertCurrent() {
+          return undefined;
+        },
+        async persistSigned(record: EvmSignedSubmission) {
+          saved = record;
+          entered.resolve();
+          await ack.promise;
+        },
+      }));
+      const f = fixture(kind, capture),
+        result = f.submit(operation);
+      await Promise.race([
+        entered.promise,
+        result.then((value) => {
+          throw new Error(
+            `Completed before persistence: ${JSON.stringify(value)}`
+          );
+        }),
+      ]);
+      expect(f.provider.sendTransaction).not.toHaveBeenCalled();
+      expect(saved.context.operation).toBe(operation);
+      expect(saved.context.account.type).toBe(kind);
+      expect(saved.context.account.address).toBe(wallet.address);
+      expect(saved.rawTransaction).not.toContain(key);
+      expect(Object.isFrozen(saved)).toBe(true);
+      ack.resolve();
+      await result;
+      expect(capture).toHaveBeenCalledTimes(1);
+      expect(f.provider.sendTransaction).toHaveBeenCalledTimes(1);
+      expect(f.provider.sendTransaction).toHaveBeenCalledWith(
+        saved.rawTransaction
+      );
+    });
+    it(`${kind} ${operation} refuses a session revoked while storage acknowledges`, async () => {
+      const entered = deferred(),
+        ack = deferred();
+      let saved = '';
+      const f = fixture(kind, () => ({
+        assertCurrent() {
+          return undefined;
+        },
+        async persistSigned(record) {
+          saved = record.rawTransaction;
+          entered.resolve();
+          await ack.promise;
+        },
+      }));
+      const result = f.submit(operation).catch((e) => e);
+      await Promise.race([
+        entered.promise,
+        result.then((value) => {
+          throw new Error(
+            `Completed before persistence: ${JSON.stringify(value)}`
+          );
+        }),
+      ]);
+      f.lock();
+      ack.resolve();
+      const outcome = await result;
+      expect(saved).toMatch(/^0x/);
+      expect(f.provider.sendTransaction).not.toHaveBeenCalled();
+      expect(
+        operation === 'cancel' || operation === 'speed-up' ? outcome : outcome
+      ).toMatchObject({ transactionNotBroadcast: true });
+    });
+  }
+
+it.each(['cancel', 'speed-up'] as const)(
+  'keeps %s preview read-only without a persistence capability',
+  async (operation) => {
+    const capture = jest.fn(() => {
+      throw Error('Preview must not capture submission');
+    });
+    const f = fixture(KeyringAccountType.Ledger, capture);
+    await f.submit(operation, true);
+    expect(capture).not.toHaveBeenCalled();
+    expect(f.provider.sendTransaction).not.toHaveBeenCalled();
+  }
+);
+
+it('rejects host A-B-A revision changes after persistence even when account/network values match again', async () => {
+  const entered = deferred(),
+    ack = deferred();
+  let revision = 0;
+  const f = fixture(KeyringAccountType.HDAccount, () => {
+    const captured = revision;
+    return {
+      assertCurrent() {
+        if (revision !== captured) throw Error('Host revision changed');
+      },
+      async persistSigned() {
+        entered.resolve();
+        await ack.promise;
+      },
+    };
+  });
+  const result = f.submit('send').catch((e) => e);
+  await Promise.race([
+    entered.promise,
+    result.then((value) => {
+      throw new Error(`Completed before persistence: ${JSON.stringify(value)}`);
+    }),
+  ]);
+  revision += 2;
+  ack.resolve();
+  expect(await result).toMatchObject({ transactionNotBroadcast: true });
+  expect(f.provider.sendTransaction).not.toHaveBeenCalled();
+});
+
+it.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
+  'preserves dispatched status if the %s token post-send callback fails',
+  async (kind) => {
+    const f = fixture(kind, () => ({
+      assertCurrent: () => undefined,
+      persistSigned: async () => undefined,
+    }));
+    await expect(
+      f.submit('erc20', false, () => {
+        throw Error('history unavailable');
+      })
+    ).rejects.toMatchObject({
+      transactionNotBroadcast: false,
+      message: 'history unavailable',
+    });
+    expect(f.provider.sendTransaction).toHaveBeenCalledTimes(1);
+  }
+);
+
+it('preserves local dispatch evidence through the formatted-send public error wrapper', async () => {
+  const f = fixture(KeyringAccountType.HDAccount, () => ({
+    assertCurrent: () => undefined,
+    persistSigned: async () => undefined,
+  }));
+  f.provider.sendTransaction.mockRejectedValueOnce(
+    Object.assign(Error('response lost'), { transactionNotBroadcast: true })
+  );
+  const error = await f.submit('send').catch((e) => e);
+  expect(error).toMatchObject({ transactionNotBroadcast: false });
+  expect(evmSubmissionFailure(error).transactionNotBroadcast).toBe(false);
+});

@@ -84,6 +84,7 @@ import type {
   EvmHdRuntimeAccountRequest,
 } from './software-hd-account';
 import type { VaultPersistence, VaultStoragePort } from './storage-core';
+import type { CaptureEvmSubmission } from './transactions/evm-submission';
 import type {
   PreparedEvmSigningOptions,
   PreparedSoftwareEvmSigningRequest,
@@ -137,6 +138,8 @@ export interface KeyringCoreDependencies<
   trezorSigner: TTrezor;
   /** Trusted host adapters; absent device capabilities fail closed. */
   syscoinHardwareSigners?: ISyscoinHardwareSigners;
+  /** Trusted host lifecycle, captured before each locally signed EVM submission. */
+  captureEvmSubmission?: CaptureEvmSubmission;
 }
 
 export interface ISysAccount {
@@ -317,7 +320,8 @@ export class KeyringCore<
       this.getAccountsState,
       this.ledgerSigner,
       this.trezorSigner,
-      this.capturePsbtSigningContext
+      this.capturePsbtSigningContext,
+      dependencies.captureEvmSubmission
     );
   }
 

@@ -107,6 +107,8 @@ export interface IEthereumTransactions {
   ) => Promise<{
     error?: boolean;
     isCanceled: boolean;
+    transactionNotBroadcast?: boolean;
+    signedTransactionHash?: string;
     maximumFee?: string;
     transaction?: TransactionResponse;
   }>;
@@ -172,6 +174,8 @@ export interface IEthereumTransactions {
   ) => Promise<{
     maximumFee?: string;
     isSpeedUp: boolean;
+    transactionNotBroadcast?: boolean;
+    signedTransactionHash?: string;
     transaction?: TransactionResponse;
     error?: boolean;
   }>;

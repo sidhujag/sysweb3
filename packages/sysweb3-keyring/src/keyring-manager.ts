@@ -11,8 +11,9 @@ import {
 } from './transactions/hardware-psbt';
 import { TrezorKeyring } from './trezor';
 
-import type { IKeyringManager } from './types';
 import type { LedgerHost } from './ledger/host-types';
+import type { CaptureEvmSubmission } from './transactions/evm-submission';
+import type { IKeyringManager } from './types';
 
 export type { ISysAccount } from './keyring-core';
 
@@ -26,7 +27,8 @@ export class KeyringManager
 {
   constructor(
     sharedHardwareWalletManager?: HardwareWalletManager,
-    ledgerHost?: LedgerHost
+    ledgerHost?: LedgerHost,
+    options?: { captureEvmSubmission?: CaptureEvmSubmission }
   ) {
     if (sharedHardwareWalletManager && ledgerHost) {
       throw new Error(
@@ -43,6 +45,7 @@ export class KeyringManager
     const ledgerSigner = new LedgerKeyring(hardwareManager, ledgerHost);
     super({
       authority: legacyAuthority,
+      captureEvmSubmission: options?.captureEvmSubmission,
       storage,
       vaultPersistence: legacyVaultPersistence,
       ledgerSigner,
@@ -57,9 +60,10 @@ export class KeyringManager
   public static async createInitialized(
     seed: string,
     password: string,
-    vaultStateGetter: () => any
+    vaultStateGetter: () => any,
+    options?: { captureEvmSubmission?: CaptureEvmSubmission }
   ): Promise<KeyringManager> {
-    const keyring = new KeyringManager();
+    const keyring = new KeyringManager(undefined, undefined, options);
     keyring.setVaultStateGetter(vaultStateGetter);
     await keyring.initializeWalletSecurely(seed, password);
     return keyring;

@@ -20,6 +20,10 @@ import {
 } from '../ethers-v6';
 import { assertEvmGasLimit, parseEvmFeeQuantity } from '../evm-fees';
 import { CustomJsonRpcProvider } from '../providers';
+import {
+  submitSignedEvmTransaction,
+  type EvmSubmissionBoundary,
+} from './evm-submission';
 
 const bip32 = BIP32Factory(ecc);
 
@@ -193,7 +197,8 @@ export const sendLocalEvmTransaction = async (
   beforeBroadcast?: () => void,
   beforeSign?: () => void,
   /** Synchronous final-envelope check; throw to reject. Promise results are rejected. */
-  validateBeforeSign?: (transaction: TransactionRequest) => void
+  validateBeforeSign?: (transaction: TransactionRequest) => void,
+  submission?: EvmSubmissionBoundary
 ) => {
   const account = privateKeyToAccount(privateKey);
   const resolved = await resolveProperties(transaction);
@@ -271,8 +276,12 @@ export const sendLocalEvmTransaction = async (
     throw new Error('Transaction validation must be synchronous');
   }
   const signedTx = signTransaction(tx, privateKey);
-  beforeBroadcast?.();
-  return provider.sendTransaction(signedTx);
+  return submitSignedEvmTransaction(
+    signedTx,
+    (raw) => provider.sendTransaction(raw),
+    submission,
+    beforeBroadcast
+  );
 };
 
 export const sameAddress = (left: string, right: string) =>

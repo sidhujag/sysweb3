@@ -827,7 +827,11 @@ describe('EVM cancellation signing context', () => {
       await started.promise;
       mutate(change);
       held.resolve();
-      expect(await result).toEqual({ isCanceled: false, error: true });
+      expect(await result).toEqual({
+        isCanceled: false,
+        error: true,
+        transactionNotBroadcast: true,
+      });
       expect(provider.sendTransaction).not.toHaveBeenCalled();
     }
   );
@@ -856,7 +860,11 @@ describe('EVM cancellation signing context', () => {
       await started.promise;
       mutate(change);
       held.resolve();
-      expect(await result).toEqual({ isCanceled: false, error: true });
+      expect(await result).toEqual({
+        isCanceled: false,
+        error: true,
+        transactionNotBroadcast: true,
+      });
       expect(provider.sendTransaction).not.toHaveBeenCalled();
       expect(getKey).not.toHaveBeenCalled();
     }
@@ -867,7 +875,11 @@ describe('EVM cancellation signing context', () => {
       address: otherWallet.address,
       decryptedPrivateKey: otherWallet.privateKey,
     });
-    expect(await run()).toEqual({ isCanceled: false, error: true });
+    expect(await run()).toEqual({
+      isCanceled: false,
+      error: true,
+      transactionNotBroadcast: true,
+    });
     expect(provider.verifyConfiguredChainId).not.toHaveBeenCalled();
     expect(provider.sendTransaction).not.toHaveBeenCalled();
   });
@@ -888,7 +900,10 @@ describe('EVM cancellation signing context', () => {
 
   it('preserves missing-original/no-fallback behavior without signing', async () => {
     provider.getTransaction.mockResolvedValue(null);
-    expect(await run()).toEqual({ isCanceled: false, error: true });
+    expect(await run()).toEqual({
+      isCanceled: false,
+      error: true,
+    });
     expect(getKey).not.toHaveBeenCalled();
     expect(provider.sendTransaction).not.toHaveBeenCalled();
   });
@@ -992,7 +1007,11 @@ describe('EVM cancellation signing context', () => {
           ? ledger.evm.signEVMTransaction
           : trezor.signEthTransaction;
       device.mockRejectedValue(new Error('Synthetic device rejection'));
-      expect(await run()).toEqual({ isCanceled: false, error: true });
+      expect(await run()).toEqual({
+        isCanceled: false,
+        error: true,
+        transactionNotBroadcast: true,
+      });
       expect(getKey).not.toHaveBeenCalled();
       expect(provider.sendTransaction).not.toHaveBeenCalled();
     }
@@ -1084,7 +1103,11 @@ describe('EVM cancellation signing context', () => {
       await entered.promise;
       current = false;
       held.resolve();
-      expect(await pending).toEqual({ isCanceled: false, error: true });
+      expect(await pending).toEqual({
+        isCanceled: false,
+        error: true,
+        transactionNotBroadcast: true,
+      });
       expect(provider.sendTransaction).not.toHaveBeenCalled();
     }
   );
@@ -1101,7 +1124,11 @@ describe('EVM cancellation signing context', () => {
         if (!current) throw new Error('Host selection changed');
       },
     });
-    expect(result).toEqual({ isCanceled: false, error: true });
+    expect(result).toEqual({
+      isCanceled: false,
+      error: true,
+      transactionNotBroadcast: true,
+    });
     expect(provider.sendTransaction).not.toHaveBeenCalled();
   });
 
