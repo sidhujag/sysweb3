@@ -1,4 +1,6 @@
 /** Standard EVM fee discovery shared by extension and restricted native hosts. */
+import { getEvmProtocolLimits } from '@sidhujag/sysweb3-network/cjs/evm.js';
+
 export interface EvmFeeReader {
   getGasPrice(): Promise<unknown>;
   getBlock(tag: 'latest'): Promise<{ baseFeePerGas?: unknown } | null>;
@@ -44,13 +46,6 @@ export class EvmGasLimitError extends Error {
   }
 }
 
-// EIP-7825, activated by Fusaka on Ethereum and its current public testnets.
-// https://eips.ethereum.org/EIPS/eip-7825
-// https://blog.ethereum.org/2025/11/06/fusaka-mainnet-announcement
-// These are explicit protocol deployments, not an EVM-wide/L2 default.
-const EIP7825_CHAINS = new Set([1n, 11155111n, 560048n]);
-const EIP7825_GAS_LIMIT = 16777216n;
-
 /** The host supplies a verified chain and, if sampled, its block gas limit. */
 export function assertEvmGasLimit(
   gasLimit: bigint,
@@ -70,8 +65,9 @@ export function assertEvmGasLimit(
         sampledBlockGasLimit > MAX_FEE))
   )
     throw new EvmGasLimitError('SYSWEB3_EVM_GAS_LIMIT_INVALID');
+  const { maxTransactionGas } = getEvmProtocolLimits(chainId);
   if (
-    (EIP7825_CHAINS.has(chainId) && gasLimit > EIP7825_GAS_LIMIT) ||
+    (maxTransactionGas !== undefined && gasLimit > BigInt(maxTransactionGas)) ||
     (sampledBlockGasLimit !== undefined && gasLimit > sampledBlockGasLimit)
   )
     throw new EvmGasLimitError('SYSWEB3_EVM_GAS_LIMIT_EXCEEDED');

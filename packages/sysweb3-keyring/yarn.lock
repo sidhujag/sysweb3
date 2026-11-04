@@ -350,6 +350,14 @@
     eth-chains "^1.0.0"
     ethers "^6.17.0"
 
+"@sidhujag/sysweb3-network@^1.0.111":
+  version "1.0.111"
+  resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-network/-/sysweb3-network-1.0.111.tgz#ae1cb05f1db48a1ecd11142ccf6b39dc211a5cff"
+  integrity sha512-DcjJMO+F222UA4UPm4T+OWDOxbFolO6SW8WW9RLIE0yBhkU8qexGEJ14beXeuqTpIK9Feg3NVricyV413B+q7A==
+  dependencies:
+    eth-chains "^1.0.0"
+    ethers "^6.17.0"
+
 "@sidhujag/sysweb3-utils@^1.1.280":
   version "1.1.280"
   resolved "https://registry.yarnpkg.com/@sidhujag/sysweb3-utils/-/sysweb3-utils-1.1.280.tgz#1a29c758e7dd40fbe18a9ad9f8cd5afc319c5656"
