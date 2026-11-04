@@ -162,19 +162,17 @@ export const parsePersonalMessage = (hexMessage: string) =>
 export const normalizeGasLimitedTransaction = (
   transaction: TransactionRequest
 ): TransactionRequest => {
-  const snapshot = normalizeTransactionRequest(
-    transaction
-  ) as TransactionRequest;
+  const snapshot = { ...transaction };
   const gasLimit = parseEvmFeeQuantity(snapshot.gasLimit, 'gas limit');
   const chainId = parseEvmFeeQuantity(snapshot.chainId ?? 0, 'chain ID');
   assertEvmGasLimit(gasLimit, chainId);
-  return {
+  return normalizeTransactionRequest({
     ...snapshot,
     gasLimit,
     ...(snapshot.chainId !== undefined && snapshot.chainId !== null
       ? { chainId }
       : {}),
-  };
+  }) as TransactionRequest;
 };
 
 export const signTransaction = (

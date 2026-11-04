@@ -347,3 +347,25 @@ it('preserves omitted-chain legacy serialization instead of inserting a network 
   expect(signed.chainId).toBe(0n);
   expect(signed.from).toBe(wallet.address);
 });
+
+it('bounds gas text before numeric normalization or cryptography', () => {
+  const bigint = jest.spyOn(globalThis, 'BigInt');
+  try {
+    expect(() =>
+      signTransaction(
+        {
+          type: 0,
+          chainId: 1,
+          to,
+          nonce: 0,
+          gasLimit: '9'.repeat(10000),
+          gasPrice: 2,
+        },
+        KEY
+      )
+    ).toThrow('Invalid gas limit');
+    expect(bigint).not.toHaveBeenCalled();
+  } finally {
+    bigint.mockRestore();
+  }
+});
