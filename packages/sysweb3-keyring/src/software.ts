@@ -9,6 +9,7 @@ import type {
   EvmHdRuntimeAccountRequest,
 } from './software-hd-account';
 import type { VaultPersistence } from './storage-core';
+import type { CaptureEvmSubmission } from './transactions/evm-submission';
 import type {
   PreparedEvmSigningOptions,
   PreparedSoftwareEvmSigningRequest,
@@ -26,19 +27,25 @@ const hosts = new WeakMap<
   {
     storage: KeyringStoragePort;
     vaultPersistence: VaultPersistence;
+    captureEvmSubmission?: CaptureEvmSubmission;
   }
 >();
 
 /** Create once per wallet authority, then share with its per-network keyrings. */
 export const createSoftwareKeyringHost = (
-  storage: KeyringStoragePort
+  storage: KeyringStoragePort,
+  options?: { captureEvmSubmission?: CaptureEvmSubmission }
 ): SoftwareKeyringHost => {
   const vaultPersistence = createVaultPersistence(storage);
   if (typeof storage.deleteItem !== 'function') {
     throw new TypeError('Keyring storage port must provide deleteItem');
   }
   const host = Object.freeze({}) as SoftwareKeyringHost;
-  hosts.set(host, { storage, vaultPersistence });
+  hosts.set(host, {
+    storage,
+    vaultPersistence,
+    captureEvmSubmission: options?.captureEvmSubmission,
+  });
   return host;
 };
 
@@ -53,6 +60,7 @@ export class SoftwareKeyring extends KeyringCore<undefined, undefined> {
     const dependencies = requireHost(host);
     super({
       authority: host,
+      captureEvmSubmission: dependencies.captureEvmSubmission,
       storage: dependencies.storage,
       vaultPersistence: dependencies.vaultPersistence,
       ledgerSigner: undefined,
@@ -129,3 +137,16 @@ export type {
   EvmHdRuntimeAccountOptions,
   EvmHdRuntimeAccountRequest,
 } from './software-hd-account';
+
+export {
+  captureEvmSubmission,
+  submitSignedEvmTransaction,
+  evmSubmissionFailure,
+} from './transactions/evm-submission';
+export type {
+  CaptureEvmSubmission,
+  EvmSubmissionContext,
+  EvmSubmissionLifecycle,
+  EvmSignedSubmission,
+  EvmSubmissionBoundary,
+} from './transactions/evm-submission';

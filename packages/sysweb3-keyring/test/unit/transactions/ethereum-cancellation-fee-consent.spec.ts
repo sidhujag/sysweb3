@@ -311,6 +311,7 @@ describe.each([true, false])(
         await expect(f.run(f.options(target))).resolves.toEqual({
           isCanceled: false,
           error: true,
+          transactionNotBroadcast: true,
         });
         expect(f.ledger.evm.signEVMTransaction).not.toHaveBeenCalled();
         expect(f.trezor.signEthTransaction).not.toHaveBeenCalled();
