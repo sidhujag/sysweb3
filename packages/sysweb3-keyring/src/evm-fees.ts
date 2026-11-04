@@ -28,6 +28,56 @@ export type EvmFeeData = Readonly<{
 
 const MAX_FEE = (1n << 256n) - 1n;
 
+/** A validated limit failed its wire bounds or an activated protocol bound. */
+export class EvmGasLimitError extends Error {
+  constructor(
+    public readonly code:
+      | 'SYSWEB3_EVM_GAS_LIMIT_INVALID'
+      | 'SYSWEB3_EVM_GAS_LIMIT_EXCEEDED'
+  ) {
+    super(
+      code === 'SYSWEB3_EVM_GAS_LIMIT_INVALID'
+        ? 'Invalid EVM gas limit'
+        : 'EVM gas limit exceeds the network limit'
+    );
+    this.name = 'EvmGasLimitError';
+  }
+}
+
+// EIP-7825, activated by Fusaka on Ethereum and its current public testnets.
+// https://eips.ethereum.org/EIPS/eip-7825
+// https://blog.ethereum.org/2025/11/06/fusaka-mainnet-announcement
+// These are explicit protocol deployments, not an EVM-wide/L2 default.
+const EIP7825_CHAINS = new Set([1n, 11155111n, 560048n]);
+const EIP7825_GAS_LIMIT = 16777216n;
+
+/** The host supplies a verified chain and, if sampled, its block gas limit. */
+export function assertEvmGasLimit(
+  gasLimit: bigint,
+  chainId: bigint,
+  sampledBlockGasLimit?: bigint
+): bigint {
+  if (
+    typeof gasLimit !== 'bigint' ||
+    gasLimit <= 0n ||
+    gasLimit > MAX_FEE ||
+    typeof chainId !== 'bigint' ||
+    chainId < 0n ||
+    chainId > MAX_FEE ||
+    (sampledBlockGasLimit !== undefined &&
+      (typeof sampledBlockGasLimit !== 'bigint' ||
+        sampledBlockGasLimit <= 0n ||
+        sampledBlockGasLimit > MAX_FEE))
+  )
+    throw new EvmGasLimitError('SYSWEB3_EVM_GAS_LIMIT_INVALID');
+  if (
+    (EIP7825_CHAINS.has(chainId) && gasLimit > EIP7825_GAS_LIMIT) ||
+    (sampledBlockGasLimit !== undefined && gasLimit > sampledBlockGasLimit)
+  )
+    throw new EvmGasLimitError('SYSWEB3_EVM_GAS_LIMIT_EXCEEDED');
+  return gasLimit;
+}
+
 /** Accept the SDK's existing BigNumberish forms without permissive zero coercion. */
 export function parseEvmFeeQuantity(
   value: unknown,

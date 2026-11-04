@@ -7,6 +7,7 @@ import {
 } from '@sidhujag/sysweb3-network';
 import { BIP32Factory } from 'bip32';
 import bs58check from 'bs58check';
+import { Buffer } from 'buffer';
 import { utils as syscoinUtils } from 'syscoinjs-lib';
 
 const bip32 = BIP32Factory(ecc);

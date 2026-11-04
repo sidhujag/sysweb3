@@ -2,6 +2,7 @@ import { getAddress } from 'ethers/address';
 import { keccak256 } from 'ethers/crypto';
 import { Transaction } from 'ethers/transaction';
 
+import { assertEvmGasLimit } from '../evm-fees';
 import { signTransaction } from './evm-local-signer';
 
 /**
@@ -187,6 +188,7 @@ export function snapshotPreparedEvmRequest(
     gasLimit: quantity(transaction.gasLimit, UINT64, true),
     data: transaction.data.toLowerCase(),
   };
+  assertEvmGasLimit(BigInt(common.gasLimit), BigInt(chainId));
   const fees =
     type === 0
       ? { type: 0 as const, gasPrice: quantity(transaction.gasPrice) }

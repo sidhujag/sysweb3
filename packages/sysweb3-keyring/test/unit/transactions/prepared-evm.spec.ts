@@ -1,8 +1,9 @@
 import ecc from '@bitcoinerlab/secp256k1';
 import { keccak256 } from 'ethers/crypto';
-import { HDNodeWallet, Wallet } from 'ethers/wallet';
 import { Transaction } from 'ethers/transaction';
+import { HDNodeWallet, Wallet } from 'ethers/wallet';
 
+import { EvmGasLimitError } from '../../../src/evm-fees';
 import {
   SoftwareKeyring,
   createSoftwareKeyringHost,
@@ -10,6 +11,7 @@ import {
   KeyringAccountType,
 } from '../../../src/software';
 import { snapshotPreparedEvmRequest } from '../../../src/transactions/prepared-evm';
+
 import type { PreparedSoftwareEvmSigningRequest } from '../../../src/software';
 
 const PHRASE =
@@ -128,6 +130,29 @@ it.each(mutations)('rejects %s before signing', (_name, mutate) => {
   expect(() => snapshotPreparedEvmRequest(input)).toThrow();
 });
 
+it.each(['1', '11155111', '560048'])(
+  'bounds prepared gas for activated chain %s',
+  (chainId) => {
+    const input = request() as any;
+    input.network.chainId = input.transaction.chainId = chainId;
+    input.transaction.gasLimit = '16777216';
+    expect(snapshotPreparedEvmRequest(input).transaction.gasLimit).toBe(
+      '16777216'
+    );
+    input.transaction.gasLimit = '16777217';
+    expect(() => snapshotPreparedEvmRequest(input)).toThrow(EvmGasLimitError);
+  }
+);
+
+it('does not infer an Ethereum gas cap on unrelated prepared EVM chains', () => {
+  const input = request() as any;
+  input.network.chainId = input.transaction.chainId = '5700';
+  input.transaction.gasLimit = '16800000';
+  expect(snapshotPreparedEvmRequest(input).transaction.gasLimit).toBe(
+    '16800000'
+  );
+});
+
 it('rejects accessors, prototypes, symbols and nonenumerable fields without invoking getters', () => {
   const accessor = request();
   const getter = jest.fn();
@@ -242,6 +267,20 @@ describe('software-only prepared signing authority', () => {
       expect(provider).not.toHaveBeenCalled();
       expect(fetch).not.toHaveBeenCalled();
       expect(guard).toHaveBeenCalledTimes(2);
+    }
+  );
+
+  it.each([0, 2] as const)(
+    'refuses to sign an over-cap type %i envelope even without estimation',
+    (type) => {
+      const input = request(type) as any;
+      input.transaction.gasLimit = '16777217';
+      expect(() =>
+        keyring.signPreparedEvmTransaction(input, { assertCurrent: guard })
+      ).toThrow(EvmGasLimitError);
+      expect(sign).not.toHaveBeenCalled();
+      expect(provider).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
     }
   );
 
