@@ -71,6 +71,12 @@
       ],
       "cjs/utils/watch-descriptor.js": [
         "types/utils/watch-descriptor.d.ts"
+      ],
+      "cjs/utils/derivation-paths": [
+        "types/utils/derivation-paths.d.ts"
+      ],
+      "cjs/utils/derivation-paths.js": [
+        "types/utils/derivation-paths.d.ts"
       ]
     }
   },
