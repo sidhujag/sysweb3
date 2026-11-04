@@ -505,3 +505,11 @@ existing configured recommendation policy (default multiplier 250). Options
 are snapshotted before asynchronous reads. The synchronous `assertCurrent`
 callback must return `undefined`; an async callback is rejected. Cancellation
 rejects pending discovery without permitting later results to produce a quote.
+
+`bufferedEvmGasLimit(estimate: bigint, minimum?: bigint)` shares the existing
+successful gas estimate policy used by `EthereumTransactions.getTxGasLimit`:
+floor the estimate times120/100 and apply the configured minimum if larger.
+It includes ordinary native transfers. The helper performs no estimation,
+fallback request, transaction cap selection or broadcasting; callers enforce
+the selected network's limits after applying it. The SDK's existing estimation
+failure/fallback behavior is unchanged.

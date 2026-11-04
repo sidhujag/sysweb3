@@ -2,6 +2,8 @@
 
 ## 2.2.0
 
+- Share the existing successful gas-estimate 20% buffer/minimum calculation through `bufferedEvmGasLimit`; SDK and mobile can use the same integer rounding without copying the formula.
+
 - Expose dependency-free `cjs/evm-fees` for the existing standard EVM fee recommendation and make `EthereumTransactions` use the same implementation.
 - Keep observed legacy/EIP-1559 behavior, zero tips, configured floors/multipliers, and unsupported-method-only history fallback. Add uint256/history bounds, snapshot options, synchronous host guards and cancellation checks for restricted hosts.
 

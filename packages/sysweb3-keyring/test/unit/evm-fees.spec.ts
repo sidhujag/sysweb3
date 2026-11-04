@@ -1,4 +1,5 @@
 import {
+  bufferedEvmGasLimit,
   getEvmFeeData,
   parseEvmFeeQuantity,
   EvmFeeReader,
@@ -235,5 +236,43 @@ describe('restricted shared EVM fee discovery', () => {
     await expect(getEvmFeeData(reader)).resolves.toMatchObject({
       maxFeePerGas: 12n,
     });
+  });
+});
+
+describe('shared successful gas estimate buffer', () => {
+  it.each([
+    [0n, 0n],
+    [1n, 1n],
+    [3n, 3n],
+    [5n, 6n],
+    [21000n, 25200n],
+    [21001n, 25201n],
+    [50001n, 60001n],
+  ])('preserves floor20percent for %s', (estimate, expected) => {
+    expect(bufferedEvmGasLimit(estimate)).toBe(expected);
+  });
+  it('preserves configured minimum semantics including zero and irrelevant negative floor', () => {
+    expect(bufferedEvmGasLimit(21000n, 65000n)).toBe(65000n);
+    expect(bufferedEvmGasLimit(21000n, 24000n)).toBe(25200n);
+    expect(bufferedEvmGasLimit(21000n, 0n)).toBe(25200n);
+    expect(bufferedEvmGasLimit(21000n, -1n)).toBe(25200n);
+  });
+  it('never rounds through Number or overflows fixed-width intermediate arithmetic', () => {
+    const estimate = 2n ** 200n + 123n;
+    expect(bufferedEvmGasLimit(estimate)).toBe((estimate * 6n) / 5n);
+    expect(bufferedEvmGasLimit(estimate, estimate * 2n)).toBe(estimate * 2n);
+  });
+  it.each([null, undefined, 1, 1.5, '21000', -1n])(
+    'rejects invalid estimates %p',
+    (value) => {
+      expect(() => bufferedEvmGasLimit(value as bigint)).toThrow(
+        'Invalid gas estimate'
+      );
+    }
+  );
+  it('requires a bigint minimum without coercion', () => {
+    expect(() =>
+      bufferedEvmGasLimit(21000n, 65000 as unknown as bigint)
+    ).toThrow('Invalid gas estimate');
   });
 });

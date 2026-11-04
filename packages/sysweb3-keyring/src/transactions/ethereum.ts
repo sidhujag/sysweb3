@@ -35,7 +35,11 @@ import {
   resolveProperties,
   serializeTransaction,
 } from '../ethers-v6';
-import { getEvmFeeData, parseEvmFeeQuantity } from '../evm-fees';
+import {
+  bufferedEvmGasLimit,
+  getEvmFeeData,
+  parseEvmFeeQuantity,
+} from '../evm-fees';
 import { CustomJsonRpcProvider, wrapTransactionResponse } from '../providers';
 import {
   IResponseFromSendErcSignedTransaction,
@@ -3247,18 +3251,12 @@ export class EthereumTransactions<
       // First attempt: standard estimation
       const estimated = await this.web3Provider.estimateGas(tx);
 
-      // Add 20% buffer to the estimated gas
-      const withBuffer = estimated.mul(120).div(100);
-
-      // Apply an explicit per-network floor only when configured.
-      if (
-        this.gasOverrides.minGasLimit &&
-        withBuffer.lt(this.gasOverrides.minGasLimit)
-      ) {
-        return this.gasOverrides.minGasLimit;
-      }
-
-      return withBuffer;
+      return BigNumber.from(
+        bufferedEvmGasLimit(
+          estimated.toBigInt(),
+          this.gasOverrides.minGasLimit?.toBigInt()
+        )
+      );
     } catch (error) {
       if (
         error?.code === 'SYSWEB3_RPC_RESPONSE_INVALID' ||

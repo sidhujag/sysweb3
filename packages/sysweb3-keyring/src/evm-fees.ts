@@ -62,6 +62,24 @@ export function parseEvmFeeQuantity(
   return quantity;
 }
 
+/**
+ * The existing successful-estimate policy: floor(estimate * 120 / 100), then
+ * the configured minimum if larger. Callers retain chain/resource bounds.
+ */
+export function bufferedEvmGasLimit(
+  estimate: bigint,
+  minimum?: bigint
+): bigint {
+  if (
+    typeof estimate !== 'bigint' ||
+    estimate < 0n ||
+    (minimum !== undefined && typeof minimum !== 'bigint')
+  )
+    throw new Error('Invalid gas estimate');
+  const buffered = (estimate * 120n) / 100n;
+  return minimum !== undefined && minimum > buffered ? minimum : buffered;
+}
+
 function unsupportedPriorityMethod(error: any): boolean {
   const unsupportedCode = (code: unknown) => code === -32601 || code === 4200;
   if (unsupportedCode(error?.code)) return true;
