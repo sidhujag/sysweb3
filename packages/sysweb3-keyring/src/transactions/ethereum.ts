@@ -36,7 +36,9 @@ import {
   serializeTransaction,
 } from '../ethers-v6';
 import {
+  assertEvmGasLimit,
   bufferedEvmGasLimit,
+  EvmGasLimitError,
   getEvmFeeData,
   parseEvmFeeQuantity,
 } from '../evm-fees';
@@ -3243,22 +3245,58 @@ export class EthereumTransactions<
   };
 
   getTxGasLimit = async (tx: SimpleTransactionRequest) => {
+    const request = { ...tx };
+    const network = this.getNetwork();
+    const identity = {
+      kind: network.kind,
+      chainId: network.chainId,
+      slip44: network.slip44,
+      url: network.url,
+    };
+    const chainId = parseEvmFeeQuantity(identity.chainId, 'chain ID');
+    const provider = this.web3Provider;
+    const controller = this.abortController;
+    const minimum = this.gasOverrides.minGasLimit;
+    const assertCurrent = () => {
+      const current = this.getNetwork();
+      if (
+        controller.signal.aborted ||
+        controller !== this.abortController ||
+        current.kind !== identity.kind ||
+        current.chainId !== identity.chainId ||
+        current.slip44 !== identity.slip44 ||
+        current.url !== identity.url ||
+        this.web3Provider !== provider
+      ) {
+        const error = new Error('EVM gas estimate context changed');
+        error.name = 'AbortError';
+        throw error;
+      }
+    };
+    const checked = (limit: BigNumber | bigint) => {
+      assertCurrent();
+      return BigNumber.from(
+        assertEvmGasLimit(
+          typeof limit === 'bigint' ? limit : limit.toBigInt(),
+          chainId
+        )
+      );
+    };
     const hasCalldata = Boolean(
-      tx.data && tx.data !== '0x' && tx.data !== '0x0'
+      request.data && request.data !== '0x' && request.data !== '0x0'
     );
 
     try {
       // First attempt: standard estimation
-      const estimated = await this.web3Provider.estimateGas(tx);
+      const estimated = await provider.estimateGas(request);
 
-      return BigNumber.from(
-        bufferedEvmGasLimit(
-          estimated.toBigInt(),
-          this.gasOverrides.minGasLimit?.toBigInt()
-        )
+      return checked(
+        bufferedEvmGasLimit(estimated.toBigInt(), minimum?.toBigInt())
       );
     } catch (error) {
+      assertCurrent();
       if (
+        error instanceof EvmGasLimitError ||
         error?.code === 'SYSWEB3_RPC_RESPONSE_INVALID' ||
         error?.name === 'AbortError' ||
         this.abortController.signal.aborted
@@ -3268,35 +3306,31 @@ export class EthereumTransactions<
 
       if (hasCalldata) {
         const calldataFallback = BigNumber.from('100000');
-        if (
-          this.gasOverrides.minGasLimit &&
-          calldataFallback.lt(this.gasOverrides.minGasLimit)
-        ) {
-          return this.gasOverrides.minGasLimit;
+        if (minimum && calldataFallback.lt(minimum)) {
+          return checked(minimum);
         }
 
-        return calldataFallback;
+        return checked(calldataFallback);
       }
 
       // Try a simpler estimation for basic transfers
       try {
-        const simpleEstimate = await this.web3Provider.estimateGas({
-          to: tx.to,
-          from: tx.from,
-          value: tx.value || '0x0',
+        const simpleEstimate = await provider.estimateGas({
+          to: request.to,
+          from: request.from,
+          value: request.value || '0x0',
         });
 
         const withBuffer = simpleEstimate.mul(150).div(100); // 50% buffer for failed estimations
-        if (
-          this.gasOverrides.minGasLimit &&
-          withBuffer.lt(this.gasOverrides.minGasLimit)
-        ) {
-          return this.gasOverrides.minGasLimit;
+        if (minimum && withBuffer.lt(minimum)) {
+          return checked(minimum);
         }
 
-        return withBuffer;
+        return checked(withBuffer);
       } catch (secondError) {
+        assertCurrent();
         if (
+          secondError instanceof EvmGasLimitError ||
           secondError?.code === 'SYSWEB3_RPC_RESPONSE_INVALID' ||
           secondError?.name === 'AbortError' ||
           this.abortController.signal.aborted
@@ -3308,7 +3342,7 @@ export class EthereumTransactions<
           'Simple estimation also failed, using default',
           secondError
         );
-        return this.gasOverrides.minGasLimit || BigNumber.from('100000');
+        return checked(minimum || BigNumber.from('100000'));
       }
     }
   };
