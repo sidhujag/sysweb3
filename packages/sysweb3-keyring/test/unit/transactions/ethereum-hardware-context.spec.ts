@@ -138,6 +138,96 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
       jest.restoreAllMocks();
     });
 
+    for (const legacy of [false, true]) {
+      it.each([
+        { name: 'zero', value: 0, expected: 0 },
+        { name: 'number', value: 7, expected: 7 },
+        { name: 'hex', value: '0x07', expected: 7 },
+        { name: 'hex zero', value: '0x00', expected: 0 },
+        { name: 'hex object', value: { _hex: '0x07' }, expected: 7 },
+        {
+          name: 'maximum safe integer',
+          value: Number.MAX_SAFE_INTEGER,
+          expected: Number.MAX_SAFE_INTEGER,
+        },
+        { name: 'bigint', value: 7n, expected: 7 },
+        { name: 'BigNumber', value: BigNumber.from(7), expected: 7 },
+      ])(
+        `preserves the explicit $name nonce instead of the RPC value (legacy ${legacy})`,
+        async ({ value, expected }) => {
+          provider.getTransactionCount.mockResolvedValue(99);
+          await sdk.sendFormattedTransaction(
+            { ...request(legacy), nonce: value } as any,
+            legacy
+          );
+          expect(device).toHaveBeenCalledTimes(1);
+          expect(Transaction.from(device.mock.calls[0][0]).nonce).toBe(
+            expected
+          );
+          expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
+          expect(
+            Transaction.from(provider.sendTransaction.mock.calls[0][0]).nonce
+          ).toBe(expected);
+          expect(provider.getTransactionCount).not.toHaveBeenCalled();
+        }
+      );
+
+      it.each([undefined, null])(
+        `fills a missing nonce from pending RPC only when nullish (legacy ${legacy}, nonce %s)`,
+        async (nonce) => {
+          provider.getTransactionCount.mockResolvedValue(99);
+          await sdk.sendFormattedTransaction(
+            { ...request(legacy), nonce } as any,
+            legacy
+          );
+          expect(provider.getTransactionCount).toHaveBeenCalledWith(
+            wallet.address,
+            'pending'
+          );
+          expect(provider.getTransactionCount).toHaveBeenCalledTimes(1);
+          expect(
+            Transaction.from(provider.sendTransaction.mock.calls[0][0]).nonce
+          ).toBe(99);
+        }
+      );
+
+      it(`captures an explicit nonce before awaited gas preparation (legacy ${legacy})`, async () => {
+        const entered = deferred<void>(),
+          gas = deferred<any>();
+        provider.estimateGas = jest.fn(() => {
+          entered.resolve();
+          return gas.promise;
+        });
+        const params = {
+          ...request(legacy),
+          nonce: 7,
+          gasLimit: undefined,
+        } as any;
+        const sending = sdk.sendFormattedTransaction(params, legacy);
+        await entered.promise;
+        params.nonce = 99;
+        gas.resolve(BigNumber.from(21000));
+        await sending;
+        expect(Transaction.from(device.mock.calls[0][0]).nonce).toBe(7);
+        expect(
+          Transaction.from(provider.sendTransaction.mock.calls[0][0]).nonce
+        ).toBe(7);
+        expect(provider.getTransactionCount).not.toHaveBeenCalled();
+      });
+    }
+
+    it.each([-1, 1.5, Number.MAX_SAFE_INTEGER + 1, '-1', '9007199254740992'])(
+      'rejects an invalid explicit nonce %s before RPC, device or broadcast',
+      async (nonce) => {
+        await expect(
+          sdk.sendFormattedTransaction({ ...request(), nonce } as any, false)
+        ).rejects.toMatchObject({ transactionNotBroadcast: true });
+        expect(provider.getTransactionCount).not.toHaveBeenCalled();
+        expect(device).not.toHaveBeenCalled();
+        expect(provider.sendTransaction).not.toHaveBeenCalled();
+      }
+    );
+
     it.each([false, true])(
       'preserves exact valid fields and one broadcast (legacy %s)',
       async (legacy) => {

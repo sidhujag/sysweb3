@@ -1653,6 +1653,22 @@ export class EthereumTransactions<
       assertCurrent
     );
 
+    // Capture the reviewed nonce before any fee/RPC await. Hardware and the
+    // final serializer must use the same immutable integer, including zero.
+    let explicitHardwareNonce: number | undefined;
+    if (
+      activeAccountType === KeyringAccountType.Ledger ||
+      activeAccountType === KeyringAccountType.Trezor
+    ) {
+      const suppliedNonce = params.nonce;
+      if (suppliedNonce != null) {
+        const nonce = parseEvmFeeQuantity(suppliedNonce, 'transaction nonce');
+        if (nonce > BigInt(Number.MAX_SAFE_INTEGER))
+          throw new Error('Invalid transaction nonce');
+        explicitHardwareNonce = Number(nonce);
+      }
+    }
+
     const explicitEip1559 =
       params.type != null && BigNumber.from(params.type).eq(2);
     const requestedEip1559 =
@@ -1742,10 +1758,9 @@ export class EthereumTransactions<
 
     const sendEVMLedgerTransaction = async () => {
       assertCurrent();
-      const transactionNonce = await provider.getTransactionCount(
-        activeAccount.address,
-        'pending'
-      );
+      const transactionNonce =
+        explicitHardwareNonce ??
+        (await provider.getTransactionCount(activeAccount.address, 'pending'));
       assertCurrent();
       const formatParams = isLegacy
         ? omit(params, 'from')
@@ -1805,10 +1820,9 @@ export class EthereumTransactions<
 
     const sendEVMTrezorTransaction = async () => {
       assertCurrent();
-      const transactionNonce = await provider.getTransactionCount(
-        activeAccount.address,
-        'pending'
-      );
+      const transactionNonce =
+        explicitHardwareNonce ??
+        (await provider.getTransactionCount(activeAccount.address, 'pending'));
       assertCurrent();
       let txFormattedForTrezor = {};
       const formatParams = isLegacy
