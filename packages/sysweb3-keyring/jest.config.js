@@ -10,6 +10,8 @@ module.exports = {
   },
   testMatch: ['**/test/**/*.spec.ts'],
   moduleNameMapper: {
+    '^@sidhujag/sysweb3-network/cjs/evm(?:\\.js)?$':
+      '<rootDir>/../sysweb3-network/src/evm.ts',
     '^@sidhujag/sysweb3-utils$': '<rootDir>/../sysweb3-utils/src',
     '^@sidhujag/sysweb3-network$': '<rootDir>/../sysweb3-network/src',
     '^@sidhujag/sysweb3-core$': '<rootDir>/../sysweb3-core/src',

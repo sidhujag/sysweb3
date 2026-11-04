@@ -6,7 +6,7 @@ import {
 
 const CAP = 16777216n;
 describe('activated EVM transaction gas bounds', () => {
-  it.each([1n, 11155111n, 560048n])(
+  it.each([1n, 560048n])(
     'bounds activated Ethereum chain %s inclusively',
     (chainId) => {
       expect(assertEvmGasLimit(CAP, chainId, 30000000n)).toBe(CAP);
@@ -18,7 +18,23 @@ describe('activated EVM transaction gas bounds', () => {
       ).toThrow(EvmGasLimitError);
     }
   );
-  it.each([0n, 10n, 57n, 5700n, 8453n, 42161n, 324n, 999999n])(
+  it('applies the activated Sepolia total-gas bound inclusively without confusing execution gas', () => {
+    const totalCap = 4294967295n;
+    expect(assertEvmGasLimit(totalCap, 11155111n)).toBe(totalCap);
+    expect(() => assertEvmGasLimit(totalCap + 1n, 11155111n)).toThrow(
+      EvmGasLimitError
+    );
+    expect(assertEvmGasLimit(bufferedEvmGasLimit(14000000n), 11155111n)).toBe(
+      16800000n
+    );
+  });
+  it('keeps the independently sampled block ceiling on Sepolia', () => {
+    expect(assertEvmGasLimit(30000000n, 11155111n, 30000000n)).toBe(30000000n);
+    expect(() => assertEvmGasLimit(30000001n, 11155111n, 30000000n)).toThrow(
+      EvmGasLimitError
+    );
+  });
+  it.each([0n, 10n, 57n, 5700n, 8453n, 42161n, 57057n, 324n, 999999n])(
     'does not infer Ethereum activation on unrelated chain %s',
     (chainId) => {
       expect(assertEvmGasLimit(16800000n, chainId, 30000000n)).toBe(16800000n);
