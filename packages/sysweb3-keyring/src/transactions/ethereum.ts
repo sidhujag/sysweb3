@@ -59,6 +59,7 @@ import {
   deriveEvmAccountFromMnemonic,
   parsePersonalMessage as parseLocalPersonalMessage,
   privateKeyToAccount,
+  normalizeGasLimitedTransaction,
   sendLocalEvmTransaction,
   signDigestHex,
   signPersonalMessage as signLocalPersonalMessage,
@@ -151,8 +152,8 @@ const assertTransactionGasLimit = (transaction: {
 const serializeTransaction = (
   ...args: Parameters<typeof serializeUncheckedTransaction>
 ) => {
-  assertTransactionGasLimit(args[0]);
-  return serializeUncheckedTransaction(...args);
+  const snapshot = normalizeGasLimitedTransaction(args[0]);
+  return serializeUncheckedTransaction(snapshot, args[1]);
 };
 
 const nonNegativeFeeQuantity = (value: unknown, label: string): BigNumber =>

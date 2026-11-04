@@ -258,3 +258,92 @@ describe('shared final EVM gas admission', () => {
     }
   }
 });
+
+it('pins an accessor gas limit before either unsigned or signed serialization', () => {
+  let reads = 0;
+  const tx: any = {
+    type: 2,
+    chainId: 1,
+    to,
+    nonce: 0,
+    maxFeePerGas: 3,
+    maxPriorityFeePerGas: 1,
+  };
+  Object.defineProperty(tx, 'gasLimit', {
+    enumerable: true,
+    get() {
+      return reads++ === 0 ? cap : cap + 1n;
+    },
+  });
+  const signed = Transaction.from(signTransaction(tx, KEY));
+  expect(reads).toBe(1);
+  expect(signed.gasLimit).toBe(cap);
+  expect(signed.from).toBe(wallet.address);
+});
+
+it('pins an accessor chain ID to the same chain used for the gas decision', () => {
+  let reads = 0;
+  const tx: any = {
+    type: 2,
+    gasLimit: cap + 1n,
+    to,
+    nonce: 0,
+    maxFeePerGas: 3,
+    maxPriorityFeePerGas: 1,
+  };
+  Object.defineProperty(tx, 'chainId', {
+    enumerable: true,
+    get() {
+      return reads++ === 0 ? customChain : 1;
+    },
+  });
+  const signed = Transaction.from(signTransaction(tx, KEY));
+  expect(reads).toBe(1);
+  expect(signed.chainId).toBe(BigInt(customChain));
+  expect(signed.gasLimit).toBe(cap + 1n);
+  expect(signed.from).toBe(wallet.address);
+});
+
+it('converts mutable BigNumberish gas and chain fields to checked immutable scalars', () => {
+  let gasReads = 0,
+    chainReads = 0;
+  const gas = {
+    get _hex() {
+      return `0x${(gasReads++ === 0 ? cap : cap + 1n).toString(16)}`;
+    },
+  };
+  const chain = {
+    get _hex() {
+      return `0x${(chainReads++ === 0 ? 1 : customChain).toString(16)}`;
+    },
+  };
+  const signed = Transaction.from(
+    signTransaction(
+      {
+        type: 0,
+        to,
+        nonce: 0,
+        gasLimit: gas,
+        chainId: chain,
+        gasPrice: 2,
+      } as any,
+      KEY
+    )
+  );
+  expect(gasReads).toBe(1);
+  expect(chainReads).toBe(1);
+  expect(signed.gasLimit).toBe(cap);
+  expect(signed.chainId).toBe(1n);
+  expect(signed.from).toBe(wallet.address);
+});
+
+it('preserves omitted-chain legacy serialization instead of inserting a network default', () => {
+  const signed = Transaction.from(
+    signTransaction(
+      { type: 0, to, nonce: 0, gasLimit: 21000, gasPrice: 2 },
+      KEY
+    )
+  );
+  expect(signed.chainId).toBe(0n);
+  expect(signed.from).toBe(wallet.address);
+});
