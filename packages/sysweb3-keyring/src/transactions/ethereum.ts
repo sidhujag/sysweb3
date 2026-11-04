@@ -33,7 +33,7 @@ import {
   normalizeTxValue,
   parseUnits,
   resolveProperties,
-  serializeTransaction,
+  serializeTransaction as serializeUncheckedTransaction,
 } from '../ethers-v6';
 import {
   assertEvmGasLimit,
@@ -59,6 +59,7 @@ import {
   deriveEvmAccountFromMnemonic,
   parsePersonalMessage as parseLocalPersonalMessage,
   privateKeyToAccount,
+  normalizeGasLimitedTransaction,
   sendLocalEvmTransaction,
   signDigestHex,
   signPersonalMessage as signLocalPersonalMessage,
@@ -137,6 +138,23 @@ const trezorSignature = (signature: {
 };
 
 const normalizeEthersOverrideValue = (value: any) => normalizeTxValue(value);
+
+// The same protocol bound applies to software and external-device envelopes.
+// Keep this at serialization as well as before handing a request to a device.
+const assertTransactionGasLimit = (transaction: {
+  gasLimit?: unknown;
+  chainId?: unknown;
+}) =>
+  assertEvmGasLimit(
+    parseEvmFeeQuantity(transaction.gasLimit, 'gas limit'),
+    parseEvmFeeQuantity(transaction.chainId ?? 0, 'chain ID')
+  );
+const serializeTransaction = (
+  ...args: Parameters<typeof serializeUncheckedTransaction>
+) => {
+  const snapshot = normalizeGasLimitedTransaction(args[0]);
+  return serializeUncheckedTransaction(snapshot, args[1]);
+};
 
 const nonNegativeFeeQuantity = (value: unknown, label: string): BigNumber =>
   BigNumber.from(parseEvmFeeQuantity(value, label));
@@ -1391,6 +1409,7 @@ export class EthereumTransactions<
         }
 
         assertApprovedEnvelope(txFormattedForTrezor);
+        assertTransactionGasLimit(txFormattedForTrezor);
         const signature = await this.requireTrezorSigner().signEthTransaction({
           coin: trezorCoin,
           tx: txFormattedForTrezor,
@@ -1608,6 +1627,10 @@ export class EthereumTransactions<
       params.gasLimit = await provider.estimateGas(txForEstimation);
       assertCurrent();
     }
+    assertTransactionGasLimit({
+      gasLimit: params.gasLimit,
+      chainId: activeNetwork.chainId,
+    });
     if (isLegacy) {
       if (!params.gasPrice) {
         params.gasPrice = await provider.getGasPrice();
@@ -1774,6 +1797,7 @@ export class EthereumTransactions<
           break;
       }
 
+      assertTransactionGasLimit(txFormattedForTrezor);
       const signature = await this.requireTrezorSigner().signEthTransaction({
         index: `${activeAccountId}`,
         tx: txFormattedForTrezor as EthereumTransactionEIP1559,
@@ -2179,6 +2203,7 @@ export class EthereumTransactions<
                 );
         }
         assertCurrent();
+        assertTransactionGasLimit(txFormattedForTrezor);
         const signature = await this.requireTrezorSigner().signEthTransaction({
           coin: trezorCoin,
           tx: txFormattedForTrezor,
@@ -2535,6 +2560,7 @@ export class EthereumTransactions<
           };
         }
 
+        assertTransactionGasLimit(txToBeSignedByTrezor);
         const signature = await this.requireTrezorSigner().signEthTransaction({
           index: `${activeAccountId}`,
           tx: txToBeSignedByTrezor,
@@ -2838,6 +2864,7 @@ export class EthereumTransactions<
         // For EVM networks, Trezor expects 'eth' regardless of the network's currency
         const trezorCoin =
           activeNetwork.slip44 === 60 ? 'eth' : activeNetwork.currency;
+        assertTransactionGasLimit(txToBeSignedByTrezor);
         const signature = await this.requireTrezorSigner().signEthTransaction({
           index: `${activeAccountId}`,
           tx: txToBeSignedByTrezor,
@@ -3138,6 +3165,7 @@ export class EthereumTransactions<
           };
         }
 
+        assertTransactionGasLimit(txToBeSignedByTrezor);
         const signature = await this.requireTrezorSigner().signEthTransaction({
           index: `${activeAccountId}`,
           tx: txToBeSignedByTrezor,

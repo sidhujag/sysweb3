@@ -31,7 +31,10 @@ jobs:
         run: |
           NODE_ENV=test node ../../node_modules/jest/bin/jest.js --config jest.config.js --runInBand --silent --forceExit \
             test/unit/evm-fees.spec.ts \
+            test/unit/evm-gas-limits.spec.ts \
             test/unit/transactions/ethereum-fee-data.spec.ts \
+            test/unit/transactions/ethereum-gas-limits.spec.ts \
+            test/unit/transactions/ethereum-final-gas.spec.ts \
             test/unit/providers-rpc-integrity.spec.ts \
             test/unit/transactions/ethereum-transactions.spec.ts \
             test/unit/transactions/ethereum-hardware-context.spec.ts \
@@ -66,6 +69,7 @@ jobs:
             test/unit/keyring-manager/storage-adapter.spec.ts \
             test/unit/keyring-manager/private-records.spec.ts
           node test/software-entry-runtime.cjs
+          node test/public-buffer-runtime.cjs
       - name: Validate hardware transport and signing regressions
         working-directory: packages/sysweb3-keyring
         timeout-minutes: 10

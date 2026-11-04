@@ -18,6 +18,7 @@ import {
   type Deferrable,
   type TransactionRequest,
 } from '../ethers-v6';
+import { assertEvmGasLimit, parseEvmFeeQuantity } from '../evm-fees';
 import { CustomJsonRpcProvider } from '../providers';
 
 const bip32 = BIP32Factory(ecc);
@@ -28,8 +29,11 @@ export type EvmLocalAccount = {
   publicKey: string;
 };
 
-const strip0x = (value: string) =>
-  value.startsWith('0x') || value.startsWith('0X') ? value.slice(2) : value;
+const strip0x = (value: string) => {
+  return value.startsWith('0x') || value.startsWith('0X')
+    ? value.slice(2)
+    : value;
+};
 
 const toHex = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex');
 
@@ -154,14 +158,32 @@ export const signPersonalMessage = (
 export const parsePersonalMessage = (hexMessage: string) =>
   Buffer.from(strip0x(hexMessage), 'hex').toString('utf8');
 
+/** Pin the checked gas and chain to the same detached envelope that is serialized. */
+export const normalizeGasLimitedTransaction = (
+  transaction: TransactionRequest
+): TransactionRequest => {
+  const snapshot = { ...transaction };
+  const gasLimit = parseEvmFeeQuantity(snapshot.gasLimit, 'gas limit');
+  const chainId = parseEvmFeeQuantity(snapshot.chainId ?? 0, 'chain ID');
+  assertEvmGasLimit(gasLimit, chainId);
+  return normalizeTransactionRequest({
+    ...snapshot,
+    gasLimit,
+    ...(snapshot.chainId !== undefined && snapshot.chainId !== null
+      ? { chainId }
+      : {}),
+  }) as TransactionRequest;
+};
+
 export const signTransaction = (
   transaction: TransactionRequest,
   privateKey: string | Uint8Array
 ) => {
-  const unsigned = serializeTransaction(transaction);
+  const snapshot = normalizeGasLimitedTransaction(transaction);
+  const unsigned = serializeTransaction(snapshot);
   const digest = keccak256(unsigned);
   const signature = signDigest(digest, privateKey);
-  return serializeTransaction(transaction, signature);
+  return serializeTransaction(snapshot, signature);
 };
 
 export const sendLocalEvmTransaction = async (
