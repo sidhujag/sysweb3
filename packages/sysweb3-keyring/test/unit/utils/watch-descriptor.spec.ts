@@ -227,3 +227,79 @@ describe('public descriptor receiving address', () => {
     ).toThrow();
   });
 });
+
+describe('shared public derivation index integrity', () => {
+  afterEach(() => jest.dontMock('bip32'));
+
+  it('requests exactly the selected branch and child without scanning earlier indices', () => {
+    jest.isolateModules(() => {
+      const real = jest
+        .requireActual('bip32')
+        .BIP32Factory(jest.requireActual('@bitcoinerlab/secp256k1'));
+      const calls: number[] = [];
+      jest.doMock('bip32', () => ({
+        BIP32Factory: () => ({
+          fromBase58(key: string, addressNetwork: any) {
+            const root = real.fromBase58(key, addressNetwork);
+            const derive = root.derive.bind(root);
+            root.derive = (branch: number) => {
+              calls.push(branch);
+              const child = derive(branch),
+                deriveChild = child.derive.bind(child);
+              child.derive = (index: number) => {
+                calls.push(index);
+                return deriveChild(index);
+              };
+              return child;
+            };
+            return root;
+          },
+        }),
+      }));
+      const {
+        deriveDescriptorAddress: derive,
+      } = require('../../../src/utils/watch-descriptor');
+      expect(
+        derive(`wpkh(${XPUB})`, network, { change: true, index: 0x7fffffff })
+      ).toMatch(/^bc1q/);
+      expect(calls).toEqual([1, 0x7fffffff]);
+    });
+  });
+
+  it.each(['branch', 'leaf'])(
+    'rejects an invalid-child retry at the %s step',
+    (step) => {
+      jest.isolateModules(() => {
+        const real = jest
+          .requireActual('bip32')
+          .BIP32Factory(jest.requireActual('@bitcoinerlab/secp256k1'));
+        jest.doMock('bip32', () => ({
+          BIP32Factory: () => ({
+            fromBase58(key: string, addressNetwork: any) {
+              const root = real.fromBase58(key, addressNetwork),
+                original = root.derive.bind(root);
+              root.derive = (branch: number) => {
+                const selected = original(branch);
+                return {
+                  index: step === 'branch' ? branch + 1 : branch,
+                  derive(index: number) {
+                    const child = selected.derive(index);
+                    return {
+                      index: step === 'leaf' ? index + 1 : index,
+                      publicKey: child.publicKey,
+                    };
+                  },
+                };
+              };
+              return root;
+            },
+          }),
+        }));
+        const {
+          deriveDescriptorAddress: derive,
+        } = require('../../../src/utils/watch-descriptor');
+        expect(() => derive(`wpkh(${XPUB})`, network, { index: 3 })).toThrow();
+      });
+    }
+  );
+});

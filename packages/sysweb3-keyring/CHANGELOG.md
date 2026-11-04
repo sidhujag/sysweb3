@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — API removal pending release-version decision
+
+- Remove the duplicate public BIP84 and bounded native-transfer APIs introduced in 2.1.0. Existing descriptor, SJS/HD and generic PSBT paths remain. This removes published exports and is **not** a compatible 2.1.1 patch. Historical 2.1.0 notes below describe the already-published package.
+
 ## 2.1.1
 
 - Share the existing successful gas-estimate 20% buffer/minimum calculation through `bufferedEvmGasLimit`; SDK and mobile can use the same integer rounding without copying the formula.
