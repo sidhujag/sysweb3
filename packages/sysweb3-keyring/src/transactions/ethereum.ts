@@ -1873,6 +1873,7 @@ export class EthereumTransactions<
         case true:
           txFormattedForTrezor = {
             ...formatParams,
+            gasPrice: this.toHex0x(params.gasPrice, 'gasPrice'),
             gasLimit: this.toHex0x(
               (formatParams as any).gasLimit ?? (params as any).gasLimit,
               'gasLimit'
