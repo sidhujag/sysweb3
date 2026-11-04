@@ -4,3 +4,4 @@ export { coins } from './coins';
 export * from './coin-utils';
 export * from './types';
 export * from './retryUtils';
+export * from './evm';
