@@ -2,6 +2,7 @@ import ecc from '@bitcoinerlab/secp256k1';
 import { BIP32Factory, BIP32Interface } from 'bip32';
 import { address as bitcoinAddress, payments, Network } from 'bitcoinjs-lib';
 import bs58check from 'bs58check';
+import { Buffer } from 'buffer';
 
 export type Bip84PublicNetwork = 'bitcoin' | 'syscoin';
 export type Bip84PublicAccountRequest = Readonly<{

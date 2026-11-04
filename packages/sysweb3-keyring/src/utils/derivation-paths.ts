@@ -1,5 +1,6 @@
-// Import coins data from the relative package in the monorepo
 import { findCoin } from '@sidhujag/sysweb3-network';
+import { Buffer } from 'buffer';
+// Import coins data from the relative package in the monorepo
 
 /**
  * Get coin information by coin shortcut or slip44
