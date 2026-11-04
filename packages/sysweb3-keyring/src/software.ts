@@ -8,16 +8,7 @@ import type {
   EvmHdRuntimeAccountOptions,
   EvmHdRuntimeAccountRequest,
 } from './software-hd-account';
-import type {
-  Bip84HdPublicRequest,
-  Bip84HdPublicResult,
-} from './software-utxo-account';
 import type { VaultPersistence } from './storage-core';
-import type { Bip84Guard } from './transactions/bip84-native-plan';
-import type {
-  PreparedBip84SigningRequest,
-  SignedBip84NativeTransaction,
-} from './transactions/prepared-bip84';
 import type {
   PreparedEvmSigningOptions,
   PreparedSoftwareEvmSigningRequest,
@@ -81,22 +72,6 @@ export class SoftwareKeyring extends KeyringCore<undefined, undefined> {
     return this.deriveSoftwareEvmHdRuntimeAccount(request, options);
   }
 
-  /** Derive public BIP84 account data from the live seed; no storage or discovery. */
-  public deriveBip84HdPublicAccount(
-    request: Bip84HdPublicRequest,
-    options: Bip84Guard
-  ): Promise<Bip84HdPublicResult> {
-    return this.deriveSoftwareBip84HdPublicAccount(request, options);
-  }
-
-  /** Sign the selected HD account's exact prepared native transaction offline. */
-  public signPreparedBip84Transaction(
-    request: PreparedBip84SigningRequest,
-    options: Bip84Guard
-  ): Promise<SignedBip84NativeTransaction> {
-    return this.signPreparedSoftwareBip84Transaction(request, options);
-  }
-
   /**
    * Sign exactly the prepared envelope without RPC, fee/nonce discovery or
    * broadcasting. The host must journal the result before submitting it.
@@ -154,14 +129,3 @@ export type {
   EvmHdRuntimeAccountOptions,
   EvmHdRuntimeAccountRequest,
 } from './software-hd-account';
-
-export type {
-  Bip84HdPublicRequest,
-  Bip84HdPublicResult,
-} from './software-utxo-account';
-export type { Bip84Guard } from './transactions/bip84-native-plan';
-
-export type {
-  PreparedBip84SigningRequest,
-  SignedBip84NativeTransaction,
-} from './transactions/prepared-bip84';
