@@ -18,6 +18,7 @@ import {
   type Deferrable,
   type TransactionRequest,
 } from '../ethers-v6';
+import { assertEvmGasLimit, parseEvmFeeQuantity } from '../evm-fees';
 import { CustomJsonRpcProvider } from '../providers';
 
 const bip32 = BIP32Factory(ecc);
@@ -28,8 +29,9 @@ export type EvmLocalAccount = {
   publicKey: string;
 };
 
-const strip0x = (value: string) =>
-  value.startsWith('0x') || value.startsWith('0X') ? value.slice(2) : value;
+const strip0x = (value: string) => {
+  return value.startsWith('0x') || value.startsWith('0X') ? value.slice(2) : value;
+};
 
 const toHex = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex');
 
@@ -158,6 +160,10 @@ export const signTransaction = (
   transaction: TransactionRequest,
   privateKey: string | Uint8Array
 ) => {
+  assertEvmGasLimit(
+    parseEvmFeeQuantity(transaction.gasLimit, 'gas limit'),
+    parseEvmFeeQuantity(transaction.chainId ?? 0, 'chain ID')
+  );
   const unsigned = serializeTransaction(transaction);
   const digest = keccak256(unsigned);
   const signature = signDigest(digest, privateKey);
