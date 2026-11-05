@@ -65,20 +65,17 @@ const sweepError = (code: string, message: string) => ({
   message,
 });
 
-const sweepAtomicText = (value: any) => {
-  if (typeof value === 'number')
-    return Number.isSafeInteger(value) ? String(value) : '';
-  if (
-    typeof value === 'string' ||
-    typeof value === 'bigint' ||
-    syscoinjs.utils.BN.isBN(value)
-  )
-    return value.toString();
-  return '';
-};
-
 const sweepAtomicValue = (value: any) => {
-  const text = sweepAtomicText(value);
+  const text =
+    typeof value === 'number'
+      ? Number.isSafeInteger(value)
+        ? String(value)
+        : ''
+      : typeof value === 'string' ||
+        typeof value === 'bigint' ||
+        syscoinjs.utils.BN.isBN(value)
+      ? value.toString()
+      : '';
   if (!/^\d+$/.test(text))
     throw sweepError(
       'INVALID_NATIVE_SWEEP_UTXOS',
@@ -474,8 +471,17 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
       );
       const excludedNativeOutpoints = [...excludedNativeValues].flatMap(
         ([outpoint, value]) => {
-          const text = sweepAtomicText(value);
-          return /^\d+$/.test(text) && /[1-9]/.test(text) ? [outpoint] : [];
+          if (typeof value === 'number')
+            return Number.isSafeInteger(value) && value > 0 ? [outpoint] : [];
+          if (
+            typeof value === 'string' &&
+            value.length <= 20 &&
+            !/[^0-9]/.test(value) &&
+            /[1-9]/.test(value) &&
+            (value.length < 20 || value <= '18446744073709551615')
+          )
+            return [outpoint];
+          return [];
         }
       );
       if (excludedNativeOutpoints.length)

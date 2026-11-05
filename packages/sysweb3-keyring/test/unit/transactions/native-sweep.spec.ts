@@ -244,6 +244,12 @@ describe('explicit native sweep quotes', () => {
       utxo('10', 2, { assetInfo: { assetGuid: '123', value: '1' } }),
       utxo('0', 3),
       utxo('not atomic', 4),
+      utxo('1', 7, { value: { constructor: null } }),
+      utxo('1', 8, {
+        value: { constructor: { wordSize: 26 }, words: [1], toString: 42 },
+      }),
+      utxo('1\n', 9),
+      utxo('18446744073709551616', 10),
       utxo('20', 6),
       utxo('30', 6),
     ];
