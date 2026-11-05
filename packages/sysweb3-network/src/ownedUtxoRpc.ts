@@ -126,6 +126,17 @@ function captureIdentities() {
     },
     genesis: coin.hashGenesisBlock,
     decimals: coin.decimals,
+    addressEncoding: [
+      coin.addressType,
+      coin.addressTypeP2sh,
+      coin.bech32Prefix,
+      coin.signedMessageHeader,
+      coin.wif,
+      coin.xprvMagic,
+      coin.xpubMagic,
+      coin.xpubMagicSegwitNative,
+      coin.xpubMagicSegwitP2sh,
+    ],
     shortcut: coin.coinShortcut,
     shortcuts: [coin.coinShortcut, coin.shortcut].map((name) =>
       name.toLowerCase()
@@ -254,6 +265,32 @@ async function readIdentity(
   };
 }
 
+function guardObservedIdentity(
+  observed: Awaited<ReturnType<typeof readIdentity>>,
+  currency: string,
+  guard: () => void
+) {
+  const { identity, network, name, genesis, decimals } = observed;
+  return () => {
+    guard();
+    // Registration and custody must still resolve to the same coin after the
+    // asynchronous reads, including the wallet's legacy ticker lookup.
+    const identities = captureIdentities();
+    const live = selectIdentity(identity.registration, identities);
+    const matches = matchStatus(identities, live, network, name);
+    matchGenesis(matches, live, genesis, decimals);
+    if (
+      live.coin !== identity.coin ||
+      live.decimals !== identity.decimals ||
+      live.addressEncoding.some(
+        (value, index) => value !== identity.addressEncoding[index]
+      ) ||
+      canonicalCurrency(live, identities) !== currency
+    )
+      throw new Error(INVALID);
+  };
+}
+
 export async function verifyOwnedUtxoRpc(
   url: string,
   owner: OwnedUtxoRpcVerification
@@ -262,14 +299,15 @@ export async function verifyOwnedUtxoRpc(
   const backendChain = owner?.backendChain;
   if (!registration || !isBackendChainToken(backendChain))
     throw new Error(INVALID);
-  const { assertCurrent, read } = captureReader(url, owner, false);
+  const { assertCurrent: guard, read } = captureReader(url, owner, false);
   const identities = captureIdentities();
   const selected = selectIdentity(registration, identities);
   const currency = canonicalCurrency(selected, identities);
-  const coin = { ...selected.coin };
   const { chainId } = selected.registration;
-  await readIdentity(read, identities, selected, backendChain);
+  const observed = await readIdentity(read, identities, selected, backendChain);
+  const assertCurrent = guardObservedIdentity(observed, currency, guard);
   assertCurrent();
+  const coin = { ...selected.coin };
   return { assertCurrent, backendChain, coin, chainId, currency };
 }
 
@@ -286,32 +324,21 @@ export async function observeFirstUseUtxoRpc(
     throw new Error(INVALID);
   const registration = owner.registration;
   if (registration !== undefined && !registration) throw new Error(INVALID);
-  const { assertCurrent, read } = captureReader(url, owner, true);
+  const { assertCurrent: guard, read } = captureReader(url, owner, true);
   const identities = captureIdentities();
   const selected =
     registration === undefined
       ? undefined
       : selectIdentity(registration, identities);
   const selectedCurrency = selected && canonicalCurrency(selected, identities);
-  const { identity, observedBackendChain, network, name, genesis, decimals } =
-    await readIdentity(read, identities, selected);
+  const observed = await readIdentity(read, identities, selected);
+  const { identity, observedBackendChain } = observed;
   const currency = selectedCurrency ?? canonicalCurrency(identity, identities);
+  const assertCurrent = guardObservedIdentity(observed, currency, guard);
   assertCurrent();
-  // The public coin catalogue is mutable. Release only an observation that
-  // still resolves to the same canonical identity and ticker after both reads.
-  const liveIdentities = captureIdentities();
-  const live = selectIdentity(identity.registration, liveIdentities);
-  const matches = matchStatus(liveIdentities, live, network, name);
-  matchGenesis(matches, live, genesis, decimals);
-  if (
-    live.coin !== identity.coin ||
-    live.decimals !== identity.decimals ||
-    canonicalCurrency(live, liveIdentities) !== currency
-  )
-    throw new Error(INVALID);
   return Object.freeze({
     registration: Object.freeze(identity.registration),
-    coin: Object.freeze({ ...live.coin }),
+    coin: Object.freeze({ ...identity.coin }),
     currency,
     observedBackendChain,
     assertCurrent,

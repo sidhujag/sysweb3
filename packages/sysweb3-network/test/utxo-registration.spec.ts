@@ -181,7 +181,7 @@ it.each(['abort', 'stale'])(
 );
 
 it.each(['replacement', 'in-place mutation'])(
-  'formats first use from the verified coin after a late catalogue %s',
+  'refuses first-use formatting after a late catalogue %s',
   async (kind) => {
     const registration = { chainId: 5700, slip44: 1 };
     const coin = findUtxoCoinByRegistration(registration)!;
@@ -212,13 +212,7 @@ it.each(['replacement', 'in-place mutation'])(
             },
           }
         )
-      ).resolves.toMatchObject({
-        network: 'tSYS',
-        rpc: {
-          formattedNetwork: { chainId: 5700, slip44: 1, currency: 'tsys' },
-          networkConfig: { networks: { testnet: { bech32: 'tsys' } } },
-        },
-      });
+      ).rejects.toThrow('UTXO registration does not match the selected coin');
       expect(coins[index].hashGenesisBlock).toBe(replacement.hashGenesisBlock);
       expect(owner.readJson).toHaveBeenCalledTimes(2);
     } finally {

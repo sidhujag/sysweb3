@@ -526,6 +526,43 @@ it.each([true, false])(
   }
 );
 
+it.each(['alias collision', 'changed address encoding'] as const)(
+  'refuses pinned catalogue drift while genesis is held: %s',
+  async (change) => {
+    const coin = findUtxoCoinByRegistration(SYS_TEST)!;
+    const previousPrefix = coin.bech32Prefix;
+    const block = genesis(SYS_TEST);
+    const { owner, readJson } = verification(modern, block);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      readJson
+        .mockResolvedValueOnce(modern)
+        .mockImplementationOnce(async () => {
+          resolve();
+          await held;
+          return block;
+        });
+    });
+    const pending = getSysRpc({ url }, owner);
+    await entered;
+    if (change === 'alias collision')
+      coins.unshift({ ...coin, chainId: 12345, coinName: 'TSYS' });
+    else coin.bech32Prefix = 'wrong';
+    release();
+    try {
+      await expect(pending).rejects.toThrow(
+        change === 'alias collision' ? mismatch : invalid
+      );
+      expect(readJson).toHaveBeenCalledTimes(2);
+    } finally {
+      coin.bech32Prefix = previousPrefix;
+    }
+  }
+);
+
 it('does not read an editable symbol in owned mode', async () => {
   const { owner } = verification(modern);
   const get = jest.fn(() => 'REGTEST');
