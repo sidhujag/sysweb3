@@ -41,7 +41,7 @@ import {
 } from './private-records';
 import { getSyscoinSigners, SyscoinHDSigner } from './signers';
 import { snapshotEvmHdIndex } from './software-hd-account';
-import { VaultAuthenticationError } from './storage-core';
+import { decryptCurrentVault, VaultAuthenticationError } from './storage-core';
 import { EthereumTransactions } from './transactions/ethereum';
 import {
   deriveEvmAccountFromMnemonic,
@@ -98,7 +98,41 @@ export interface KeyringStoragePort extends VaultStoragePort {
   deleteItem(key: string): Promise<void>;
   /** Legacy adapter capability; fixed native hosts can omit it. */
   setClient?(client: any): void;
+  /** Atomically read this authority's current encrypted vault and salt. */
+  readDeviceUnlockVaultPair?(): Promise<DeviceUnlockVaultPair | null>;
 }
+
+export type DeviceUnlockVaultPair = Readonly<{
+  vault: string;
+  keys: unknown;
+  pairFingerprint: string;
+}>;
+
+export type DeviceUnlockCredential = Readonly<{
+  pairFingerprint: string;
+  key: Uint8Array;
+}>;
+
+/** Only a trusted software host may supply this protected credential I/O. */
+export type DeviceUnlockPort = Readonly<{
+  /** Transfer ownership of the returned key bytes to the SDK. */
+  readCredential(
+    pairFingerprint: string
+  ): Promise<DeviceUnlockCredential | null>;
+  /**
+   * Consume the bytes and check the guard before saving. The SDK clears the
+   * bytes on settlement. Publish enrollment only after issue returns true.
+   */
+  writeCredential(
+    credential: DeviceUnlockCredential,
+    assertCurrent: () => void
+  ): Promise<void>;
+}>;
+
+export type DeviceUnlockControls = Readonly<{
+  issue(password: string, assertCurrent: () => void): Promise<boolean>;
+  resume(assertCurrent: () => void): Promise<boolean>;
+}>;
 
 /** Only the device capabilities consumed by the wallet authority. */
 export interface KeyringLedgerSigner {
@@ -125,6 +159,8 @@ export type KeyringTrezorSigner = Pick<
   | 'verifyUtxoAddress'
 >;
 
+type SessionOwner = { current?: symbol; epoch: number };
+
 export interface KeyringCoreDependencies<
   TLedger extends KeyringLedgerSigner | undefined,
   TTrezor extends KeyringTrezorSigner | undefined
@@ -140,6 +176,12 @@ export interface KeyringCoreDependencies<
   syscoinHardwareSigners?: ISyscoinHardwareSigners;
   /** Trusted host lifecycle, captured before each locally signed EVM submission. */
   captureEvmSubmission?: CaptureEvmSubmission;
+  /** Shared only by software keyrings of the same opted-in host. */
+  sessionOwner?: SessionOwner;
+  deviceUnlock?: {
+    port: DeviceUnlockPort;
+    receive(controls: DeviceUnlockControls): void;
+  };
 }
 
 export interface ISysAccount {
@@ -288,6 +330,12 @@ export class KeyringCore<
   private sessionPassword: SecureBuffer | null = null;
   private sessionMnemonic: SecureBuffer | null = null; // can be a mnemonic or a zprv, can be changed to a zprv when using an imported wallet
   private privateRecordSessionRevision = 0;
+  #deviceUnlockRetired = false;
+  readonly #sessionOwnership?: {
+    tracker: SessionOwner;
+    token: symbol;
+    destroyed?: true;
+  };
 
   constructor(dependencies: KeyringCoreDependencies<TLedger, TTrezor>) {
     if (
@@ -304,6 +352,12 @@ export class KeyringCore<
       throw new TypeError('Keyring core requires bound vault persistence');
     }
     this.authority = dependencies.authority;
+    if (dependencies.sessionOwner) {
+      this.#sessionOwnership = {
+        tracker: dependencies.sessionOwner,
+        token: Symbol(),
+      };
+    }
     this.storage = dependencies.storage;
     this.vaultPersistence = dependencies.vaultPersistence;
     this.ledgerSigner = dependencies.ledgerSigner;
@@ -323,6 +377,19 @@ export class KeyringCore<
       this.capturePsbtSigningContext,
       dependencies.captureEvmSubmission
     );
+    if (dependencies.deviceUnlock) {
+      if (!this.#sessionOwnership)
+        throw new TypeError('Device unlock requires a session owner');
+      const { port, receive } = dependencies.deviceUnlock;
+      const readVaultPair = this.storage.readDeviceUnlockVaultPair;
+      if (typeof readVaultPair !== 'function')
+        throw new TypeError(
+          'Device unlock requires an atomic vault pair reader'
+        );
+      receive(
+        this.#createDeviceUnlockControls(port, readVaultPair.bind(this.storage))
+      );
+    }
   }
 
   private createSyscoinTransactions = () =>
@@ -334,6 +401,152 @@ export class KeyringCore<
       this.syscoinHardwareSigners,
       this.capturePsbtSigningContext
     );
+
+  #createDeviceUnlockControls(
+    port: DeviceUnlockPort,
+    readVaultPair: NonNullable<KeyringStoragePort['readDeviceUnlockVaultPair']>
+  ): DeviceUnlockControls {
+    const readPair = async () => {
+      const pair = await readVaultPair();
+      if (pair === null) return null;
+      const { vault, keys, pairFingerprint } = pair;
+      const salt =
+        keys && typeof keys === 'object' && Reflect.ownKeys(keys).length === 1
+          ? Object.getOwnPropertyDescriptor(keys, 'salt')?.value
+          : undefined;
+      if (
+        typeof vault !== 'string' ||
+        typeof salt !== 'string' ||
+        !/^[0-9a-f]{32}$/.test(salt) ||
+        typeof pairFingerprint !== 'string' ||
+        !/^[0-9a-f]{64}$/.test(pairFingerprint)
+      ) {
+        throw new Error('Invalid device unlock vault pair');
+      }
+      return { vault, salt, pairFingerprint };
+    };
+
+    let pending = false;
+    const run = async (
+      request: { password: string } | null,
+      assertCurrent: () => void
+    ): Promise<boolean> => {
+      if (pending) throw new Error('Device unlock operation is busy');
+      pending = true;
+      const revision = this.privateRecordSessionRevision;
+      const tracker = this.#sessionOwnership?.tracker;
+      const ownerEpoch = tracker?.epoch;
+      const issuing = request !== null;
+      const check = () => {
+        const result: unknown = assertCurrent();
+        if (result !== undefined) {
+          // Reject async guards and consume a possible rejected promise.
+          if (
+            result &&
+            (typeof result === 'object' || typeof result === 'function')
+          )
+            void Promise.resolve(result).catch(() => undefined);
+          throw new TypeError(
+            'Device unlock guard must return undefined synchronously'
+          );
+        }
+        if (
+          this.#deviceUnlockRetired ||
+          revision !== this.privateRecordSessionRevision ||
+          (!issuing && (this.sessionPassword || this.sessionMnemonic))
+        ) {
+          throw new Error('Device unlock session changed');
+        }
+        this.#assertSessionOwner();
+        if (tracker?.epoch !== ownerEpoch)
+          throw new Error('Device unlock session changed');
+      };
+      let key: Uint8Array | undefined;
+      try {
+        check();
+        const pair = await readPair();
+        check();
+        if (!pair) return false;
+        const checkPair = async () => {
+          const current = await readPair();
+          check();
+          if (
+            current?.pairFingerprint !== pair.pairFingerprint ||
+            current.vault !== pair.vault ||
+            current.salt !== pair.salt
+          ) {
+            throw new Error('Device unlock vault changed');
+          }
+        };
+        if (request) {
+          key = this.hexToBytes(
+            await this.deriveStoredSessionKey(request.password, {
+              salt: pair.salt,
+            })
+          );
+        } else {
+          const credential = await port.readCredential(pair.pairFingerprint);
+          key = credential?.key;
+          check();
+          if (credential?.pairFingerprint !== pair.pairFingerprint)
+            return false;
+        }
+        check();
+        if (!(key instanceof Uint8Array) || key.length !== 32) return false;
+        const keyHex = Buffer.from(
+          key.buffer,
+          key.byteOffset,
+          key.byteLength
+        ).toString('hex');
+        let payload: unknown;
+        try {
+          payload = await decryptCurrentVault(pair.vault, keyHex);
+        } catch (error) {
+          if (!(error instanceof VaultAuthenticationError)) throw error;
+          await checkPair();
+          check();
+          return false;
+        }
+        check();
+        const mnemonic =
+          payload && typeof payload === 'object'
+            ? Object.getOwnPropertyDescriptor(payload, 'mnemonic')?.value
+            : undefined;
+        if (typeof mnemonic !== 'string' || !this.isSeedValid(mnemonic)) {
+          throw new Error('Invalid device unlock vault payload');
+        }
+        await checkPair();
+        check();
+        if (request) {
+          const result: unknown = await port.writeCredential(
+            Object.freeze({ pairFingerprint: pair.pairFingerprint, key }),
+            check
+          );
+          if (result !== undefined)
+            throw new Error(
+              'Device unlock credential write was not acknowledged'
+            );
+          await checkPair();
+          check();
+        } else {
+          if (this.#finishUnlock().needsAccountCreation) return false;
+          this.#installVaultSession(mnemonic, keyHex, check);
+        }
+        return true;
+      } finally {
+        if (key instanceof Uint8Array) key.fill(0);
+        pending = false;
+      }
+    };
+    return Object.freeze({
+      issue: (password, assertCurrent) => {
+        if (typeof password !== 'string' || !password)
+          return Promise.reject(new TypeError('Wallet password is required'));
+        return run({ password }, assertCurrent);
+      },
+      resume: (assertCurrent) => run(null, assertCurrent),
+    });
+  }
 
   private requireLedgerSigner = (): KeyringLedgerSigner => {
     if (!this.ledgerSigner)
@@ -397,6 +610,12 @@ export class KeyringCore<
       this.sessionMnemonic = null;
     }
 
+    const ownership = this.#sessionOwnership;
+    if (ownership && ownership.tracker.current === ownership.token) {
+      ownership.tracker.current = undefined;
+      ownership.tracker.epoch++;
+    }
+
     // Clear transaction handlers that may hold HD signers
     if (this.syscoinTransaction) {
       // Replace with empty object to clear references
@@ -447,9 +666,9 @@ export class KeyringCore<
     if (!this.sessionPassword || !this.sessionMnemonic) {
       throw new Error('Session data is missing during transfer');
     }
+    targetKeyring.#acceptSessionFrom(this);
     this.privateRecordSessionRevision++;
-
-    targetKeyring.acceptSessionFrom(this);
+    this.#deviceUnlockRetired = true;
 
     // Null out our references (do NOT clear buffers - target owns them now)
     this.sessionPassword = null;
@@ -457,11 +676,12 @@ export class KeyringCore<
   };
 
   // The checked transfer path never dispatches through a public host receiver.
-  private acceptSessionFrom = (source: KeyringCore): void => {
+  #acceptSessionFrom(source: KeyringCore): void {
     if (
       source.authority !== this.authority ||
       source.storage !== this.storage ||
-      source.vaultPersistence !== this.vaultPersistence
+      source.vaultPersistence !== this.vaultPersistence ||
+      source.#sessionOwnership?.tracker !== this.#sessionOwnership?.tracker
     ) {
       throw new Error(
         'Cannot transfer session between different wallet authorities'
@@ -470,19 +690,40 @@ export class KeyringCore<
     if (!source.sessionPassword || !source.sessionMnemonic) {
       throw new Error('Session data is missing during transfer');
     }
-    this.replaceSessionBuffers(source.sessionPassword, source.sessionMnemonic);
-  };
+    this.#replaceSessionBuffers(
+      source.sessionPassword,
+      source.sessionMnemonic,
+      source.#sessionOwnership?.token
+    );
+  }
 
   // Legacy trusted-host API. SoftwareKeyring disables direct buffer injection.
   public receiveSessionOwnership = (
     sessionPassword: SecureBuffer,
     sessionMnemonic: SecureBuffer
-  ): void => this.replaceSessionBuffers(sessionPassword, sessionMnemonic);
+  ): void => this.#replaceSessionBuffers(sessionPassword, sessionMnemonic);
 
-  private replaceSessionBuffers = (
+  #assertSessionOwner(sourceToken?: symbol): void {
+    const ownership = this.#sessionOwnership;
+    if (!ownership) return;
+    if (ownership.destroyed) throw new Error('Wallet keyring was destroyed');
+
+    const owner = ownership.tracker.current;
+    if (
+      sourceToken === undefined
+        ? owner !== undefined && owner !== ownership.token
+        : owner !== sourceToken
+    ) {
+      throw new Error('Wallet session is owned by another keyring');
+    }
+  }
+
+  #replaceSessionBuffers(
     sessionPassword: SecureBuffer,
-    sessionMnemonic: SecureBuffer
-  ): void => {
+    sessionMnemonic: SecureBuffer,
+    sourceToken?: symbol
+  ): void {
+    this.#assertSessionOwner(sourceToken);
     this.privateRecordSessionRevision++;
     // Clear any existing data first
     if (this.sessionPassword) {
@@ -496,7 +737,12 @@ export class KeyringCore<
     // No copying - these are the original objects
     this.sessionPassword = sessionPassword;
     this.sessionMnemonic = sessionMnemonic;
-  };
+    const ownership = this.#sessionOwnership;
+    if (ownership) {
+      ownership.tracker.current = ownership.token;
+      ownership.tracker.epoch++;
+    }
+  }
 
   public addNewAccount = async (
     label?: string
@@ -713,47 +959,10 @@ export class KeyringCore<
 
       // If session data missing or corrupted, recreate from vault
       if (!this.sessionMnemonic) {
-        await this.recreateSessionFromVault(sessionPasswordKey);
+        await this.#recreateSessionFromVault(sessionPasswordKey);
       }
 
-      // Re-initialize syscoin transaction handler if it was cleared on lock.
-      // `lockWallet()` intentionally replaces it with a plain object to drop signer references,
-      // so we must restore the real class instance on unlock.
-      if (
-        !this.syscoinTransaction ||
-        typeof (this.syscoinTransaction as any).getRecommendedFee !== 'function'
-      ) {
-        this.syscoinTransaction = this.createSyscoinTransactions();
-      }
-
-      // NOTE: Active account management is now handled by vault state/Redux
-      // No need to explicitly set active account after unlock - it's managed externally
-      const vault = this.getVault();
-      if (vault.activeAccount?.id !== undefined && vault.activeAccount?.type) {
-        // Check if the active account actually exists in the accounts map
-        const accountType = vault.activeAccount.type;
-        const accountId = vault.activeAccount.id;
-        const accountExists = vault.accounts?.[accountType]?.[accountId];
-
-        if (!accountExists) {
-          console.log(
-            `[KeyringManager] Active account ${accountType}:${accountId} not found in accounts map. This may indicate a migration from old vault format.`
-          );
-          // Signal that accounts need to be created after migration
-          return {
-            canLogin: true,
-            needsAccountCreation: true,
-          };
-        }
-
-        console.log(
-          `[KeyringManager] Active account ${vault.activeAccount.id} available after unlock`
-        );
-      }
-
-      return {
-        canLogin: true,
-      };
+      return this.#finishUnlock();
     } catch (error) {
       if (!authenticated && error instanceof VaultAuthenticationError) {
         return { canLogin: false };
@@ -765,6 +974,47 @@ export class KeyringCore<
       }
       throw error;
     }
+  }
+
+  #finishUnlock(): { canLogin: true; needsAccountCreation?: boolean } {
+    // Re-initialize syscoin transaction handler if it was cleared on lock.
+    // `lockWallet()` intentionally replaces it with a plain object to drop signer references,
+    // so we must restore the real class instance on unlock.
+    if (
+      !this.syscoinTransaction ||
+      typeof (this.syscoinTransaction as any).getRecommendedFee !== 'function'
+    ) {
+      this.syscoinTransaction = this.createSyscoinTransactions();
+    }
+
+    // NOTE: Active account management is now handled by vault state/Redux
+    // No need to explicitly set active account after unlock - it's managed externally
+    const vault = this.getVault();
+    if (vault.activeAccount?.id !== undefined && vault.activeAccount?.type) {
+      // Check if the active account actually exists in the accounts map
+      const accountType = vault.activeAccount.type;
+      const accountId = vault.activeAccount.id;
+      const accountExists = vault.accounts?.[accountType]?.[accountId];
+
+      if (!accountExists) {
+        console.log(
+          `[KeyringManager] Active account ${accountType}:${accountId} not found in accounts map. This may indicate a migration from old vault format.`
+        );
+        // Signal that accounts need to be created after migration
+        return {
+          canLogin: true,
+          needsAccountCreation: true,
+        };
+      }
+
+      console.log(
+        `[KeyringManager] Active account ${vault.activeAccount.id} available after unlock`
+      );
+    }
+
+    return {
+      canLogin: true,
+    };
   }
 
   public getNewChangeAddress = async (): Promise<string> => {
@@ -2851,9 +3101,25 @@ export class KeyringCore<
     this.logout();
   };
 
-  private async recreateSessionFromVault(
-    saltedHashPassword: string
-  ): Promise<void> {
+  #installVaultSession(
+    mnemonic: string,
+    key: string,
+    assertCurrent?: () => void
+  ): void {
+    const ciphertext = CryptoJS.AES.encrypt(mnemonic, key).toString();
+    const password = new SecureBuffer(key);
+    const encryptedMnemonic = new SecureBuffer(ciphertext);
+    try {
+      assertCurrent?.();
+      this.#replaceSessionBuffers(password, encryptedMnemonic);
+    } catch (error) {
+      password.clear();
+      encryptedMnemonic.clear();
+      throw error;
+    }
+  }
+
+  async #recreateSessionFromVault(saltedHashPassword: string): Promise<void> {
     try {
       // v4 vault is encrypted with the derived session password key (PBKDF2 output)
       // `saltedHashPassword` is the derived session password key passed by caller.
@@ -2865,16 +3131,7 @@ export class KeyringCore<
         throw new Error('Mnemonic not found in vault');
       }
 
-      // Encrypt session data with sessionPassword hash for consistency
-      // This allows keyring manager to decrypt with this.sessionPassword
-      this.privateRecordSessionRevision++;
-      this.sessionPassword = new SecureBuffer(saltedHashPassword);
-      // Encrypt the mnemonic with session password for consistency with the rest of the code
-      const encryptedMnemonic = CryptoJS.AES.encrypt(
-        mnemonic,
-        saltedHashPassword
-      ).toString();
-      this.sessionMnemonic = new SecureBuffer(encryptedMnemonic);
+      this.#installVaultSession(mnemonic, saltedHashPassword);
       console.log('[KeyringManager] Session data recreated from vault');
     } catch (error) {
       console.error('ERROR recreateSessionFromVault', { error });
@@ -3363,7 +3620,7 @@ export class KeyringCore<
       { salt }
     );
 
-    await this.recreateSessionFromVault(sessionPasswordSaltedHash);
+    await this.#recreateSessionFromVault(sessionPasswordSaltedHash);
   };
 
   // NEW: Create first account without signer setup
@@ -3536,6 +3793,8 @@ export class KeyringCore<
    * Clean up all resources
    */
   public async destroy(): Promise<void> {
+    this.#deviceUnlockRetired = true;
+    if (this.#sessionOwnership) this.#sessionOwnership.destroyed = true;
     await this.lockWallet();
 
     // Clear any remaining references

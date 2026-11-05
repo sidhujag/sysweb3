@@ -149,13 +149,18 @@ const decryptVaultWebCrypto = async (
   if (keyBytes.length !== 32) {
     throw new Error('Vault key must be 32 bytes (hex length 64)');
   }
-  const key = await subtle.importKey(
-    'raw',
-    keyBytes as unknown as BufferSource,
-    { name: 'AES-GCM' },
-    false,
-    ['decrypt']
-  );
+  let key: CryptoKey;
+  try {
+    key = await subtle.importKey(
+      'raw',
+      keyBytes as unknown as BufferSource,
+      { name: 'AES-GCM' },
+      false,
+      ['decrypt']
+    );
+  } finally {
+    keyBytes.fill(0);
+  }
 
   const ivBytes = hexToBytes(envelope.iv);
   const ctBytes = hexToBytes(envelope.ct);
@@ -179,6 +184,30 @@ const decryptVaultWebCrypto = async (
     throw error;
   }
   return new TextDecoder().decode(pt);
+};
+
+/** Authenticate a captured current-format vault. This path has no CBC fallback. */
+export const decryptCurrentVault = async (
+  vault: string,
+  key: string
+): Promise<unknown> => {
+  const envelope = maybeParseGcmEnvelope(vault);
+  if (
+    !envelope ||
+    Object.keys(envelope).length !== 4 ||
+    !/^[0-9a-f]{24}$/i.test(envelope.iv) ||
+    envelope.ct.length < 32 ||
+    envelope.ct.length % 2 !== 0 ||
+    !isHex(envelope.ct)
+  ) {
+    throw new Error('Invalid encrypted vault format');
+  }
+  const plaintext = await decryptVaultWebCrypto(envelope, key);
+  try {
+    return JSON.parse(plaintext);
+  } catch {
+    throw new Error('Invalid device unlock vault payload');
+  }
 };
 
 /**
