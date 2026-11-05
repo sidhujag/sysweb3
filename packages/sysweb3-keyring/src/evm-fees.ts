@@ -126,6 +126,52 @@ export function bufferedEvmGasLimit(
   return minimum !== undefined && minimum > buffered ? minimum : buffered;
 }
 
+export type EvmCancellationFeeInput = Readonly<
+  | { type: 0; currentGasPrice: bigint; originalGasPrice?: bigint }
+  | {
+      type: 2;
+      currentMaxFeePerGas: bigint;
+      currentMaxPriorityFeePerGas: bigint;
+      originalMaxFeePerGas?: bigint;
+      originalMaxPriorityFeePerGas?: bigint;
+    }
+>;
+
+/** Plan only the cancellation fees. The host validates the rates and envelope. */
+export function planEvmCancellationFees(input: EvmCancellationFeeInput) {
+  const gasLimit = 42000n;
+  const higher = (left: bigint, right: bigint) => (left > right ? left : right);
+  // The replacement must also bump zero and small rates by at least one wei.
+  const bump = (fee: bigint) => higher((fee * 120n) / 100n, fee + 1n);
+  if (input.type === 0) {
+    const gasPrice = bump(
+      higher(input.currentGasPrice, input.originalGasPrice ?? 0n)
+    );
+    return Object.freeze({
+      type: 0 as const,
+      gasLimit,
+      gasPrice,
+      maximumFee: gasLimit * gasPrice,
+    });
+  }
+  const priority = higher(
+    input.currentMaxPriorityFeePerGas,
+    input.originalMaxPriorityFeePerGas ?? 0n
+  );
+  const cap = higher(
+    input.currentMaxFeePerGas,
+    input.originalMaxFeePerGas ?? 0n
+  );
+  const maxFeePerGas = bump(higher(cap, priority));
+  return Object.freeze({
+    type: 2 as const,
+    gasLimit,
+    maxFeePerGas,
+    maxPriorityFeePerGas: bump(priority),
+    maximumFee: gasLimit * maxFeePerGas,
+  });
+}
+
 function unsupportedPriorityMethod(error: any): boolean {
   const unsupportedCode = (code: unknown) => code === -32601 || code === 4200;
   if (unsupportedCode(error?.code)) return true;

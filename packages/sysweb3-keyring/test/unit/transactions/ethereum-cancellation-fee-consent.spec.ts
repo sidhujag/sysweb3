@@ -36,18 +36,22 @@ const deferred = <T>() => {
   return { promise, resolve };
 };
 
-function fixture(legacy: boolean, devices = true) {
+function fixture(
+  legacy: boolean,
+  devices = true,
+  { nonce = 8, originalPrice = 100n, originalTip = 10n } = {}
+) {
   const original = Transaction.from({
     type: legacy ? 0 : 2,
     chainId: CHAIN,
-    nonce: 8,
+    nonce,
     to: OTHER,
     value: 7,
     data: '0x',
     gasLimit: 21000,
     ...(legacy
-      ? { gasPrice: 100 }
-      : { maxFeePerGas: 100, maxPriorityFeePerGas: 10 }),
+      ? { gasPrice: originalPrice }
+      : { maxFeePerGas: originalPrice, maxPriorityFeePerGas: originalTip }),
   });
   original.signature = wallet.signingKey.sign(original.unsignedHash);
   const row = {
@@ -165,7 +169,7 @@ function fixture(legacy: boolean, devices = true) {
   const validateOriginal = jest.fn((value) => {
     expect(value.hash).toBe(original.hash);
     expect(value.from.toLowerCase()).toBe(PAYER.toLowerCase());
-    expect(value.nonce).toBe(8);
+    expect(value.nonce).toBe(nonce);
   });
   const options = (targetAccount = routes[0]) => ({
     targetAccount: { ...targetAccount },
@@ -259,6 +263,89 @@ describe.each([true, false])(
           expect(f.trezor.signEthTransaction.mock.calls[0][0].index).toBe('5');
       }
     );
+
+    it.each(routes)(
+      'preserves nonce zero and the exact large fee for target $type',
+      async (target) => {
+        const f = fixture(legacy, true, {
+          nonce: 0,
+          originalPrice: 9_007_199_254_740_993n,
+          originalTip: 1n,
+        });
+        const price = 10_808_639_105_689_191n;
+        const ceiling = (42_000n * price).toString();
+        const options = f.options(target);
+        await expect(
+          f.run({ ...options, previewOnly: true })
+        ).resolves.toMatchObject({ maximumFee: ceiling });
+        f.noSigning();
+
+        await expect(
+          f.run({ ...options, approvedMaximumFee: ceiling })
+        ).resolves.toMatchObject({ isCanceled: true });
+        const expected = Transaction.from({
+          type: legacy ? 0 : 2,
+          chainId: CHAIN,
+          nonce: 0,
+          to: PAYER,
+          value: 0,
+          data: '0x',
+          gasLimit: 42_000,
+          ...(legacy
+            ? { gasPrice: price }
+            : { maxFeePerGas: price, maxPriorityFeePerGas: 12n }),
+        });
+        expected.signature = wallet.signingKey.sign(expected.unsignedHash);
+        expect(f.sent.map((tx) => tx.serialized)).toEqual([
+          expected.serialized,
+        ]);
+      }
+    );
+
+    it('retains the validated original fee references while the current fee read waits', async () => {
+      const f = fixture(legacy, false, {
+        nonce: 0,
+        originalPrice: 120n,
+        originalTip: 20n,
+      });
+      const ready = deferred<void>();
+      const resume = deferred<void>();
+      if (legacy) {
+        f.provider.getGasPrice.mockImplementationOnce(async () => {
+          ready.resolve();
+          await resume.promise;
+          return BigNumber.from(100);
+        });
+      } else {
+        jest
+          .mocked(f.sdk.getFeeDataWithDynamicMaxPriorityFeePerGas)
+          .mockImplementationOnce(async () => {
+            ready.resolve();
+            await resume.promise;
+            return {
+              maxFeePerGas: BigNumber.from(100),
+              maxPriorityFeePerGas: BigNumber.from(10),
+            };
+          });
+      }
+
+      const options = f.options();
+      const pending = f.run({ ...options, approvedMaximumFee: '6048000' });
+      await ready.promise;
+      const [original] = options.validateOriginal.mock.calls[0];
+      original.gasPrice = BigNumber.from(1);
+      original.maxFeePerGas = BigNumber.from(1);
+      original.maxPriorityFeePerGas = BigNumber.from(1);
+      resume.resolve();
+
+      await expect(pending).resolves.toMatchObject({ isCanceled: true });
+      expect(f.sent).toHaveLength(1);
+      const [sent] = f.sent;
+      expect(sent.nonce).toBe(0);
+      expect(sent.gasLimit).toBe(42000n);
+      expect(legacy ? sent.gasPrice : sent.maxFeePerGas).toBe(144n);
+      expect(sent.maxPriorityFeePerGas).toBe(legacy ? null : 24n);
+    });
 
     it.each([undefined, '', '00', '-1', '1.5', '0x100', 1, '9'.repeat(79)])(
       'rejects invalid fee approval %p before RPC or signing',
