@@ -464,9 +464,9 @@ export class KeyringCore<
         const pair = await readPair();
         check();
         if (!pair) return false;
-        const checkPair = async () => {
+        const checkPair = async (requireLiveOwner = true) => {
           const current = await readPair();
-          check();
+          if (requireLiveOwner) check();
           if (
             current?.pairFingerprint !== pair.pairFingerprint ||
             current.vault !== pair.vault ||
@@ -500,8 +500,11 @@ export class KeyringCore<
           payload = await decryptCurrentVault(pair.vault, keyHex);
         } catch (error) {
           if (!(error instanceof VaultAuthenticationError)) throw error;
-          await checkPair();
-          check();
+          // Preserve a definitive wrong-password result for host accounting
+          // even if enrollment was cancelled. The pair must still match and
+          // this branch never installs a session or writes a credential.
+          await checkPair(!issuing);
+          if (!issuing) check();
           return false;
         }
         check();
