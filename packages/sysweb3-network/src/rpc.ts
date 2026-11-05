@@ -1,7 +1,7 @@
 import { Chain, chains } from 'eth-chains';
 import { toBeHex } from 'ethers/utils';
 
-import { findCoin, findUtxoCoinByRegistration } from './coin-utils';
+import { findCoin } from './coin-utils';
 // import fetch from "node-fetch";
 import {
   getNetworkConfigFromCoin,
@@ -365,11 +365,9 @@ export const observeSysRpc = async (
   owner: OwnedUtxoRpcFirstUse
 ) => {
   const draft = snapshotSysRpcDraft(input);
-  const { assertCurrent, currency, observedBackendChain, registration } =
+  const { assertCurrent, coin, currency, observedBackendChain, registration } =
     await observeFirstUseUtxoRpc(draft.url, owner);
   assertCurrent();
-  const coin = findUtxoCoinByRegistration(registration);
-  if (!coin) throw new Error('Invalid UTXO registration verification');
   const result = formatSysRpc(
     draft,
     coin,

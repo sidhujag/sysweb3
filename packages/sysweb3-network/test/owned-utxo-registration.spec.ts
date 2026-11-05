@@ -11,11 +11,9 @@ import { observeFirstUseUtxoRpc } from '../src/ownedUtxoRpc';
 import type { OwnedUtxoRpcVerification } from '../src';
 import type { OwnedUtxoRpcFirstUse } from '../src/ownedUtxoRpc';
 
-const url = 'https://blockbook.invalid/tenant/?access=public%2Bfixture';
-const statusUrl =
-  'https://blockbook.invalid/tenant/api/v2/?access=public%2Bfixture';
-const genesisUrl =
-  'https://blockbook.invalid/tenant/api/v2/block-index/0?access=public%2Bfixture';
+const url = 'https://blockbook.invalid/tenant/';
+const statusUrl = 'https://blockbook.invalid/tenant/api/v2/';
+const genesisUrl = 'https://blockbook.invalid/tenant/api/v2/block-index/0';
 const SYS_TEST = { chainId: 5700, slip44: 1 };
 const BTC = { chainId: 0, slip44: 0 };
 const BTG = { chainId: 156, slip44: 156 };
@@ -80,12 +78,14 @@ it('observes an exact backend token and canonical registration without an expect
   const result = await observeFirstUseUtxoRpc(url, observation);
   expect(result).toEqual({
     registration: SYS_TEST,
+    coin: findUtxoCoinByRegistration(SYS_TEST),
     currency: 'tsys',
     observedBackendChain: 'test',
     assertCurrent: expect.any(Function),
   });
   expect(Object.isFrozen(result)).toBe(true);
   expect(Object.isFrozen(result.registration)).toBe(true);
+  expect(Object.isFrozen(result.coin)).toBe(true);
   expect(readJson.mock.calls).toEqual([
     [statusUrl, observation.signal],
     [genesisUrl, observation.signal],
@@ -117,6 +117,7 @@ it.each([
     );
     await expect(observeFirstUseUtxoRpc(url, observation)).resolves.toEqual({
       registration,
+      coin,
       currency: coin.coinShortcut.toLowerCase(),
       observedBackendChain: 'Main_Fixture',
       assertCurrent: expect.any(Function),
@@ -224,6 +225,25 @@ it('first use requires HTTPS and a bounded primitive reported token', async () =
   );
 });
 
+it.each(['?token=synthetic', '?'])(
+  'refuses a Blockbook base query before observation or verification: %s',
+  async (query) => {
+    const endpoint = `https://blockbook.invalid/tenant/${query}`;
+    const { observation, readJson: firstRead } = firstUse(modern);
+    const { owner, readJson: verifyRead } = verification(modern);
+    for (const read of [firstRead, verifyRead])
+      read
+        .mockResolvedValueOnce(modern)
+        .mockResolvedValueOnce(genesis(SYS_TEST));
+    await expect(observeFirstUseUtxoRpc(endpoint, observation)).rejects.toThrow(
+      invalid
+    );
+    await expect(getSysRpc({ url: endpoint }, owner)).rejects.toThrow(invalid);
+    expect(firstRead).not.toHaveBeenCalled();
+    expect(verifyRead).not.toHaveBeenCalled();
+  }
+);
+
 it('refuses wrong genesis, and decimals cannot rescue or change a canonical match', async () => {
   const wrong = firstUse(modern, genesis(BTC));
   await expect(observeFirstUseUtxoRpc(url, wrong.observation)).rejects.toThrow(
@@ -322,6 +342,7 @@ it('captures a chosen first-use identity and owned transport before the status a
   release();
   await expect(pending).resolves.toEqual({
     registration: SYS_TEST,
+    coin: findUtxoCoinByRegistration(SYS_TEST),
     currency: 'tsys',
     observedBackendChain: 'test',
     assertCurrent: expect.any(Function),

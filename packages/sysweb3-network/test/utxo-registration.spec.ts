@@ -179,3 +179,50 @@ it.each(['abort', 'stale'])(
     expect(reader.readJson).toHaveBeenCalledTimes(2);
   }
 );
+
+it.each(['replacement', 'in-place mutation'])(
+  'formats first use from the verified coin after a late catalogue %s',
+  async (kind) => {
+    const registration = { chainId: 5700, slip44: 1 };
+    const coin = findUtxoCoinByRegistration(registration)!;
+    const original = { ...coin };
+    const replacement = {
+      ...coin,
+      coinShortcut: 'FAKE',
+      bech32Prefix: 'fake',
+      hashGenesisBlock: 'ab'.repeat(32),
+    };
+    const index = coins.indexOf(coin);
+    const owner = ownedRead(registration, 'Syscoin Testnet', 'test');
+    let checks = 0;
+    try {
+      await expect(
+        observeSysRpc(
+          { url: endpoint },
+          {
+            registration,
+            signal: owner.signal,
+            readJson: owner.readJson,
+            assertCurrent() {
+              if (++checks === 5)
+                queueMicrotask(() => {
+                  if (kind === 'replacement') coins[index] = replacement;
+                  else Object.assign(coin, replacement);
+                });
+            },
+          }
+        )
+      ).resolves.toMatchObject({
+        network: 'tSYS',
+        rpc: {
+          formattedNetwork: { chainId: 5700, slip44: 1, currency: 'tsys' },
+          networkConfig: { networks: { testnet: { bech32: 'tsys' } } },
+        },
+      });
+      expect(coins[index].hashGenesisBlock).toBe(replacement.hashGenesisBlock);
+      expect(owner.readJson).toHaveBeenCalledTimes(2);
+    } finally {
+      Object.assign(coin, original);
+    }
+  }
+);

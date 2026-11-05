@@ -68,7 +68,7 @@ function captureReader(
     typeof url !== 'string' ||
     url.length > 2048 ||
     !scheme.test(url) ||
-    /[\s\\#]/.test(url)
+    /[\s\\?#]/.test(url)
   )
     throw new Error(INVALID);
   let endpoint: URL;
@@ -311,6 +311,7 @@ export async function observeFirstUseUtxoRpc(
     throw new Error(INVALID);
   return Object.freeze({
     registration: Object.freeze(identity.registration),
+    coin: Object.freeze({ ...live.coin }),
     currency,
     observedBackendChain,
     assertCurrent,
