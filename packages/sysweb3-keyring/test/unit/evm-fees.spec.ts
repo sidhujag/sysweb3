@@ -2,6 +2,7 @@ import {
   bufferedEvmGasLimit,
   getEvmFeeData,
   parseEvmFeeQuantity,
+  planEvmCancellationFees,
   EvmFeeReader,
 } from '../../src/evm-fees';
 
@@ -274,5 +275,77 @@ describe('shared successful gas estimate buffer', () => {
     expect(() =>
       bufferedEvmGasLimit(21000n, 65000 as unknown as bigint)
     ).toThrow('Invalid gas estimate');
+  });
+});
+
+describe('shared EVM cancellation fee planning', () => {
+  it.each([
+    [undefined, 0n, 1n],
+    [0n, 1n, 2n],
+    [10n, 4n, 12n],
+    [4n, 11n, 13n],
+  ])(
+    'floors the legacy rate and bumps it exactly (%s, %s)',
+    (originalGasPrice, currentGasPrice, gasPrice) => {
+      expect(
+        planEvmCancellationFees({ type: 0, originalGasPrice, currentGasPrice })
+      ).toEqual({
+        type: 0,
+        gasLimit: 42000n,
+        gasPrice,
+        maximumFee: 42000n * gasPrice,
+      });
+    }
+  );
+
+  it('floors the cap and tip independently before bumping', () => {
+    const fee = planEvmCancellationFees({
+      type: 2,
+      originalMaxFeePerGas: 30n,
+      originalMaxPriorityFeePerGas: 1n,
+      currentMaxFeePerGas: 20n,
+      currentMaxPriorityFeePerGas: 5n,
+    });
+    expect(fee).toEqual({
+      type: 2,
+      gasLimit: 42000n,
+      maxFeePerGas: 36n,
+      maxPriorityFeePerGas: 6n,
+      maximumFee: 1512000n,
+    });
+    expect(Object.isFrozen(fee)).toBe(true);
+  });
+
+  it('raises the cap to the selected tip and preserves the one-wei bump', () => {
+    expect(
+      planEvmCancellationFees({
+        type: 2,
+        originalMaxPriorityFeePerGas: 4n,
+        currentMaxFeePerGas: 2n,
+        currentMaxPriorityFeePerGas: 0n,
+      })
+    ).toEqual({
+      type: 2,
+      gasLimit: 42000n,
+      maxFeePerGas: 5n,
+      maxPriorityFeePerGas: 5n,
+      maximumFee: 210000n,
+    });
+  });
+
+  it('plans with current fees when no original rates are available', () => {
+    expect(
+      planEvmCancellationFees({
+        type: 2,
+        currentMaxFeePerGas: 3n,
+        currentMaxPriorityFeePerGas: 0n,
+      })
+    ).toEqual({
+      type: 2,
+      gasLimit: 42000n,
+      maxFeePerGas: 4n,
+      maxPriorityFeePerGas: 1n,
+      maximumFee: 168000n,
+    });
   });
 });

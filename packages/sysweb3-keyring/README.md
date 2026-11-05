@@ -350,6 +350,14 @@ A missing host fails with `HARDWARE_SIGNER_UNAVAILABLE`; there is no legacy
 LedgerJS fallback. Pass either a shared hardware manager or a Ledger host to
 `KeyringManager`, not both.
 
+A platform that owns its transport can lazily import
+`createSelectedLedgerDmkHost` from
+`@sidhujag/sysweb3-keyring/esm/ledger/dmk-selected-host.js` with an ESM-aware
+bundler. Supply the platform's DMK and the same trusted approval callback.
+This entry leaves WebHID to the browser host and cannot connect until a
+single-use `beginDeviceSelection` capability accepts a device selected by the
+user. The platform still owns transport permissions and cancellation.
+
 The default host performs no remote metadata lookup, transaction checks, or
 signing telemetry. The current Ethereum signer library can fall back to blind
 signing, so transaction and typed-data signing require per-request approval
