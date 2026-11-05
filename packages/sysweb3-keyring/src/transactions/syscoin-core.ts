@@ -65,17 +65,20 @@ const sweepError = (code: string, message: string) => ({
   message,
 });
 
+const sweepAtomicText = (value: any) => {
+  if (typeof value === 'number')
+    return Number.isSafeInteger(value) ? String(value) : '';
+  if (
+    typeof value === 'string' ||
+    typeof value === 'bigint' ||
+    syscoinjs.utils.BN.isBN(value)
+  )
+    return value.toString();
+  return '';
+};
+
 const sweepAtomicValue = (value: any) => {
-  const text =
-    typeof value === 'number'
-      ? Number.isSafeInteger(value)
-        ? String(value)
-        : ''
-      : typeof value === 'string' ||
-        typeof value === 'bigint' ||
-        syscoinjs.utils.BN.isBN(value)
-      ? value.toString()
-      : '';
+  const text = sweepAtomicText(value);
   if (!/^\d+$/.test(text))
     throw sweepError(
       'INVALID_NATIVE_SWEEP_UTXOS',
@@ -405,8 +408,20 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
       read.transport
     );
     read.assertCurrent();
+    const excludedNativeValues = new Map<string, unknown>();
     const rows = excluded.size
-      ? filterExcludedUtxos(raw, excluded).utxos
+      ? filterExcludedUtxos(raw, excluded, (row, outpoint) => {
+          const unambiguous =
+            !excludedNativeValues.has(outpoint) &&
+            row.assetInfo == null &&
+            (row.txId === undefined ||
+              row.txid === undefined ||
+              row.txId === row.txid);
+          excludedNativeValues.set(
+            outpoint,
+            unambiguous ? row.value : undefined
+          );
+        }).utxos
       : Array.isArray(raw)
       ? raw
       : raw?.utxos;
@@ -452,11 +467,21 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
       gross = gross.add(value);
       utxos.push({ ...row, value });
     }
-    if (gross.isZero())
-      throw sweepError(
+    if (gross.isZero()) {
+      const error = sweepError(
         'INSUFFICIENT_FUNDS',
         'No native UTXOs are available to sweep.'
       );
+      const excludedNativeOutpoints = [...excludedNativeValues].flatMap(
+        ([outpoint, value]) => {
+          const text = sweepAtomicText(value);
+          return /^\d+$/.test(text) && /[1-9]/.test(text) ? [outpoint] : [];
+        }
+      );
+      if (excludedNativeOutpoints.length)
+        throw { ...error, excludedNativeOutpoints };
+      throw error;
+    }
 
     // The library sanitizes this snapshot once; its optional UTXO argument
     // prevents a second funding lookup between resolving MAX and building it.

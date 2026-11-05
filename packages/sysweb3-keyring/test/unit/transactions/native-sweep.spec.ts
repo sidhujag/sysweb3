@@ -237,6 +237,56 @@ describe('explicit native sweep quotes', () => {
     expect(fetchUtxos).toHaveBeenCalledTimes(1);
   });
 
+  it('reports only excluded positive native inputs from the empty sweep snapshot', async () => {
+    const excludedNative = utxo('1000000', 1);
+    const funding = [
+      excludedNative,
+      utxo('10', 2, { assetInfo: { assetGuid: '123', value: '1' } }),
+      utxo('0', 3),
+      utxo('not atomic', 4),
+      utxo('20', 6),
+      utxo('30', 6),
+    ];
+    fetchUtxos.mockResolvedValue(funding);
+    await expect(
+      sdk.getEstimateSysTransactionFee(
+        {
+          ...request,
+          excludedOutpoints: [...funding, utxo('1', 5)].map(
+            ({ txid, vout }) => ({
+              txid,
+              vout,
+            })
+          ),
+        },
+        ownedUtxoTestRead()
+      )
+    ).rejects.toEqual({
+      error: true,
+      code: 'INSUFFICIENT_FUNDS',
+      message: 'No native UTXOs are available to sweep.',
+      excludedNativeOutpoints: [`${excludedNative.txid}:0`],
+    });
+    expect(fetchUtxos).toHaveBeenCalledTimes(1);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('preserves empty-funding errors when configured exclusions were not observed', async () => {
+    fetchUtxos.mockResolvedValue([]);
+    await expect(
+      sdk.getEstimateSysTransactionFee(
+        { ...request, excludedOutpoints: [{ txid: utxo().txid, vout: 0 }] },
+        ownedUtxoTestRead()
+      )
+    ).rejects.toEqual({
+      error: true,
+      code: 'INSUFFICIENT_FUNDS',
+      message: 'No native UTXOs are available to sweep.',
+    });
+    expect(fetchUtxos).toHaveBeenCalledTimes(1);
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it('excludes collateral for ordinary sends and fails if only collateral could fund the request', async () => {
     const collateral = utxo('10000000000000', 2);
     fetchUtxos.mockResolvedValue([collateral, utxo('1000000')]);
