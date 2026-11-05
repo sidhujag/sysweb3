@@ -1,3 +1,4 @@
+import { INetworkType } from '@sidhujag/sysweb3-network';
 import { ITxid, txUtils } from '@sidhujag/sysweb3-utils';
 import { Psbt } from 'bitcoinjs-lib';
 import * as syscoinjs from 'syscoinjs-lib';
@@ -9,6 +10,7 @@ import {
   ISyscoinTransactionFeeQuote,
   KeyringAccountType,
   accountType,
+  type SyscoinOwnedReadOptions,
 } from '../types';
 import { fetchBackendAccountCached } from '../utils/blockbook-cache';
 import {
@@ -93,6 +95,26 @@ type EstimateFeeParams = {
   fundingUtxos?: any;
 };
 
+type BlockbookRead = Pick<SyscoinOwnedReadOptions, 'fetch' | 'signal'>;
+
+/** Internal captured context for the keyring's existing read-only builder and address lookup. */
+export type SyscoinUtxoReadContext = Readonly<{
+  assertCurrent: () => void;
+  network: Readonly<INetwork>;
+  transport: BlockbookRead;
+}>;
+
+type OwnedPreparation = Readonly<{
+  account: Readonly<{ address: string; xpub: string }>;
+  accountType: KeyringAccountType;
+  read: SyscoinUtxoReadContext;
+}>;
+type GetUtxoAddress = (
+  xpub: string,
+  isChangeAddress: boolean
+) => Promise<string>;
+type ReadOnlySigner = { main: any; getOwnedAddress?: GetUtxoAddress };
+
 export class SyscoinTransactionsCore implements ISyscoinTransactions {
   // New separated transaction flow for better UX:
   // 1. Call getEstimateSysTransactionFee() - creates UNSIGNED PSBT and calculates fee
@@ -108,9 +130,7 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
     hd: SyscoinHDSigner;
     main: any;
   };
-  private getReadOnlySigner: () => {
-    main: any;
-  };
+  private getReadOnlySigner: (read?: SyscoinUtxoReadContext) => ReadOnlySigner;
   private hardwareSigners: ISyscoinHardwareSigners;
   private getState: () => {
     accounts: {
@@ -123,20 +143,15 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
     activeAccountType: KeyringAccountType;
     activeNetwork: INetwork;
   };
-  private getAddress: (
-    xpub: string,
-    isChangeAddress: boolean
-  ) => Promise<string>;
-  private captureSigningContext?: () => () => void;
+  private getAddress: GetUtxoAddress;
+  private captureSigningContext?: (bindSessionRevision?: boolean) => () => void;
 
   constructor(
     getSyscoinSigner: () => {
       hd: SyscoinHDSigner;
       main: any;
     },
-    getReadOnlySigner: () => {
-      main: any;
-    },
+    getReadOnlySigner: (read?: SyscoinUtxoReadContext) => ReadOnlySigner,
     getState: () => {
       accounts: {
         HDAccount: accountType;
@@ -148,9 +163,9 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
       activeAccountType: KeyringAccountType;
       activeNetwork: INetwork;
     },
-    getAddress: (xpub: string, isChangeAddress: boolean) => Promise<string>,
+    getAddress: GetUtxoAddress,
     hardwareSigners: ISyscoinHardwareSigners = {},
-    captureSigningContext?: () => () => void
+    captureSigningContext?: (bindSessionRevision?: boolean) => () => void
   ) {
     this.getSigner = getSyscoinSigner;
     this.getReadOnlySigner = getReadOnlySigner;
@@ -221,7 +236,99 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
 
   private feeCache = new Map<string, { fee: number; timestamp: number }>();
 
-  public getRecommendedFee = async (explorerUrl: string): Promise<number> => {
+  private captureOwnedRead(options: SyscoinOwnedReadOptions): OwnedPreparation {
+    const { fetch, signal, assertCurrent: assertHost } = options;
+    if (
+      typeof fetch !== 'function' ||
+      typeof assertHost !== 'function' ||
+      typeof signal?.aborted !== 'boolean'
+    ) {
+      throw new Error('Invalid owned UTXO read');
+    }
+    const assertSession = this.captureSigningContext?.(true);
+    const { activeNetwork, activeAccountId, activeAccountType, accounts } =
+      this.getState();
+    if (activeNetwork.kind !== INetworkType.Syscoin)
+      throw new Error('Switch to UTXO chain');
+    const selected = accounts[activeAccountType]?.[activeAccountId];
+    if (!selected) throw new Error('Active account not found');
+    const account = Object.freeze({
+      address: selected.address,
+      xpub: selected.xpub,
+    });
+    const network = Object.freeze({ ...activeNetwork });
+    const assertCurrent = () => {
+      const result: unknown = assertHost();
+      if (result !== undefined) {
+        if (
+          result &&
+          (typeof result === 'object' || typeof result === 'function')
+        )
+          void Promise.resolve(result).catch(() => undefined);
+        throw new Error('Owned UTXO read requires a synchronous guard');
+      }
+      assertSession?.();
+      const current = this.getState();
+      const selected =
+        current.accounts[current.activeAccountType]?.[current.activeAccountId];
+      if (
+        signal.aborted ||
+        current.activeAccountId !== activeAccountId ||
+        current.activeAccountType !== activeAccountType ||
+        selected?.address !== account.address ||
+        selected?.xpub !== account.xpub ||
+        current.activeNetwork.kind !== network.kind ||
+        current.activeNetwork.chainId !== network.chainId ||
+        current.activeNetwork.slip44 !== network.slip44 ||
+        current.activeNetwork.currency !== network.currency ||
+        current.activeNetwork.url !== network.url
+      ) {
+        throw new Error('Wallet UTXO preparation context changed');
+      }
+    };
+    assertCurrent();
+    const transport: BlockbookRead = Object.freeze({
+      signal,
+      async fetch(input, init) {
+        assertCurrent();
+        const response = await fetch(input, init);
+        assertCurrent();
+        return response;
+      },
+    });
+    return {
+      account,
+      accountType: activeAccountType,
+      read: Object.freeze({ assertCurrent, network, transport }),
+    };
+  }
+
+  private async readOwnedFee(
+    explorerUrl: string,
+    read: SyscoinUtxoReadContext
+  ): Promise<number> {
+    if (explorerUrl !== read.network.url)
+      throw new Error('Owned UTXO read endpoint changed');
+    read.assertCurrent();
+    const fee = await syscoinjs.utils.fetchEstimateFee(
+      explorerUrl,
+      1,
+      undefined,
+      read.transport
+    );
+    read.assertCurrent();
+    return fee / 1024;
+  }
+
+  public getRecommendedFee = async (
+    explorerUrl: string,
+    ownedRead?: SyscoinOwnedReadOptions
+  ): Promise<number> => {
+    if (ownedRead !== undefined)
+      return this.readOwnedFee(
+        explorerUrl,
+        this.captureOwnedRead(ownedRead).read
+      );
     const cached = this.feeCache.get(explorerUrl);
     if (cached && Date.now() - cached.timestamp < FEE_CACHE_TTL_MS) {
       return cached.fee;
@@ -264,12 +371,15 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
       source: string;
       excluded: ReadonlySet<string>;
     },
-    main: any
+    main: any,
+    read?: SyscoinUtxoReadContext
   ): Promise<ISyscoinTransactionFeeQuote> => {
     const raw = await syscoinjs.utils.fetchBackendUTXOS(
       main.blockbookURL,
-      source
+      source,
+      ...(read ? [undefined, read.transport] : [])
     );
+    read?.assertCurrent();
     const rows = excluded.size
       ? filterExcludedUtxos(raw, excluded).utxos
       : Array.isArray(raw)
@@ -379,31 +489,41 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
   };
 
   // Create unsigned PSBT for any transaction type
-  private createUnsignedPSBT = async ({
-    txOptions = {},
-    isMax = false,
-    nativeSweep = false,
-    amount,
-    receivingAddress,
-    feeRateBN,
-    token = null,
-    excludedOutpoints = [],
-  }: {
-    amount: number | string; // Accept both for safer precision handling
-    feeRateBN: any; // BigNumber in satoshis/byte
-    receivingAddress: string;
-    token?: { guid: string; symbol?: string } | null;
-    txOptions?: any;
-    isMax?: boolean | false;
-    nativeSweep?: boolean;
-    excludedOutpoints?: readonly ExcludedOutpoint[];
-  }): Promise<ISyscoinTransactionFeeQuote> => {
+  private createUnsignedPSBT = async (
+    {
+      txOptions = {},
+      isMax = false,
+      nativeSweep = false,
+      amount,
+      receivingAddress,
+      feeRateBN,
+      token = null,
+      excludedOutpoints = [],
+    }: {
+      amount: number | string; // Accept both for safer precision handling
+      feeRateBN: any; // BigNumber in satoshis/byte
+      receivingAddress: string;
+      token?: { guid: string; symbol?: string } | null;
+      txOptions?: any;
+      isMax?: boolean | false;
+      nativeSweep?: boolean;
+      excludedOutpoints?: readonly ExcludedOutpoint[];
+    },
+    owned?: OwnedPreparation & {
+      main: any;
+      excluded: ReadonlySet<string>;
+      getOwnedAddress: GetUtxoAddress;
+    }
+  ): Promise<ISyscoinTransactionFeeQuote> => {
     // Ensure RBF is enabled by default if not explicitly set
     const finalTxOptions = { rbf: true, ...txOptions };
-    const { activeAccountId, accounts, activeAccountType } = this.getState();
+    const state = owned ? undefined : this.getState();
     // Use read-only signer since we're just creating an unsigned PSBT
-    const { main } = this.getReadOnlySigner();
-    const account = accounts[activeAccountType]?.[activeAccountId];
+    const { main } = owned ?? this.getReadOnlySigner();
+    const activeAccountType = owned?.accountType ?? state!.activeAccountType;
+    const account =
+      owned?.account ??
+      state!.accounts[activeAccountType]?.[state!.activeAccountId];
     if (!account) {
       throw new Error('Active account not found');
     }
@@ -440,10 +560,14 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
     // If this is a single-address imported account (WIF import), use the account.address for both from and change
     const changeAddress = isSingleAddressImported
       ? account.address
+      : owned
+      ? await owned.getOwnedAddress(xpub, true)
       : await this.getAddress(xpub, true);
+    owned?.read.assertCurrent();
 
     try {
-      const excluded = excludedOutpointIds(excludedOutpoints);
+      const excluded =
+        owned?.excluded ?? excludedOutpointIds(excludedOutpoints);
       if (nativeSweep) {
         return await this.createNativeSweepPSBT(
           {
@@ -454,18 +578,21 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
             source: sourceForUtxoLookup,
             excluded,
           },
-          main
+          main,
+          owned?.read
         );
       }
       const fundingUtxos = excluded.size
         ? filterExcludedUtxos(
             await syscoinjs.utils.fetchBackendUTXOS(
               main.blockbookURL,
-              sourceForUtxoLookup
+              sourceForUtxoLookup,
+              ...(owned ? [undefined, owned.read.transport] : [])
             ),
             excluded
           )
         : undefined;
+      owned?.read.assertCurrent();
       if (token && token.guid) {
         // Token transaction: use assetAllocationSend
         // Create a Map for the asset allocation
@@ -540,7 +667,8 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
   private signPSBTWithMethod = async (
     psbt: Psbt,
     isTrezor: boolean,
-    isLedger = false
+    isLedger = false,
+    ownedRead?: SyscoinUtxoReadContext
   ): Promise<Psbt> => {
     const { activeNetwork, activeAccountId, activeAccountType, accounts } =
       this.getState();
@@ -563,6 +691,7 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
       network: Object.freeze({ ...activeNetwork }),
     });
     const assertCurrent = () => {
+      ownedRead?.assertCurrent();
       assertSession();
       const current = this.getState();
       const selected =
@@ -581,6 +710,8 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
       }
     };
     assertCurrent();
+    if (ownedRead && (isLedger || isTrezor))
+      throw new Error('Owned UTXO signing requires a software account');
     const sign = isLedger
       ? this.hardwareSigners.ledger
       : isTrezor
@@ -671,8 +802,10 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
           const res: any = await fetchBackendAccountCached(
             blockbookUrl,
             accountXpub,
-            'tokens=used&details=tokens'
+            'tokens=used&details=tokens',
+            ...(ownedRead ? ([ownedRead.transport] as const) : [])
           );
+          ownedRead?.assertCurrent();
           const tokens: any[] = Array.isArray(res?.tokens) ? res.tokens : [];
           const addrToPath = new Map<string, string>();
           for (const t of tokens) {
@@ -722,7 +855,8 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
             });
           }
         }
-      } catch (_e) {
+      } catch (error) {
+        if (ownedRead) throw error;
         // Best-effort enrichment; if it fails, fall back to default signing error path.
       }
 
@@ -739,26 +873,29 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
   };
 
   // Create unsigned PSBT and estimate fee - NO SIGNING
-  public getEstimateSysTransactionFee = async ({
-    txOptions = {},
-    isMax = false,
-    nativeSweep = false,
-    amount,
-    receivingAddress,
-    feeRate,
-    token = null,
-    excludedOutpoints = [],
-  }: {
-    amount: number | string; // Accept both for safer precision handling
-    feeRate?: number;
-    receivingAddress: string;
-    // Optional fee rate in SYS/byte
-    token?: { guid: string; symbol?: string } | null;
-    txOptions?: any;
-    isMax?: boolean | false;
-    nativeSweep?: boolean;
-    excludedOutpoints?: readonly ExcludedOutpoint[];
-  }) => {
+  public getEstimateSysTransactionFee = async (
+    {
+      txOptions = {},
+      isMax = false,
+      nativeSweep = false,
+      amount,
+      receivingAddress,
+      feeRate,
+      token = null,
+      excludedOutpoints = [],
+    }: {
+      amount: number | string; // Accept both for safer precision handling
+      feeRate?: number;
+      receivingAddress: string;
+      // Optional fee rate in SYS/byte
+      token?: { guid: string; symbol?: string } | null;
+      txOptions?: any;
+      isMax?: boolean | false;
+      nativeSweep?: boolean;
+      excludedOutpoints?: readonly ExcludedOutpoint[];
+    },
+    ownedRead?: SyscoinOwnedReadOptions
+  ) => {
     try {
       if (
         nativeSweep !== false &&
@@ -770,15 +907,49 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
         );
       // Ensure RBF is enabled by default if not explicitly set
       const finalTxOptions = { rbf: true, ...txOptions };
+      const preparation =
+        ownedRead === undefined ? undefined : this.captureOwnedRead(ownedRead);
       // Use read-only signer since we're just estimating fees and creating unsigned PSBT
-      const { main } = this.getReadOnlySigner();
+      const readOnlySigner = preparation
+        ? this.getReadOnlySigner(preparation.read)
+        : this.getReadOnlySigner();
+      const { main } = readOnlySigner;
+      const getOwnedAddress = preparation && readOnlySigner.getOwnedAddress;
+      if (
+        preparation &&
+        (typeof getOwnedAddress !== 'function' ||
+          main.blockbookURL !== preparation.read.network.url)
+      )
+        throw new Error('Owned UTXO read adapter is unavailable');
+      const owned = preparation && {
+        ...preparation,
+        main,
+        getOwnedAddress: getOwnedAddress!,
+        excluded: excludedOutpointIds(excludedOutpoints),
+      };
+      const selectedToken = owned && token ? { ...token } : token;
+      if (owned) {
+        const { assetWhiteList } = finalTxOptions;
+        if (assetWhiteList instanceof Map)
+          finalTxOptions.assetWhiteList = new Map(assetWhiteList);
+        else if (assetWhiteList instanceof Set)
+          finalTxOptions.assetWhiteList = new Set(assetWhiteList);
+        for (const key of ['memo', 'memoHeader', 'blobHash', 'blobData']) {
+          const bytes = finalTxOptions[key];
+          if (bytes instanceof Uint8Array)
+            finalTxOptions[key] = Buffer.from(bytes);
+        }
+      }
       // Step 1: Determine fee rate
       let actualFeeRate;
       if (feeRate !== undefined) {
         actualFeeRate = feeRate;
       } else {
-        actualFeeRate = await this.getRecommendedFee(main.blockbookURL);
+        actualFeeRate = owned
+          ? await this.readOwnedFee(main.blockbookURL, owned.read)
+          : await this.getRecommendedFee(main.blockbookURL);
       }
+      owned?.read.assertCurrent();
 
       // Convert fee rate to satoshis/byte and ensure minimum relay of 1 sat/vB
       // Blockbook returns coins per kB; after division by 1024, some testnets
@@ -788,18 +959,22 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
       const feeRateBN = new syscoinjs.utils.BN(satPerByte);
 
       // Step 2: Create unsigned PSBT
-      const result = await this.createUnsignedPSBT({
-        txOptions: finalTxOptions,
-        isMax,
-        nativeSweep,
-        amount,
-        receivingAddress,
-        feeRateBN,
-        token,
-        excludedOutpoints,
-      });
+      const result = await this.createUnsignedPSBT(
+        {
+          txOptions: finalTxOptions,
+          isMax,
+          nativeSweep,
+          amount,
+          receivingAddress,
+          feeRateBN,
+          token: selectedToken,
+          excludedOutpoints,
+        },
+        owned
+      );
 
-      return {
+      owned?.read.assertCurrent();
+      const quote = {
         fee: result.fee / 1e8,
         psbt: PsbtUtils.toPali(result.psbt), // Return UNSIGNED PSBT as JSON
         ...(nativeSweep
@@ -809,6 +984,8 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
             }
           : {}),
       };
+      owned?.read.assertCurrent();
+      return quote;
     } catch (error) {
       // Pass through structured errors from syscoinjs-lib
       if (error.error && error.code) {
@@ -879,16 +1056,30 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
     }
   };
 
-  public signPSBT = async ({
-    psbt,
-    isTrezor = false,
-    isLedger = false,
-  }: {
-    psbt: any;
-    isTrezor?: boolean;
-    isLedger?: boolean;
-  }): Promise<any> => {
-    const psbtObj = PsbtUtils.fromPali(psbt, this.getState().activeNetwork);
+  public signPSBT = async (
+    {
+      psbt,
+      isTrezor = false,
+      isLedger = false,
+    }: {
+      psbt: any;
+      isTrezor?: boolean;
+      isLedger?: boolean;
+    },
+    ownedRead?: SyscoinOwnedReadOptions
+  ): Promise<any> => {
+    if (ownedRead !== undefined && !this.captureSigningContext)
+      throw new Error('Owned UTXO signing context is unavailable');
+    const read =
+      ownedRead === undefined
+        ? undefined
+        : this.captureOwnedRead(ownedRead).read;
+    const psbtObj = PsbtUtils.fromPali(
+      psbt,
+      read?.network ?? this.getState().activeNetwork
+    );
+    const unsigned =
+      read && Buffer.from(psbtObj.data.globalMap.unsignedTx.toBuffer());
     // Scope validation temporarily removes other signers' hints. Preserve the
     // public metadata for the next cosigner, without exposing it to our signer.
     const cosignerMetadata = psbtObj.data.inputs.map((input, index) => ({
@@ -908,8 +1099,15 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
     const signedPsbt = await this.signPSBTWithMethod(
       psbtObj,
       isTrezor,
-      isLedger
+      isLedger,
+      read
     );
+    read?.assertCurrent();
+    if (
+      unsigned &&
+      !unsigned.equals(signedPsbt.data.globalMap.unsignedTx.toBuffer())
+    )
+      throw new Error('Signed PSBT differs from the prepared transaction');
     signedPsbt.data.inputs.forEach((input, index) => {
       if (input.finalScriptSig || input.finalScriptWitness) return;
       const metadata = cosignerMetadata[index];
@@ -932,7 +1130,9 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
         input.unknownKeyVals.push(metadata.path);
       }
     });
-    return PsbtUtils.toPali(signedPsbt);
+    const result = PsbtUtils.toPali(signedPsbt);
+    read?.assertCurrent();
+    return result;
   };
 
   public sendTransaction = async (psbt: any): Promise<ITxid> => {

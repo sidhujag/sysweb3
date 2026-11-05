@@ -212,41 +212,57 @@ export interface ISyscoinTransactionFeeQuote {
   recipientAmount?: string;
 }
 
+/** A trusted wallet host owns the lifetime and HTTP policy of these reads. */
+export type SyscoinOwnedReadOptions = Readonly<{
+  assertCurrent: () => void;
+  fetch: typeof globalThis.fetch;
+  signal: AbortSignal;
+}>;
+
 export interface ISyscoinTransactions {
-  getEstimateSysTransactionFee: ({
-    txOptions,
-    amount,
-    receivingAddress,
-    feeRate,
-    token,
-    isMax,
-    nativeSweep,
-    excludedOutpoints,
-  }: {
-    amount: number | string;
-    feeRate?: number;
-    receivingAddress: string;
-    token?: { guid: string; symbol?: string } | null;
-    txOptions?: any;
-    isMax?: boolean | false;
-    /** Resolve explicit native MAX from one current funding snapshot. Requires isMax and token:null. */
-    nativeSweep?: boolean;
-    /** Coin-control exclusions supplied by a trusted wallet policy, not transaction outputs. */
-    excludedOutpoints?: readonly { txid: string; vout: number }[];
-  }) => Promise<ISyscoinTransactionFeeQuote>; // Returns UNSIGNED psbt - may throw ISyscoinTransactionError
-  getRecommendedFee: (explorerUrl: string) => Promise<number>;
+  getEstimateSysTransactionFee: (
+    {
+      txOptions,
+      amount,
+      receivingAddress,
+      feeRate,
+      token,
+      isMax,
+      nativeSweep,
+      excludedOutpoints,
+    }: {
+      amount: number | string;
+      feeRate?: number;
+      receivingAddress: string;
+      token?: { guid: string; symbol?: string } | null;
+      txOptions?: any;
+      isMax?: boolean | false;
+      /** Resolve explicit native MAX from one current funding snapshot. Requires isMax and token:null. */
+      nativeSweep?: boolean;
+      /** Coin-control exclusions supplied by a trusted wallet policy, not transaction outputs. */
+      excludedOutpoints?: readonly { txid: string; vout: number }[];
+    },
+    ownedRead?: SyscoinOwnedReadOptions
+  ) => Promise<ISyscoinTransactionFeeQuote>; // Returns UNSIGNED psbt - may throw ISyscoinTransactionError
+  getRecommendedFee: (
+    explorerUrl: string,
+    ownedRead?: SyscoinOwnedReadOptions
+  ) => Promise<number>;
   decodeRawTransaction: (psbtOrHex: any, isRawHex?: boolean) => any;
   // Sign PSBT separately
   sendTransaction: (psbt: any) => Promise<ITxid>;
-  signPSBT: ({
-    psbt,
-    isTrezor,
-    isLedger,
-  }: {
-    isLedger?: boolean;
-    isTrezor?: boolean;
-    psbt: any;
-  }) => Promise<any>;
+  signPSBT: (
+    {
+      psbt,
+      isTrezor,
+      isLedger,
+    }: {
+      isLedger?: boolean;
+      isTrezor?: boolean;
+      psbt: any;
+    },
+    ownedRead?: SyscoinOwnedReadOptions
+  ) => Promise<any>;
 }
 
 export interface IKeyringManager {

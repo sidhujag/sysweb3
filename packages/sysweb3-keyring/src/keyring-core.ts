@@ -57,6 +57,7 @@ import {
   SyscoinTransactionsCore,
   createHardwareSignerUnavailableError,
   type ISyscoinHardwareSigners,
+  type SyscoinUtxoReadContext,
 } from './transactions/syscoin-core';
 import {
   IKeyringAccountState,
@@ -1761,22 +1762,26 @@ export class KeyringCore<
   // Helper to get current account data from backend
   private fetchCurrentAccountData = async (
     xpub: string,
-    isChangeAddress: boolean
+    isChangeAddress: boolean,
+    ownedRead?: SyscoinUtxoReadContext
   ) => {
-    const vault = this.getVault();
-    const { activeNetwork } = vault;
+    const activeNetwork = ownedRead?.network ?? this.getVault().activeNetwork;
 
     // Use read-only signer for backend calls - works for all account types including hardware wallets
-    const { main } = this.getReadOnlySigner();
+    const backendUrl =
+      ownedRead?.network.url ?? this.getReadOnlySigner().main.blockbookURL;
     const options = 'tokens=used&details=tokens';
 
     // In-flight deduplicated: concurrent callers within a send flow
-    // (fee estimation, PSBT creation, signing) share a single request
+    // share a single request unless the host owns a separate read lifetime.
+    ownedRead?.assertCurrent();
     const { tokens } = await fetchBlockbookAccountCached(
-      main.blockbookURL,
+      backendUrl,
       xpub,
-      options
+      options,
+      ...(ownedRead ? ([ownedRead.transport] as const) : [])
     );
+    ownedRead?.assertCurrent();
 
     const { receivingIndex, changeIndex } =
       this.setLatestIndexesFromXPubTokens(tokens);
@@ -1800,15 +1805,16 @@ export class KeyringCore<
     return {
       currentAccount,
       addressIndex,
-      main,
     };
   };
 
   public getAddress = async (
     xpub: string,
     isChangeAddress: boolean,
-    options?: { forceIndex0?: boolean }
+    options?: { forceIndex0?: boolean; ownedRead?: SyscoinUtxoReadContext }
   ) => {
+    const ownedRead = options?.ownedRead;
+    ownedRead?.assertCurrent();
     if (this.isDescriptor(xpub)) {
       // The BIP84 history scanner below cannot choose a descriptor's next
       // unused index. Import can derive index zero locally, but rotation must
@@ -1818,14 +1824,20 @@ export class KeyringCore<
           'Address rotation is not supported for watch-only descriptors'
         );
       }
-      return deriveDescriptorAddress(xpub, this.getVault().activeNetwork, {
-        change: isChangeAddress,
-      });
+      return deriveDescriptorAddress(
+        xpub,
+        ownedRead?.network ?? this.getVault().activeNetwork,
+        {
+          change: isChangeAddress,
+        }
+      );
     }
     const { currentAccount, addressIndex } = await this.fetchCurrentAccountData(
       xpub,
-      isChangeAddress
+      isChangeAddress,
+      ownedRead
     );
+    ownedRead?.assertCurrent();
 
     const effectiveIndex = options?.forceIndex0 ? 0 : addressIndex;
 
@@ -2310,8 +2322,11 @@ export class KeyringCore<
     }
   };
 
-  private capturePsbtSigningContext = (): (() => void) => {
+  private capturePsbtSigningContext = (
+    bindSessionRevision = false
+  ): (() => void) => {
     const session = this.sessionPassword;
+    const revision = this.privateRecordSessionRevision;
     const vault = this.getVault();
     const selected = { ...vault.activeAccount };
     const account = vault.accounts[selected.type]?.[selected.id];
@@ -2324,6 +2339,8 @@ export class KeyringCore<
         !session ||
         session.isCleared() ||
         this.sessionPassword !== session ||
+        (bindSessionRevision &&
+          this.privateRecordSessionRevision !== revision) ||
         current.activeAccount.id !== selected.id ||
         current.activeAccount.type !== selected.type ||
         currentAccount?.address !== identity.address ||
@@ -2561,30 +2578,38 @@ export class KeyringCore<
   };
 
   // Read-only version that works when wallet is locked
-  private getReadOnlySigner = (): {
-    main: any; // syscoinjs-lib Syscoin instance (read-only)
-  } => {
-    if (this.getActiveChain() !== INetworkType.Syscoin) {
+  private getReadOnlySigner = (ownedRead?: SyscoinUtxoReadContext) => {
+    ownedRead?.assertCurrent();
+    if (
+      (ownedRead ? ownedRead.network.kind : this.getActiveChain()) !==
+      INetworkType.Syscoin
+    ) {
       throw new Error('Switch to UTXO chain');
     }
 
     // Create syscoinjs instance without HD signer for read-only operations
-    const vault = this.getVault();
-    const network = vault.activeNetwork;
+    const network = ownedRead?.network ?? this.getVault().activeNetwork;
     const networkConfig = getNetworkConfig(network.slip44, network.currency);
     const isTestnet = network.slip44 === 1;
     const bitcoinjsNetwork = isTestnet
       ? networkConfig?.networks?.testnet
       : networkConfig?.networks?.mainnet;
+    if (ownedRead && !bitcoinjsNetwork)
+      throw new Error('Missing owned UTXO network configuration');
 
     const syscoinMainSigner = new syscoinjs.SyscoinJSLib(
       null, // No HD signer needed for read-only operations
       network.url,
-      bitcoinjsNetwork
+      bitcoinjsNetwork,
+      ...(ownedRead ? [ownedRead.transport] : [])
     );
 
+    if (!ownedRead) return { main: syscoinMainSigner };
+    const getAddress = this.getAddress;
     return {
       main: syscoinMainSigner,
+      getOwnedAddress: (xpub: string, isChangeAddress: boolean) =>
+        getAddress(xpub, isChangeAddress, { ownedRead }),
     };
   };
 

@@ -1,5 +1,7 @@
 import * as syscoinjs from 'syscoinjs-lib';
 
+import type { SyscoinOwnedReadOptions } from '../types';
+
 /**
  * In-flight deduplication for Blockbook xpub account fetches used internally
  * by the keyring (address-index discovery and PSBT path enrichment, both
@@ -25,8 +27,20 @@ const buildKey = (backendUrl: string, xpub: string, options: string) =>
 export const fetchBackendAccountCached = (
   backendUrl: string,
   xpub: string,
-  options: string
+  options: string,
+  transport?: Pick<SyscoinOwnedReadOptions, 'fetch' | 'signal'>
 ): Promise<any> => {
+  // Explicit reads carry independent lifetimes even for identical URL/xpub.
+  if (transport) {
+    return syscoinjs.utils.fetchBackendAccount(
+      backendUrl,
+      xpub,
+      options,
+      true,
+      undefined,
+      transport
+    );
+  }
   const key = buildKey(backendUrl, xpub, options);
 
   const inflight = inflightFetches.get(key);
