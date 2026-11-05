@@ -41,11 +41,23 @@
   },
   "typesVersions": {
     "*": {
+      "cjs/coin-utils": [
+        "types/coin-utils.d.ts"
+      ],
+      "cjs/coin-utils.js": [
+        "types/coin-utils.d.ts"
+      ],
       "cjs/evm": [
         "types/evm.d.ts"
       ],
       "cjs/evm.js": [
         "types/evm.d.ts"
+      ],
+      "cjs/ownedUtxoRpc": [
+        "types/ownedUtxoRpc.d.ts"
+      ],
+      "cjs/ownedUtxoRpc.js": [
+        "types/ownedUtxoRpc.d.ts"
       ]
     }
   }
