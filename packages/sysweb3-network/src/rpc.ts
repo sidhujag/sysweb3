@@ -9,7 +9,13 @@ import {
   INetwork,
   INetworkType,
 } from './networks';
+import { verifyOwnedUtxoRpc } from './ownedUtxoRpc';
 import { retryableFetch } from './retryUtils';
+
+import type { OwnedUtxoRpcVerification } from './ownedUtxoRpc';
+import type { Coin } from './types';
+
+export type { OwnedUtxoRpcVerification } from './ownedUtxoRpc';
 
 const hexRegEx = /^0x[0-9a-f]+$/iu;
 
@@ -389,12 +395,63 @@ export const validateSysRpc = async (
   }
 };
 
-// With proper slip44 in network configs, we don't need special testnet handling
-// Each network (including testnets) has its own slip44 value
+type SysRpcDraft = {
+  url: string;
+  explorer?: string;
+  label?: string;
+  symbol?: string;
+};
 
-// TODO: type data with ICustomRpcParams later
-// TODO: type return correctly
-export const getSysRpc = async (data: any) => {
+function formatSysRpc(
+  data: SysRpcDraft,
+  coin: Coin,
+  chainId: number,
+  network: string,
+  chain: string
+) {
+  const networkConfig = getNetworkConfigFromCoin(coin);
+  // The public explorer can differ from the RPC. It is never probed here.
+  const explorer = data.explorer || data.url.replace(/\/api\/v[12]/, '');
+  const currency = data.symbol
+    ? data.symbol.toLowerCase()
+    : (coin.shortcut || coin.coinShortcut || network).toLowerCase();
+  const formattedNetwork = {
+    url: data.url,
+    explorer,
+    currency,
+    label: data.label || network,
+    default: false,
+    chainId,
+    slip44: coin.slip44,
+    kind: INetworkType.Syscoin,
+  };
+  return { rpc: { formattedNetwork, networkConfig }, network, chain };
+}
+
+export const getSysRpc = async (
+  data: any,
+  owner?: OwnedUtxoRpcVerification
+) => {
+  if (owner !== undefined) {
+    const { url, explorer, label } = data;
+    if (
+      [explorer, label].some(
+        (value) => value !== undefined && typeof value !== 'string'
+      )
+    )
+      throw new Error('Invalid UTXO registration draft');
+    const { assertCurrent, coin, chainId, backendChain, currency } =
+      await verifyOwnedUtxoRpc(url, owner);
+    assertCurrent();
+    return formatSysRpc(
+      { url, explorer, label, symbol: currency },
+      coin,
+      chainId,
+      coin.coinShortcut,
+      backendChain
+    );
+  }
+
   try {
     const { valid, network, chain } = await validateSysRpc(data.url);
 
@@ -411,36 +468,7 @@ export const getSysRpc = async (data: any) => {
       slip44: namedCoin.slip44,
     });
     if (!coinData) throw new Error('Invalid canonical UTXO coin registration');
-    const networkConfig = getNetworkConfigFromCoin(coinData);
-
-    let explorer: string | undefined = data.explorer;
-    if (!explorer) {
-      // We accept only trezor blockbook for UTXO chains, this method won't work for non trezor apis
-      explorer = data.url.replace(/\/api\/v[12]/, ''); // trimming /api/v{number}/ from explorer
-    }
-
-    // Determine proper currency code from coin data or user input
-    const currency = data.symbol
-      ? data.symbol.toLowerCase()
-      : (coinData.shortcut || coinData.coinShortcut || network).toLowerCase();
-
-    const formattedNetwork = {
-      url: data.url,
-      explorer,
-      currency,
-      label: data.label || network,
-      default: false, // Custom networks should always be deletable
-      chainId,
-      slip44: coinData.slip44, // Always use coin's slip44 for BIP44 address derivation
-      kind: INetworkType.Syscoin,
-    };
-
-    const rpc = {
-      formattedNetwork,
-      networkConfig,
-    };
-
-    return { rpc, network, chain };
+    return formatSysRpc(data, coinData, chainId, network, chain);
   } catch (error) {
     // Properly handle error objects
     if (error instanceof Error) {
