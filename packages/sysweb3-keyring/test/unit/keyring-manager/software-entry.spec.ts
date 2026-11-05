@@ -12,6 +12,10 @@ import { createVaultPersistence } from '../../../src/storage-core';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 
 import type { KeyringStoragePort } from '../../../src/software';
+const tokenApproval = {
+  assertCurrent: () => undefined,
+  signal: new AbortController().signal,
+};
 
 const specializedApproval = {
   mode: 'specialized' as const,
@@ -194,7 +198,7 @@ describe.each(missingHardwareCases)(
         }),
         undefined,
         undefined,
-        undefined,
+        () => () => undefined,
         null
       );
     });
@@ -219,9 +223,18 @@ describe.each(missingHardwareCases)(
             specializedApproval
           ),
       ],
-      ['ERC20', (sdk) => sdk.sendSignedErc20Transaction({} as any)],
-      ['ERC721', (sdk) => sdk.sendSignedErc721Transaction({} as any)],
-      ['ERC1155', (sdk) => sdk.sendSignedErc1155Transaction({} as any)],
+      [
+        'ERC20',
+        (sdk) => sdk.sendSignedErc20Transaction({} as any, tokenApproval),
+      ],
+      [
+        'ERC721',
+        (sdk) => sdk.sendSignedErc721Transaction({} as any, tokenApproval),
+      ],
+      [
+        'ERC1155',
+        (sdk) => sdk.sendSignedErc1155Transaction({} as any, tokenApproval),
+      ],
       [
         'cancellation',
         (sdk) =>

@@ -202,7 +202,7 @@ it('rejects discovered coins with duplicate exact tuples or ambiguous custody ti
   expect(readJson).toHaveBeenCalledTimes(4);
 });
 
-it('first use requires HTTPS and a bounded primitive reported token', async () => {
+it('first use requires HTTPS on remote endpoints and a bounded reported token', async () => {
   const { observation, readJson } = firstUse(modern);
   for (const endpoint of [
     url.replace('https:', 'http:'),
@@ -224,6 +224,27 @@ it('first use requires HTTPS and a bounded primitive reported token', async () =
     true
   );
 });
+
+it.each(['127.0.0.1', '[::1]'])(
+  'allows first use on literal loopback %s',
+  async (host) => {
+    const { observation, readJson } = firstUse(modern);
+    const endpoint = `http://${host}:3000`;
+    readJson
+      .mockResolvedValueOnce(modern)
+      .mockResolvedValueOnce(genesis(SYS_TEST));
+    await expect(
+      observeFirstUseUtxoRpc(endpoint, observation)
+    ).resolves.toMatchObject({
+      registration: SYS_TEST,
+      observedBackendChain: 'test',
+    });
+    expect(readJson.mock.calls).toEqual([
+      [`${endpoint}/api/v2/`, observation.signal],
+      [`${endpoint}/api/v2/block-index/0`, observation.signal],
+    ]);
+  }
+);
 
 it.each(['?token=synthetic', '?'])(
   'refuses a Blockbook base query before observation or verification: %s',
@@ -523,6 +544,43 @@ it.each([true, false])(
     const { owner, readJson } = verification(modern);
     await expect(getSysRpc({ url }, owner)).rejects.toThrow(invalid);
     expect(readJson).not.toHaveBeenCalled();
+  }
+);
+
+it.each(['alias collision', 'changed address encoding'] as const)(
+  'refuses pinned catalogue drift while genesis is held: %s',
+  async (change) => {
+    const coin = findUtxoCoinByRegistration(SYS_TEST)!;
+    const previousPrefix = coin.bech32Prefix;
+    const block = genesis(SYS_TEST);
+    const { owner, readJson } = verification(modern, block);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      readJson
+        .mockResolvedValueOnce(modern)
+        .mockImplementationOnce(async () => {
+          resolve();
+          await held;
+          return block;
+        });
+    });
+    const pending = getSysRpc({ url }, owner);
+    await entered;
+    if (change === 'alias collision')
+      coins.unshift({ ...coin, chainId: 12345, coinName: 'TSYS' });
+    else coin.bech32Prefix = 'wrong';
+    release();
+    try {
+      await expect(pending).rejects.toThrow(
+        change === 'alias collision' ? mismatch : invalid
+      );
+      expect(readJson).toHaveBeenCalledTimes(2);
+    } finally {
+      coin.bech32Prefix = previousPrefix;
+    }
   }
 );
 

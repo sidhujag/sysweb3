@@ -127,6 +127,39 @@ const cryptoHost = () => {
   return { host, ledger: new LedgerKeyring(undefined, host) };
 };
 
+test('does not dispatch an EVM signer after the review changes during Ledger connection', async () => {
+  const { host, ledger } = cryptoHost();
+  host.getStatus = () => ({ connected: false });
+  let release!: () => void;
+  (host.connect as jest.Mock).mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      })
+  );
+  let current = true;
+  const pending = ledger.evm.signEVMTransaction(
+    {
+      accountIndex: 0,
+      expectedAddress: signingWallet.address,
+      rawTx: tx().unsignedSerialized,
+    },
+    {
+      signal: new AbortController().signal,
+      assertCurrent() {
+        if (!current) throw new Error('Approval expired');
+      },
+    }
+  );
+  current = false;
+  release();
+  await expect(pending).rejects.toMatchObject({
+    code: 'HARDWARE_REQUEST_CANCELLED',
+    transactionNotBroadcast: true,
+  });
+  expect(host.evm.signTransaction).not.toHaveBeenCalled();
+});
+
 test('validates address/public-key equality at the authority boundary', async () => {
   const { host, ledger } = cryptoHost();
   await expect(

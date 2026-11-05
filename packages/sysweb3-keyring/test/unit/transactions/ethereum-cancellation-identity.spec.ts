@@ -108,7 +108,7 @@ describe('cancellation original identity admission', () => {
       () => state,
       { evm: { signEVMTransaction: deny } } as any,
       { signEthTransaction: deny } as any,
-      undefined,
+      () => () => undefined,
       createTestSubmissionCapture()
     );
     Object.defineProperty(sdk, 'web3Provider', { get: () => provider });

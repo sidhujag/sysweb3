@@ -47,7 +47,10 @@ import { CustomJsonRpcProvider, wrapTransactionResponse } from '../providers';
 import {
   IResponseFromSendErcSignedTransaction,
   ISendSignedErc20TransactionProps,
-  ISendSignedErcTransactionProps,
+  ISendSignedErc721TransactionProps,
+  ISendSignedErc1155TransactionProps,
+  IReviewedEvmTokenFees,
+  IReviewedEvmTokenApproval,
   IEthereumTransactions,
   IEvmCancellationOptions,
   IEvmReplacementOptions,
@@ -71,9 +74,11 @@ import {
 import {
   captureEvmSubmission,
   submitSignedEvmTransaction,
+  submitSignedHardwareEvmTransaction,
   evmSubmissionFailure,
   copyEvmSubmissionFailure,
   type CaptureEvmSubmission,
+  type EvmSubmissionBoundary,
   type EvmSubmissionContext,
 } from './evm-submission';
 import {
@@ -263,7 +268,7 @@ export class EthereumTransactions<
   public trezorSigner: TTrezor;
   public ledgerSigner: TLedger;
   private getNetwork: () => INetwork;
-  private captureSigningContext?: () => () => void;
+  private readonly captureSigningContext: () => () => void;
   private readonly captureSubmissionLifecycle: CaptureEvmSubmission | null;
   private abortController: AbortController;
   private getDecryptedPrivateKey: (
@@ -313,9 +318,11 @@ export class EthereumTransactions<
     },
     ledgerSigner: TLedger,
     trezorSigner: TTrezor,
-    captureSigningContext: (() => () => void) | undefined,
+    captureSigningContext: () => () => void,
     captureSubmissionLifecycle: CaptureEvmSubmission | null
   ) {
+    if (typeof captureSigningContext !== 'function')
+      throw new TypeError('Ethereum transactions require a signing context');
     if (
       captureSubmissionLifecycle !== null &&
       typeof captureSubmissionLifecycle !== 'function'
@@ -363,6 +370,19 @@ export class EthereumTransactions<
       this.requireTrezorSigner();
   };
 
+  private captureSessionGuard = () => {
+    const guard = this.captureSigningContext();
+    if (typeof guard !== 'function') {
+      void Promise.resolve(guard).catch(() => undefined);
+      throw new TypeError('Signing context must return a synchronous guard');
+    }
+    return () =>
+      assertSynchronousOriginalValidation(
+        guard(),
+        'Signing context guard must be synchronous'
+      );
+  };
+
   private captureEvmSigningContext = (
     target?: IEvmReplacementOptions['targetAccount']
   ) => {
@@ -379,10 +399,10 @@ export class EthereumTransactions<
       throw new Error('Active account not found');
     const account = { address: selectedAccount.address };
     const network = { ...state.activeNetwork };
-    const assertSession = this.captureSigningContext?.();
+    const assertSession = this.captureSessionGuard();
     const provider = this.web3Provider;
     const assertCurrent = () => {
-      assertSession?.();
+      assertSession();
       const current = this.getState();
       const currentAccount =
         current.accounts[activeAccountType]?.[activeAccountId];
@@ -443,6 +463,35 @@ export class EthereumTransactions<
     );
   };
 
+  private authorizeHardwareTransaction = async (
+    provider: CustomJsonRpcProvider,
+    assertCurrent: () => void,
+    signal = this.abortController.signal
+  ) => {
+    assertCurrent();
+    await provider.verifyConfiguredChainId();
+    assertCurrent();
+    return { assertCurrent, signal };
+  };
+
+  private submitSignedHardwareTransaction = <T>(
+    provider: CustomJsonRpcProvider,
+    raw: string,
+    broadcast: (raw: string) => Promise<T>,
+    submission: EvmSubmissionBoundary,
+    beforeBroadcast: (() => void) | undefined,
+    expectedUnsigned: string
+  ) =>
+    submitSignedHardwareEvmTransaction(
+      raw,
+      broadcast,
+      submission,
+      beforeBroadcast,
+      expectedUnsigned,
+      // A device confirmation or journal write can outlast the earlier check.
+      () => provider.verifyConfiguredChainId(true)
+    );
+
   // Getter that automatically ensures providers are initialized when accessed
   public get web3Provider(): CustomJsonRpcProvider {
     this.ensureProvidersInitialized();
@@ -456,14 +505,15 @@ export class EthereumTransactions<
     // RPC/network than `activeNetwork`, nodes will reject broadcasts with chain-id mismatch errors.
     try {
       const currentNetwork = this.getNetwork();
-      const currentUrl = currentNetwork?.url;
-      const currentKey = `${currentNetwork?.chainId ?? 'unknown'}|${
-        currentUrl ?? ''
+      if (currentNetwork?.kind !== INetworkType.Ethereum) {
+        if (this._web3Provider) this.setWeb3Provider(currentNetwork);
+        return;
+      }
+      const currentKey = `${currentNetwork.chainId}|${
+        currentNetwork.url ?? ''
       }`;
       const needsInit =
-        !this._web3Provider ||
-        !this._web3ProviderKey ||
-        (currentUrl && this._web3ProviderKey !== currentKey);
+        !this._web3Provider || this._web3ProviderKey !== currentKey;
       if (needsInit) {
         this.setWeb3Provider(currentNetwork);
       }
@@ -475,19 +525,6 @@ export class EthereumTransactions<
         error?.message || error
       );
     }
-  }
-
-  // Helper method to detect UTXO networks
-  private isUtxoNetwork(network: INetwork): boolean {
-    // Generic UTXO network detection patterns:
-    // 1. URL contains blockbook or trezor (most reliable)
-    // 2. Network kind is explicitly set to 'syscoin'
-    const hasBlockbookUrl = !!(
-      network.url?.includes('blockbook') || network.url?.includes('trezor')
-    );
-    const hasUtxoKind = (network as any).kind === INetworkType.Syscoin;
-
-    return hasBlockbookUrl || hasUtxoKind;
   }
 
   signTypedData = async (
@@ -900,51 +937,79 @@ export class EthereumTransactions<
     }
   };
 
-  private resolveEvmFeeParams = async (
-    {
-      gasPrice,
-      isLegacy = false,
-      maxFeePerGas,
-      maxPriorityFeePerGas,
-    }: {
-      gasPrice?: any;
-      isLegacy?: boolean;
-      maxFeePerGas?: any;
-      maxPriorityFeePerGas?: any;
-    },
-    provider = this.web3Provider
+  private captureReviewedTokenApproval = (
+    approval: IReviewedEvmTokenApproval,
+    standard: 'ERC20' | 'ERC721' | 'ERC1155'
   ) => {
-    if (isLegacy) {
-      return {
-        gasPrice: gasPrice || (await provider.getGasPrice()),
-        isLegacy: true,
-        maxFeePerGas: undefined,
-        maxPriorityFeePerGas: undefined,
-      };
-    }
-
-    if (!maxFeePerGas || maxPriorityFeePerGas == null) {
-      const feeData = await provider.getFeeData();
-      maxFeePerGas = maxFeePerGas || feeData.maxFeePerGas || feeData.gasPrice;
-      maxPriorityFeePerGas =
-        maxPriorityFeePerGas ?? feeData.maxPriorityFeePerGas;
-
-      if (!maxFeePerGas || maxPriorityFeePerGas == null) {
-        return {
-          gasPrice: feeData.gasPrice || (await provider.getGasPrice()),
-          isLegacy: true,
-          maxFeePerGas: undefined,
-          maxPriorityFeePerGas: undefined,
-        };
-      }
-    }
-
-    return {
-      gasPrice: undefined,
-      isLegacy: false,
-      maxFeePerGas,
-      maxPriorityFeePerGas,
+    if (
+      !approval ||
+      typeof approval.assertCurrent !== 'function' ||
+      !(approval.signal instanceof AbortSignal)
+    )
+      throw new Error(`${standard} transaction approval required`);
+    const { assertCurrent, signal } = approval;
+    const assertApproval = () => {
+      if (signal.aborted)
+        throw Object.assign(
+          new Error(`${standard} transaction approval expired`),
+          {
+            transactionNotBroadcast: true,
+          }
+        );
+      assertSynchronousOriginalValidation(
+        assertCurrent(),
+        `${standard} transaction approval must be synchronous`
+      );
     };
+    assertApproval();
+    return { assertApproval, signal };
+  };
+
+  private reviewedTokenFees = (
+    request: IReviewedEvmTokenFees,
+    chainId: number,
+    standard: 'ERC20' | 'ERC721' | 'ERC1155'
+  ) => {
+    const { isLegacy } = request;
+    if (
+      typeof isLegacy !== 'boolean' ||
+      (isLegacy
+        ? request.maxFeePerGas !== undefined ||
+          request.maxPriorityFeePerGas !== undefined
+        : request.gasPrice !== undefined)
+    )
+      throw new Error(`Invalid ${standard} transaction fee model`);
+    const gasLimit = BigNumber.from(
+      assertEvmGasLimit(
+        parseEvmFeeQuantity(request.gasLimit, `${standard} gas limit`),
+        BigInt(chainId)
+      )
+    );
+    const gasPrice = isLegacy
+      ? BigNumber.from(
+          parseEvmFeeQuantity(request.gasPrice, `${standard} gas price`)
+        )
+      : undefined;
+    const maxFeePerGas = !isLegacy
+      ? BigNumber.from(
+          parseEvmFeeQuantity(request.maxFeePerGas, `${standard} maximum fee`)
+        )
+      : undefined;
+    const maxPriorityFeePerGas = !isLegacy
+      ? BigNumber.from(
+          parseEvmFeeQuantity(
+            request.maxPriorityFeePerGas,
+            `${standard} priority fee`
+          )
+        )
+      : undefined;
+    if (
+      gasPrice?.isZero() ||
+      (maxFeePerGas &&
+        (maxFeePerGas.isZero() || maxPriorityFeePerGas!.gt(maxFeePerGas)))
+    )
+      throw new Error(`Invalid ${standard} fees`);
+    return { gasLimit, isLegacy, gasPrice, maxFeePerGas, maxPriorityFeePerGas };
   };
 
   getData = ({
@@ -1126,9 +1191,9 @@ export class EthereumTransactions<
     }
     if (!previewOnly) this.assertHardwareSignerAvailable(targetAccount);
     const provider = this.web3Provider;
-    const assertSession = this.captureSigningContext?.();
+    const assertSession = this.captureSessionGuard();
     const assertKeyringContext = () => {
-      assertSession?.();
+      assertSession();
       const current = this.getState();
       if (
         current.activeAccountType !== selectedType ||
@@ -1373,11 +1438,14 @@ export class EthereumTransactions<
         assertApprovedEnvelope(txFormattedForEthers);
         const rawTx = serializeTransaction(txFormattedForEthers);
         const signature =
-          await this.requireLedgerSigner().evm.signEVMTransaction({
-            rawTx: rawTx.replace('0x', ''),
-            accountIndex: activeAccountId,
-            expectedAddress: activeAccount.address,
-          });
+          await this.requireLedgerSigner().evm.signEVMTransaction(
+            {
+              rawTx: rawTx.replace('0x', ''),
+              accountIndex: activeAccountId,
+              expectedAddress: activeAccount.address,
+            },
+            await this.authorizeHardwareTransaction(provider, assertCurrent)
+          );
         assertCurrent();
 
         const formattedSignature = {
@@ -1393,13 +1461,15 @@ export class EthereumTransactions<
           );
           assertCurrent();
           assertHardwareTransactionSender(signedTx, activeAccount.address);
-          const transactionResponse = await submitSignedEvmTransaction(
-            signedTx,
-            (raw) => provider.sendTransaction(raw),
-            submission,
-            undefined,
-            rawTx
-          );
+          const transactionResponse =
+            await this.submitSignedHardwareTransaction(
+              provider,
+              signedTx,
+              (raw) => provider.sendTransaction(raw),
+              submission,
+              undefined,
+              rawTx
+            );
 
           return {
             isCanceled: true,
@@ -1466,12 +1536,15 @@ export class EthereumTransactions<
         assertTransactionGasLimit(txFormattedForTrezor);
         const expectedUnsignedTransaction =
           serializeTransaction(txFormattedForTrezor);
-        const signature = await this.requireTrezorSigner().signEthTransaction({
-          coin: trezorCoin,
-          tx: txFormattedForTrezor,
-          index: activeAccountId.toString(),
-          slip44: activeNetwork.slip44,
-        });
+        const signature = await this.requireTrezorSigner().signEthTransaction(
+          {
+            coin: trezorCoin,
+            tx: txFormattedForTrezor,
+            index: activeAccountId.toString(),
+            slip44: activeNetwork.slip44,
+          },
+          await this.authorizeHardwareTransaction(provider, assertCurrent)
+        );
         assertCurrent();
 
         if (signature.success) {
@@ -1481,13 +1554,15 @@ export class EthereumTransactions<
           );
           assertCurrent();
           assertHardwareTransactionSender(signedTx, activeAccount.address);
-          const transactionResponse = await submitSignedEvmTransaction(
-            signedTx,
-            (raw) => provider.sendTransaction(raw),
-            submission,
-            undefined,
-            expectedUnsignedTransaction
-          );
+          const transactionResponse =
+            await this.submitSignedHardwareTransaction(
+              provider,
+              signedTx,
+              (raw) => provider.sendTransaction(raw),
+              submission,
+              undefined,
+              expectedUnsignedTransaction
+            );
 
           return {
             isCanceled: true,
@@ -1872,7 +1947,8 @@ export class EthereumTransactions<
           rawTx: rawTx.replace('0x', ''),
           accountIndex: activeAccountId,
           expectedAddress: activeAccount.address,
-        }
+        },
+        await this.authorizeHardwareTransaction(provider, assertCurrent)
       );
       assertCurrent();
 
@@ -1889,7 +1965,8 @@ export class EthereumTransactions<
             formattedSignature
           );
           assertHardwareTransactionSender(signedTx, activeAccount.address);
-          const finalTx = await submitSignedEvmTransaction(
+          const finalTx = await this.submitSignedHardwareTransaction(
+            provider,
             signedTx,
             (raw) => provider.sendTransaction(raw),
             submission,
@@ -1993,12 +2070,15 @@ export class EthereumTransactions<
         ...txFormattedForTrezor,
         type: isLegacy ? 0 : 2,
       });
-      const signature = await this.requireTrezorSigner().signEthTransaction({
-        index: `${activeAccountId}`,
-        tx: txFormattedForTrezor as EthereumTransactionEIP1559,
-        coin: activeNetwork.currency,
-        slip44: activeNetwork.slip44,
-      });
+      const signature = await this.requireTrezorSigner().signEthTransaction(
+        {
+          index: `${activeAccountId}`,
+          tx: txFormattedForTrezor as EthereumTransactionEIP1559,
+          coin: activeNetwork.currency,
+          slip44: activeNetwork.slip44,
+        },
+        await this.authorizeHardwareTransaction(provider, assertCurrent)
+      );
       assertCurrent();
       if (signature.success) {
         try {
@@ -2020,7 +2100,8 @@ export class EthereumTransactions<
             trezorSignature(signature.payload)
           );
           assertHardwareTransactionSender(signedTx, activeAccount.address);
-          const finalTx = await submitSignedEvmTransaction(
+          const finalTx = await this.submitSignedHardwareTransaction(
+            provider,
             signedTx,
             (raw) => provider.sendTransaction(raw),
             submission,
@@ -2338,11 +2419,14 @@ export class EthereumTransactions<
         const rawTx = serializeTransaction(txFormattedForEthers);
         assertCurrent();
         const signature =
-          await this.requireLedgerSigner().evm.signEVMTransaction({
-            rawTx: rawTx.replace('0x', ''),
-            accountIndex: activeAccountId,
-            expectedAddress: activeAccount.address,
-          });
+          await this.requireLedgerSigner().evm.signEVMTransaction(
+            {
+              rawTx: rawTx.replace('0x', ''),
+              accountIndex: activeAccountId,
+              expectedAddress: activeAccount.address,
+            },
+            await this.authorizeHardwareTransaction(provider, assertCurrent)
+          );
         const formattedSignature = {
           r: `0x${signature.r}`,
           s: `0x${signature.s}`,
@@ -2355,13 +2439,15 @@ export class EthereumTransactions<
           );
           assertSignedSender(signedTx);
           assertHardwareTransactionSender(signedTx, activeAccount.address);
-          const transactionResponse = await submitSignedEvmTransaction(
-            signedTx,
-            (raw) => provider.sendTransaction(raw),
-            submission,
-            assertBeforeBroadcast,
-            rawTx
-          );
+          const transactionResponse =
+            await this.submitSignedHardwareTransaction(
+              provider,
+              signedTx,
+              (raw) => provider.sendTransaction(raw),
+              submission,
+              assertBeforeBroadcast,
+              rawTx
+            );
           return {
             isSpeedUp: true,
             transaction: transactionResponse,
@@ -2441,12 +2527,15 @@ export class EthereumTransactions<
         assertTransactionGasLimit(txFormattedForTrezor);
         const expectedUnsignedTransaction =
           serializeTransaction(txFormattedForTrezor);
-        const signature = await this.requireTrezorSigner().signEthTransaction({
-          coin: trezorCoin,
-          tx: txFormattedForTrezor,
-          index: activeAccountId.toString(),
-          slip44: activeNetwork.slip44,
-        });
+        const signature = await this.requireTrezorSigner().signEthTransaction(
+          {
+            coin: trezorCoin,
+            tx: txFormattedForTrezor,
+            index: activeAccountId.toString(),
+            slip44: activeNetwork.slip44,
+          },
+          await this.authorizeHardwareTransaction(provider, assertCurrent)
+        );
         if (signature.success) {
           const signedTx = serializeTransaction(
             txFormattedForTrezor,
@@ -2454,13 +2543,15 @@ export class EthereumTransactions<
           );
           assertSignedSender(signedTx);
           assertHardwareTransactionSender(signedTx, activeAccount.address);
-          const transactionResponse = await submitSignedEvmTransaction(
-            signedTx,
-            (raw) => provider.sendTransaction(raw),
-            submission,
-            assertBeforeBroadcast,
-            expectedUnsignedTransaction
-          );
+          const transactionResponse =
+            await this.submitSignedHardwareTransaction(
+              provider,
+              signedTx,
+              (raw) => provider.sendTransaction(raw),
+              submission,
+              assertBeforeBroadcast,
+              expectedUnsignedTransaction
+            );
           return {
             isSpeedUp: true,
             transaction: transactionResponse,
@@ -2557,15 +2648,19 @@ export class EthereumTransactions<
     }
   };
   sendSignedErc20Transaction = async (
-    request: ISendSignedErc20TransactionProps
+    request: ISendSignedErc20TransactionProps,
+    approval: IReviewedEvmTokenApproval
   ): Promise<IResponseFromSendErcSignedTransaction> => {
-    const { receiver, tokenAddress, tokenAmountUnits, gasLimit, saveTrezorTx } =
-      request;
-    let {
-      isLegacy = false,
-      maxPriorityFeePerGas,
-      maxFeePerGas,
-      gasPrice,
+    const { assertApproval, signal } = this.captureReviewedTokenApproval(
+      approval,
+      'ERC20'
+    );
+    const {
+      receiver,
+      tokenAddress,
+      tokenAmountUnits,
+      saveTrezorTx,
+      networkUrl,
     } = request;
     const {
       activeAccount,
@@ -2576,9 +2671,12 @@ export class EthereumTransactions<
       assertCurrent: assertSigningCurrent,
     } = this.captureEvmSigningContext();
     const activeAccountAddress = activeAccount.address;
+    if (networkUrl !== activeNetwork.url)
+      throw new Error('ERC20 transaction approval network changed');
     if (
       'tokenAmount' in request ||
       'decimals' in request ||
+      'tokenId' in request ||
       typeof tokenAmountUnits !== 'string' ||
       !/^(0|[1-9][0-9]{0,77})$/.test(tokenAmountUnits)
     )
@@ -2587,27 +2685,20 @@ export class EthereumTransactions<
       tokenAmountUnits,
       'ERC20 amount'
     );
+    const { gasLimit, isLegacy, gasPrice, maxFeePerGas, maxPriorityFeePerGas } =
+      this.reviewedTokenFees(request, activeNetwork.chainId, 'ERC20');
     const submission = this.captureSubmission(
       'erc20',
       activeAccount,
       activeAccountType,
       activeAccountId,
       activeNetwork,
-      assertSigningCurrent
+      () => {
+        assertApproval();
+        assertSigningCurrent();
+      }
     );
     const assertCurrent = submission.assertCurrent;
-    ({ gasPrice, isLegacy, maxFeePerGas, maxPriorityFeePerGas } =
-      await this.resolveEvmFeeParams(
-        {
-          gasPrice,
-          isLegacy,
-          maxFeePerGas,
-          maxPriorityFeePerGas,
-        },
-        provider
-      ));
-    assertCurrent();
-
     const sendERC20Token = async () => {
       assertCurrent();
       const { decryptedPrivateKey } = this.getDecryptedPrivateKey();
@@ -2625,9 +2716,10 @@ export class EthereumTransactions<
               'pending'
             ),
             gasPrice,
-            ...(gasLimit && { gasLimit }),
+            gasLimit,
             type: 0, // Explicitly set Type 0 for legacy token transfers
           };
+          assertCurrent();
           transferMethod = await _contract.transfer.populateTransaction(
             receiver,
             exactTokenAmount,
@@ -2641,9 +2733,10 @@ export class EthereumTransactions<
             ),
             maxPriorityFeePerGas,
             maxFeePerGas,
-            ...(gasLimit && { gasLimit }),
+            gasLimit,
           };
 
+          assertCurrent();
           transferMethod = await _contract.transfer.populateTransaction(
             receiver,
             exactTokenAmount,
@@ -2689,15 +2782,12 @@ export class EthereumTransactions<
           exactTokenAmount,
         ]);
 
-        // Use fallback gas limit if not provided (for auto-estimation)
-        const effectiveGasLimit = gasLimit || this.toBigNumber('100000'); // ERC20 fallback
-
         let txFormattedForEthers;
         if (isLegacy) {
           txFormattedForEthers = {
             to: tokenAddress,
             value: '0x0',
-            gasLimit: effectiveGasLimit,
+            gasLimit: gasLimit,
             gasPrice,
             data: txData,
             nonce: transactionNonce,
@@ -2708,7 +2798,7 @@ export class EthereumTransactions<
           txFormattedForEthers = {
             to: tokenAddress,
             value: '0x0',
-            gasLimit: effectiveGasLimit,
+            gasLimit: gasLimit,
             maxFeePerGas,
             maxPriorityFeePerGas,
             data: txData,
@@ -2721,11 +2811,18 @@ export class EthereumTransactions<
         const rawTx = serializeTransaction(txFormattedForEthers);
 
         const signature =
-          await this.requireLedgerSigner().evm.signEVMTransaction({
-            rawTx: rawTx.replace('0x', ''),
-            accountIndex: activeAccountId,
-            expectedAddress: activeAccount.address,
-          });
+          await this.requireLedgerSigner().evm.signEVMTransaction(
+            {
+              rawTx: rawTx.replace('0x', ''),
+              accountIndex: activeAccountId,
+              expectedAddress: activeAccount.address,
+            },
+            await this.authorizeHardwareTransaction(
+              provider,
+              assertCurrent,
+              signal
+            )
+          );
 
         assertCurrent();
         const formattedSignature = {
@@ -2741,7 +2838,8 @@ export class EthereumTransactions<
             );
             assertCurrent();
             assertHardwareTransactionSender(signedTx, activeAccount.address);
-            const finalTx = await submitSignedEvmTransaction(
+            const finalTx = await this.submitSignedHardwareTransaction(
+              provider,
               signedTx,
               async (raw) => {
                 const response = await provider.sendTransaction(raw);
@@ -2784,15 +2882,12 @@ export class EthereumTransactions<
           exactTokenAmount,
         ]);
 
-        // Use fallback gas limit if not provided (for auto-estimation)
-        const effectiveGasLimit = gasLimit || this.toBigNumber('100000'); // ERC20 fallback
-
         let txToBeSignedByTrezor;
         if (isLegacy) {
           txToBeSignedByTrezor = {
             to: tokenAddress,
             value: '0x0',
-            gasLimit: this.toHex0x(effectiveGasLimit, 'gasLimit'),
+            gasLimit: this.toHex0x(gasLimit, 'gasLimit'),
             gasPrice: this.toHex0x(gasPrice, 'gasPrice'),
             nonce: this.toBigNumber(transactionNonce)._hex,
             chainId: activeNetwork.chainId,
@@ -2802,7 +2897,7 @@ export class EthereumTransactions<
           txToBeSignedByTrezor = {
             to: tokenAddress,
             value: '0x0',
-            gasLimit: this.toHex0x(effectiveGasLimit, 'gasLimit'),
+            gasLimit: this.toHex0x(gasLimit, 'gasLimit'),
             maxFeePerGas: this.toHex0x(maxFeePerGas, 'maxFeePerGas'),
             maxPriorityFeePerGas: this.toHex0x(
               maxPriorityFeePerGas,
@@ -2819,12 +2914,19 @@ export class EthereumTransactions<
           ...txToBeSignedByTrezor,
           type: isLegacy ? 0 : 2,
         });
-        const signature = await this.requireTrezorSigner().signEthTransaction({
-          index: `${activeAccountId}`,
-          tx: txToBeSignedByTrezor,
-          coin: activeNetwork.currency,
-          slip44: activeNetwork.slip44,
-        });
+        const signature = await this.requireTrezorSigner().signEthTransaction(
+          {
+            index: `${activeAccountId}`,
+            tx: txToBeSignedByTrezor,
+            coin: activeNetwork.currency,
+            slip44: activeNetwork.slip44,
+          },
+          await this.authorizeHardwareTransaction(
+            provider,
+            assertCurrent,
+            signal
+          )
+        );
 
         assertCurrent();
         if (signature.success) {
@@ -2834,7 +2936,7 @@ export class EthereumTransactions<
               txFormattedForEthers = {
                 to: tokenAddress,
                 value: '0x0',
-                gasLimit: effectiveGasLimit,
+                gasLimit: gasLimit,
                 gasPrice,
                 data: txData,
                 nonce: transactionNonce,
@@ -2845,7 +2947,7 @@ export class EthereumTransactions<
               txFormattedForEthers = {
                 to: tokenAddress,
                 value: '0x0',
-                gasLimit: effectiveGasLimit,
+                gasLimit: gasLimit,
                 maxFeePerGas,
                 maxPriorityFeePerGas,
                 data: txData,
@@ -2860,7 +2962,8 @@ export class EthereumTransactions<
             );
             assertCurrent();
             assertHardwareTransactionSender(signedTx, activeAccount.address);
-            const finalTx = await submitSignedEvmTransaction(
+            const finalTx = await this.submitSignedHardwareTransaction(
+              provider,
               signedTx,
               async (raw) => {
                 const response = await provider.sendTransaction(raw);
@@ -2895,10 +2998,14 @@ export class EthereumTransactions<
   };
 
   sendSignedErc721Transaction = async (
-    request: ISendSignedErcTransactionProps
+    request: ISendSignedErc721TransactionProps,
+    approval: IReviewedEvmTokenApproval
   ): Promise<IResponseFromSendErcSignedTransaction> => {
-    const { receiver, tokenAddress, tokenId, gasLimit } = request;
-    let { isLegacy, maxPriorityFeePerGas, maxFeePerGas, gasPrice } = request;
+    const { assertApproval, signal } = this.captureReviewedTokenApproval(
+      approval,
+      'ERC721'
+    );
+    const { receiver, tokenAddress, tokenId, networkUrl } = request;
     const {
       activeAccount,
       activeAccountType,
@@ -2907,8 +3014,17 @@ export class EthereumTransactions<
       provider,
       assertCurrent: assertSigningCurrent,
     } = this.captureEvmSigningContext();
-    if ('tokenAmountUnits' in request)
+    if (networkUrl !== activeNetwork.url)
+      throw new Error('ERC721 transaction approval network changed');
+    if ('tokenAmountUnits' in request || 'decimals' in request)
       throw new Error('ERC20 amount is not allowed for NFT transfers');
+    if (typeof tokenId !== 'string' || !/^(0|[1-9][0-9]{0,77})$/.test(tokenId))
+      throw new Error('Invalid ERC721 token ID');
+    const normalizedTokenId = parseEvmFeeQuantity(tokenId, 'ERC721 token ID');
+    if ('tokenAmount' in request)
+      throw new Error('ERC721 transfer must contain one token');
+    const { gasLimit, isLegacy, gasPrice, maxFeePerGas, maxPriorityFeePerGas } =
+      this.reviewedTokenFees(request, activeNetwork.chainId, 'ERC721');
     const activeAccountAddress = activeAccount.address;
     const submission = this.captureSubmission(
       'erc721',
@@ -2916,24 +3032,12 @@ export class EthereumTransactions<
       activeAccountType,
       activeAccountId,
       activeNetwork,
-      assertSigningCurrent
+      () => {
+        assertApproval();
+        assertSigningCurrent();
+      }
     );
     const assertCurrent = submission.assertCurrent;
-    if (tokenId === undefined || tokenId === null) {
-      throw new Error('ERC721 tokenId is required');
-    }
-    ({ gasPrice, isLegacy, maxFeePerGas, maxPriorityFeePerGas } =
-      await this.resolveEvmFeeParams(
-        {
-          gasPrice,
-          isLegacy,
-          maxFeePerGas,
-          maxPriorityFeePerGas,
-        },
-        provider
-      ));
-    assertCurrent();
-    const normalizedTokenId = BigNumber.from(tokenId).toBigInt();
 
     const sendERC721Token = async () => {
       assertCurrent();
@@ -2953,7 +3057,7 @@ export class EthereumTransactions<
               'pending'
             ),
             gasPrice,
-            ...(gasLimit && { gasLimit }),
+            gasLimit,
             type: 0, // Explicitly set Type 0 for legacy NFT transfers
           };
           transferMethod = await _contract.transferFrom.populateTransaction(
@@ -2970,7 +3074,7 @@ export class EthereumTransactions<
             ),
             maxPriorityFeePerGas,
             maxFeePerGas,
-            ...(gasLimit && { gasLimit }),
+            gasLimit,
           };
           transferMethod = await _contract.transferFrom.populateTransaction(
             activeAccountAddress,
@@ -3018,15 +3122,12 @@ export class EthereumTransactions<
           normalizedTokenId,
         ]);
 
-        // Use fallback gas limit if not provided (for auto-estimation)
-        const effectiveGasLimit = gasLimit || this.toBigNumber('150000'); // ERC721 fallback
-
         let txFormattedForEthers;
         if (isLegacy) {
           txFormattedForEthers = {
             to: tokenAddress,
             value: '0x0',
-            gasLimit: effectiveGasLimit,
+            gasLimit,
             gasPrice,
             data: txData,
             nonce: transactionNonce,
@@ -3037,7 +3138,7 @@ export class EthereumTransactions<
           txFormattedForEthers = {
             to: tokenAddress,
             value: '0x0',
-            gasLimit: effectiveGasLimit,
+            gasLimit,
             maxFeePerGas,
             maxPriorityFeePerGas,
             data: txData,
@@ -3050,11 +3151,18 @@ export class EthereumTransactions<
         const rawTx = serializeTransaction(txFormattedForEthers);
 
         const signature =
-          await this.requireLedgerSigner().evm.signEVMTransaction({
-            rawTx: rawTx.replace('0x', ''),
-            accountIndex: activeAccountId,
-            expectedAddress: activeAccount.address,
-          });
+          await this.requireLedgerSigner().evm.signEVMTransaction(
+            {
+              rawTx: rawTx.replace('0x', ''),
+              accountIndex: activeAccountId,
+              expectedAddress: activeAccount.address,
+            },
+            await this.authorizeHardwareTransaction(
+              provider,
+              assertCurrent,
+              signal
+            )
+          );
 
         assertCurrent();
         const formattedSignature = {
@@ -3071,7 +3179,8 @@ export class EthereumTransactions<
             );
             assertCurrent();
             assertHardwareTransactionSender(signedTx, activeAccount.address);
-            const finalTx = await submitSignedEvmTransaction(
+            const finalTx = await this.submitSignedHardwareTransaction(
+              provider,
               signedTx,
               (raw) => provider.sendTransaction(raw),
               submission,
@@ -3110,15 +3219,12 @@ export class EthereumTransactions<
           normalizedTokenId,
         ]);
 
-        // Use fallback gas limit if not provided (for auto-estimation)
-        const effectiveGasLimit = gasLimit || this.toBigNumber('150000'); // ERC721 fallback
-
         let txToBeSignedByTrezor;
         if (isLegacy) {
           txToBeSignedByTrezor = {
             to: tokenAddress,
             value: '0x0',
-            gasLimit: this.toHex0x(effectiveGasLimit, 'gasLimit'),
+            gasLimit: this.toHex0x(gasLimit, 'gasLimit'),
             gasPrice: this.toHex0x(gasPrice, 'gasPrice'),
             nonce: this.toBigNumber(transactionNonce)._hex,
             chainId: activeNetwork.chainId,
@@ -3129,7 +3235,7 @@ export class EthereumTransactions<
           txToBeSignedByTrezor = {
             to: tokenAddress,
             value: '0x0',
-            gasLimit: this.toHex0x(effectiveGasLimit, 'gasLimit'),
+            gasLimit: this.toHex0x(gasLimit, 'gasLimit'),
             maxFeePerGas: this.toHex0x(maxFeePerGas, 'maxFeePerGas'),
             maxPriorityFeePerGas: this.toHex0x(
               maxPriorityFeePerGas,
@@ -3149,12 +3255,19 @@ export class EthereumTransactions<
           ...txToBeSignedByTrezor,
           type: isLegacy ? 0 : 2,
         });
-        const signature = await this.requireTrezorSigner().signEthTransaction({
-          index: `${activeAccountId}`,
-          tx: txToBeSignedByTrezor,
-          coin: trezorCoin,
-          slip44: activeNetwork.slip44,
-        });
+        const signature = await this.requireTrezorSigner().signEthTransaction(
+          {
+            index: `${activeAccountId}`,
+            tx: txToBeSignedByTrezor,
+            coin: trezorCoin,
+            slip44: activeNetwork.slip44,
+          },
+          await this.authorizeHardwareTransaction(
+            provider,
+            assertCurrent,
+            signal
+          )
+        );
 
         assertCurrent();
         if (signature.success) {
@@ -3164,7 +3277,7 @@ export class EthereumTransactions<
               txFormattedForEthers = {
                 to: tokenAddress,
                 value: '0x0',
-                gasLimit: effectiveGasLimit,
+                gasLimit,
                 gasPrice,
                 data: txData,
                 nonce: transactionNonce,
@@ -3175,7 +3288,7 @@ export class EthereumTransactions<
               txFormattedForEthers = {
                 to: tokenAddress,
                 value: '0x0',
-                gasLimit: effectiveGasLimit,
+                gasLimit,
                 maxFeePerGas,
                 maxPriorityFeePerGas,
                 data: txData,
@@ -3190,7 +3303,8 @@ export class EthereumTransactions<
             );
             assertCurrent();
             assertHardwareTransactionSender(signedTx, activeAccount.address);
-            const finalTx = await submitSignedEvmTransaction(
+            const finalTx = await this.submitSignedHardwareTransaction(
+              provider,
               signedTx,
               (raw) => provider.sendTransaction(raw),
               submission,
@@ -3223,10 +3337,14 @@ export class EthereumTransactions<
   };
 
   sendSignedErc1155Transaction = async (
-    request: ISendSignedErcTransactionProps
+    request: ISendSignedErc1155TransactionProps,
+    approval: IReviewedEvmTokenApproval
   ): Promise<IResponseFromSendErcSignedTransaction> => {
-    const { receiver, tokenAddress, tokenId, tokenAmount, gasLimit } = request;
-    let { isLegacy, maxPriorityFeePerGas, maxFeePerGas, gasPrice } = request;
+    const { assertApproval, signal } = this.captureReviewedTokenApproval(
+      approval,
+      'ERC1155'
+    );
+    const { receiver, tokenAddress, tokenId, networkUrl } = request;
     const {
       activeAccount,
       activeAccountType,
@@ -3235,8 +3353,22 @@ export class EthereumTransactions<
       provider,
       assertCurrent: assertSigningCurrent,
     } = this.captureEvmSigningContext();
-    if ('tokenAmountUnits' in request)
+    if (networkUrl !== activeNetwork.url)
+      throw new Error('ERC1155 transaction approval network changed');
+    if ('tokenAmountUnits' in request || 'decimals' in request)
       throw new Error('ERC20 amount is not allowed for NFT transfers');
+    if (typeof tokenId !== 'string' || !/^(0|[1-9][0-9]{0,77})$/.test(tokenId))
+      throw new Error('Invalid ERC1155 token ID');
+    const normalizedTokenId = parseEvmFeeQuantity(tokenId, 'ERC1155 token ID');
+    const { tokenAmount } = request;
+    if (
+      typeof tokenAmount !== 'string' ||
+      !/^[1-9][0-9]{0,77}$/.test(tokenAmount)
+    )
+      throw new Error('Invalid ERC1155 amount');
+    const amount = parseEvmFeeQuantity(tokenAmount, 'ERC1155 amount');
+    const { gasLimit, isLegacy, gasPrice, maxFeePerGas, maxPriorityFeePerGas } =
+      this.reviewedTokenFees(request, activeNetwork.chainId, 'ERC1155');
     const activeAccountAddress = activeAccount.address;
     const submission = this.captureSubmission(
       'erc1155',
@@ -3244,20 +3376,12 @@ export class EthereumTransactions<
       activeAccountType,
       activeAccountId,
       activeNetwork,
-      assertSigningCurrent
+      () => {
+        assertApproval();
+        assertSigningCurrent();
+      }
     );
     const assertCurrent = submission.assertCurrent;
-    ({ gasPrice, isLegacy, maxFeePerGas, maxPriorityFeePerGas } =
-      await this.resolveEvmFeeParams(
-        {
-          gasPrice,
-          isLegacy,
-          maxFeePerGas,
-          maxPriorityFeePerGas,
-        },
-        provider
-      ));
-    assertCurrent();
 
     const sendERC1155Token = async () => {
       assertCurrent();
@@ -3271,7 +3395,6 @@ export class EthereumTransactions<
         );
 
         // Use BigNumber to avoid JS number overflow/precision loss
-        const amount = BigNumber.from(tokenAmount ?? '1');
 
         let overrides;
         if (isLegacy) {
@@ -3281,7 +3404,7 @@ export class EthereumTransactions<
               'pending'
             ),
             gasPrice,
-            ...(gasLimit && { gasLimit }),
+            gasLimit,
             type: 0, // Explicitly set Type 0 for legacy ERC1155 transfers
           };
         } else {
@@ -3292,15 +3415,15 @@ export class EthereumTransactions<
             ),
             maxPriorityFeePerGas,
             maxFeePerGas,
-            ...(gasLimit && { gasLimit }),
+            gasLimit,
           };
         }
 
         transferMethod = await _contract.safeTransferFrom.populateTransaction(
           activeAccountAddress,
           receiver,
-          tokenId as number,
-          amount.toBigInt(),
+          normalizedTokenId,
+          amount,
           '0x',
           normalizeEthersOverrides(overrides)
         );
@@ -3337,22 +3460,17 @@ export class EthereumTransactions<
           provider as any
         );
 
-        const amount = BigNumber.from(tokenAmount ?? '1');
-
         const txData = _contract.interface.encodeFunctionData(
           'safeTransferFrom',
-          [activeAccountAddress, receiver, tokenId, amount.toBigInt(), '0x']
+          [activeAccountAddress, receiver, normalizedTokenId, amount, '0x']
         );
-
-        // Use fallback gas limit if not provided (for auto-estimation)
-        const effectiveGasLimit = gasLimit || this.toBigNumber('200000'); // ERC1155 fallback
 
         let txFormattedForEthers;
         if (isLegacy) {
           txFormattedForEthers = {
             to: tokenAddress,
             value: '0x0',
-            gasLimit: effectiveGasLimit,
+            gasLimit,
             gasPrice,
             data: txData,
             nonce: transactionNonce,
@@ -3363,7 +3481,7 @@ export class EthereumTransactions<
           txFormattedForEthers = {
             to: tokenAddress,
             value: '0x0',
-            gasLimit: effectiveGasLimit,
+            gasLimit,
             maxFeePerGas,
             maxPriorityFeePerGas,
             data: txData,
@@ -3376,11 +3494,18 @@ export class EthereumTransactions<
         const rawTx = serializeTransaction(txFormattedForEthers);
 
         const signature =
-          await this.requireLedgerSigner().evm.signEVMTransaction({
-            rawTx: rawTx.replace('0x', ''),
-            accountIndex: activeAccountId,
-            expectedAddress: activeAccount.address,
-          });
+          await this.requireLedgerSigner().evm.signEVMTransaction(
+            {
+              rawTx: rawTx.replace('0x', ''),
+              accountIndex: activeAccountId,
+              expectedAddress: activeAccount.address,
+            },
+            await this.authorizeHardwareTransaction(
+              provider,
+              assertCurrent,
+              signal
+            )
+          );
 
         assertCurrent();
         const formattedSignature = {
@@ -3397,7 +3522,8 @@ export class EthereumTransactions<
             );
             assertCurrent();
             assertHardwareTransactionSender(signedTx, activeAccount.address);
-            const finalTx = await submitSignedEvmTransaction(
+            const finalTx = await this.submitSignedHardwareTransaction(
+              provider,
               signedTx,
               (raw) => provider.sendTransaction(raw),
               submission,
@@ -3431,22 +3557,17 @@ export class EthereumTransactions<
           provider as any
         );
 
-        const amount = BigNumber.from(tokenAmount ?? '1');
-
         const txData = _contract.interface.encodeFunctionData(
           'safeTransferFrom',
-          [activeAccountAddress, receiver, tokenId, amount.toBigInt(), '0x']
+          [activeAccountAddress, receiver, normalizedTokenId, amount, '0x']
         );
-
-        // Use fallback gas limit if not provided (for auto-estimation)
-        const effectiveGasLimit = gasLimit || this.toBigNumber('200000'); // ERC1155 fallback
 
         let txToBeSignedByTrezor;
         if (isLegacy) {
           txToBeSignedByTrezor = {
             to: tokenAddress,
             value: '0x0',
-            gasLimit: this.toHex0x(effectiveGasLimit, 'gasLimit'),
+            gasLimit: this.toHex0x(gasLimit, 'gasLimit'),
             gasPrice: this.toHex0x(gasPrice, 'gasPrice'),
             nonce: this.toBigNumber(transactionNonce)._hex,
             chainId: activeNetwork.chainId,
@@ -3456,7 +3577,7 @@ export class EthereumTransactions<
           txToBeSignedByTrezor = {
             to: tokenAddress,
             value: '0x0',
-            gasLimit: this.toHex0x(effectiveGasLimit, 'gasLimit'),
+            gasLimit: this.toHex0x(gasLimit, 'gasLimit'),
             maxFeePerGas: this.toHex0x(maxFeePerGas, 'maxFeePerGas'),
             maxPriorityFeePerGas: this.toHex0x(
               maxPriorityFeePerGas,
@@ -3473,12 +3594,19 @@ export class EthereumTransactions<
           ...txToBeSignedByTrezor,
           type: isLegacy ? 0 : 2,
         });
-        const signature = await this.requireTrezorSigner().signEthTransaction({
-          index: `${activeAccountId}`,
-          tx: txToBeSignedByTrezor,
-          coin: activeNetwork.currency,
-          slip44: activeNetwork.slip44,
-        });
+        const signature = await this.requireTrezorSigner().signEthTransaction(
+          {
+            index: `${activeAccountId}`,
+            tx: txToBeSignedByTrezor,
+            coin: activeNetwork.currency,
+            slip44: activeNetwork.slip44,
+          },
+          await this.authorizeHardwareTransaction(
+            provider,
+            assertCurrent,
+            signal
+          )
+        );
 
         assertCurrent();
         if (signature.success) {
@@ -3488,7 +3616,7 @@ export class EthereumTransactions<
               txFormattedForEthers = {
                 to: tokenAddress,
                 value: '0x0',
-                gasLimit: effectiveGasLimit,
+                gasLimit,
                 gasPrice,
                 data: txData,
                 nonce: transactionNonce,
@@ -3499,7 +3627,7 @@ export class EthereumTransactions<
               txFormattedForEthers = {
                 to: tokenAddress,
                 value: '0x0',
-                gasLimit: effectiveGasLimit,
+                gasLimit,
                 maxFeePerGas,
                 maxPriorityFeePerGas,
                 data: txData,
@@ -3514,7 +3642,8 @@ export class EthereumTransactions<
             );
             assertCurrent();
             assertHardwareTransactionSender(signedTx, activeAccount.address);
-            const finalTx = await submitSignedEvmTransaction(
+            const finalTx = await this.submitSignedHardwareTransaction(
+              provider,
               signedTx,
               (raw) => provider.sendTransaction(raw),
               submission,
@@ -3721,26 +3850,17 @@ export class EthereumTransactions<
     this.abortController.abort();
     this.abortController = new AbortController();
 
-    // Check if network is a UTXO network to avoid creating web3 providers for blockbook URLs
-    const isUtxoNetwork = this.isUtxoNetwork(network);
-
-    if (isUtxoNetwork) {
-      // For UTXO networks, don't create web3 providers at all since they won't be used
-      console.log(
-        '[EthereumTransactions] setWeb3Provider: Skipping web3Provider creation for UTXO network:',
-        network.url
-      );
-      // Clear any existing providers for UTXO networks
+    if (network?.kind !== INetworkType.Ethereum) {
       this._web3Provider = undefined as any;
       this._web3ProviderKey = undefined;
-    } else {
-      this._web3Provider = new CustomJsonRpcProvider(
-        this.abortController.signal,
-        network.url,
-        network.chainId
-      );
-      this._web3ProviderKey = `${network.chainId}|${network.url ?? ''}`;
+      return;
     }
+    this._web3Provider = new CustomJsonRpcProvider(
+      this.abortController.signal,
+      network.url,
+      network.chainId
+    );
+    this._web3ProviderKey = `${network.chainId}|${network.url ?? ''}`;
   }
 
   public importAccount = (mnemonicOrPrivKey: string) => {

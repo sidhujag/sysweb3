@@ -1,5 +1,7 @@
 import { Transaction } from 'ethers/transaction';
 
+import type { KeyringAccountType } from '../types';
+
 export type EvmSubmissionContext = Readonly<{
   account: Readonly<{ id: number; type: string; address: string }>;
   network: Readonly<{
@@ -168,19 +170,72 @@ export function assertSignedEvmTransactionMatches(
   return signed;
 }
 
-/** The sole local-signature dispatch boundary. No nonce/fee selection or retry. */
-export async function submitSignedEvmTransaction<T>(
+/** Submit software-signed bytes through the captured durable boundary. */
+export function submitSignedEvmTransaction<T>(
   rawTransaction: string,
   broadcast: (rawTransaction: string) => Promise<T>,
   boundary: EvmSubmissionBoundary,
   beforeBroadcast: (() => void) | undefined,
   expectedUnsignedTransaction: string
 ): Promise<T> {
+  return submit(
+    rawTransaction,
+    broadcast,
+    boundary,
+    beforeBroadcast,
+    expectedUnsignedTransaction,
+    { mode: 'software' }
+  );
+}
+
+/** @internal Device signatures always require a fresh live chain probe after persistence. */
+export function submitSignedHardwareEvmTransaction<T>(
+  rawTransaction: string,
+  broadcast: (rawTransaction: string) => Promise<T>,
+  boundary: EvmSubmissionBoundary,
+  beforeBroadcast: (() => void) | undefined,
+  expectedUnsignedTransaction: string,
+  verifyCurrentChain: () => Promise<void>
+): Promise<T> {
+  return submit(
+    rawTransaction,
+    broadcast,
+    boundary,
+    beforeBroadcast,
+    expectedUnsignedTransaction,
+    { mode: 'hardware', verifyCurrentChain }
+  );
+}
+
+const hardwareAccountTypes = ['Ledger', 'Trezor'] satisfies readonly `${
+  | KeyringAccountType.Ledger
+  | KeyringAccountType.Trezor}`[];
+
+/** The common signed-byte dispatch boundary. No nonce/fee selection or retry. */
+async function submit<T>(
+  rawTransaction: string,
+  broadcast: (rawTransaction: string) => Promise<T>,
+  boundary: EvmSubmissionBoundary,
+  beforeBroadcast: (() => void) | undefined,
+  expectedUnsignedTransaction: string,
+  admission:
+    | { mode: 'software' }
+    | { mode: 'hardware'; verifyCurrentChain: () => Promise<void> }
+): Promise<T> {
   let dispatched = false;
   let hash: string | undefined;
   try {
     const check = () => assertDurableEvmSubmission(boundary);
     check();
+    const hardwareAccount = hardwareAccountTypes.some(
+      (type) => type === boundary.context.account.type
+    );
+    if (
+      hardwareAccount !== (admission.mode === 'hardware') ||
+      (admission.mode === 'hardware' &&
+        typeof admission.verifyCurrentChain !== 'function')
+    )
+      throw new TypeError('EVM submission does not match the signing mode');
     const tx = assertSignedEvmTransactionMatches(
       rawTransaction,
       expectedUnsignedTransaction,
@@ -205,6 +260,10 @@ export async function submitSignedEvmTransaction<T>(
       );
     await acknowledgement;
     check();
+    if (admission.mode === 'hardware') {
+      await admission.verifyCurrentChain();
+      check();
+    }
     if (beforeBroadcast) assertSynchronous(beforeBroadcast);
     check();
     dispatched = true;

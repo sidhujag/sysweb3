@@ -33,6 +33,34 @@ const manager = (host?: LedgerHost) => {
 };
 const status = (value: HardwareWalletManager) =>
   value.getStatus().find((entry) => entry.type === 'trezor')!;
+const evmRequest = {
+  index: '0',
+  coin: 'eth',
+  slip44: 60,
+  tx: {
+    to: `0x${'11'.repeat(20)}`,
+    chainId: 1,
+    nonce: '0x0',
+    gasPrice: '0x2',
+    gasLimit: '0x5208',
+    value: '0x1',
+    data: '0x',
+  },
+};
+const vendorSigner = () => {
+  const device = jest.fn().mockResolvedValue({
+    success: true,
+    payload: { r: '0x01', s: '0x02', v: '0x1b' },
+  });
+  Object.defineProperty(ConnectMock, 'ethereumSignTransaction', {
+    configurable: true,
+    value: device,
+  });
+  releaseHeld.push(() => {
+    Reflect.deleteProperty(ConnectMock, 'ethereumSignTransaction');
+  });
+  return device;
+};
 
 beforeEach(() => {
   jest.restoreAllMocks();
@@ -336,4 +364,44 @@ it('does not start a keyring initialization after lock overtakes its startup del
   const reconnect = value.init();
   await jest.advanceTimersByTimeAsync(100);
   await expect(reconnect).resolves.toBe(true);
+});
+
+it('does not open the vendor signer when the review retires during the Trezor popup delay', async () => {
+  jest.useFakeTimers({ doNotFake: ['setImmediate'] });
+  const value = new Keyring();
+  keyrings.push(value);
+  const initialization = value.init();
+  await jest.advanceTimersByTimeAsync(100);
+  await expect(initialization).resolves.toBe(true);
+  const device = vendorSigner();
+  const cancellation = new AbortController();
+  const pending = value.signEthTransaction(evmRequest, {
+    signal: cancellation.signal,
+    assertCurrent: () => undefined,
+  });
+  const outcome = pending.catch((error) => error);
+  cancellation.abort();
+  await jest.advanceTimersByTimeAsync(2_000);
+  await expect(outcome).resolves.toMatchObject({
+    code: 'HARDWARE_REQUEST_CANCELLED',
+    transactionNotBroadcast: true,
+  });
+  expect(device).not.toHaveBeenCalled();
+});
+
+it('checks the owner after the Connect adapter waits to enter the vendor method', async () => {
+  const value = new Keyring();
+  keyrings.push(value);
+  await expect(value.init()).resolves.toBe(true);
+  const device = vendorSigner();
+  let current = true;
+  const pending = adapter.default.ethereumSignTransactionOwned(
+    { path: "m/44'/60'/0'/0/0", transaction: evmRequest.tx },
+    () => {
+      if (!current) throw new Error('Approval expired');
+    }
+  );
+  current = false;
+  await expect(pending).rejects.toThrow('Approval expired');
+  expect(device).not.toHaveBeenCalled();
 });

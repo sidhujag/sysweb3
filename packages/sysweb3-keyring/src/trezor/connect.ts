@@ -197,10 +197,24 @@ const calls = Object.fromEntries(
 ) as Calls;
 
 const TrezorConnect: Calls & {
+  ethereumSignTransactionOwned: (
+    request: Parameters<Client['ethereumSignTransaction']>[0],
+    assertCurrent: () => void
+  ) => ReturnType<Calls['ethereumSignTransaction']>;
   init: Client['init'];
   dispose: () => Promise<void>;
 } = {
   ...calls,
+  async ethereumSignTransactionOwned(request, assertCurrent) {
+    const captured = generation;
+    const response = await withClient((client) => {
+      assertCurrent();
+      return client.ethereumSignTransaction(request);
+    });
+    assertCurrent();
+    if (captured !== generation) throw interrupted();
+    return normalize(response, 'ethereumSignTransaction');
+  },
   async init(settings: Parameters<Client['init']>[0]): Promise<void> {
     if (cleanupPending) {
       throw Object.assign(
