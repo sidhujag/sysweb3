@@ -1,5 +1,24 @@
 import { coins } from './coins';
 
+import type { Coin } from './types';
+
+/** Resolve one canonical SDK coin without using an editable name or ticker. */
+export function findUtxoCoinByRegistration(
+  registration: Readonly<{ chainId: number; slip44: number }>
+): Coin | undefined {
+  let match: Coin | undefined;
+  for (const coin of coins) {
+    if (
+      (coin.chainId ?? coin.slip44) !== registration.chainId ||
+      coin.slip44 !== registration.slip44
+    )
+      continue;
+    if (match) return undefined;
+    match = coin;
+  }
+  return match;
+}
+
 export interface CoinSearchOptions {
   slip44?: number;
   name?: string;

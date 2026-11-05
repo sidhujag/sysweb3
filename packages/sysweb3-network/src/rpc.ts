@@ -1,7 +1,7 @@
 import { Chain, chains } from 'eth-chains';
 import { toBeHex } from 'ethers/utils';
 
-import { findCoin } from './coin-utils';
+import { findCoin, findUtxoCoinByRegistration } from './coin-utils';
 // import fetch from "node-fetch";
 import {
   getNetworkConfigFromCoin,
@@ -400,13 +400,17 @@ export const getSysRpc = async (data: any) => {
 
     if (!valid) throw new Error('Invalid Trezor Blockbook Explorer URL');
 
-    // Look up coin configuration for slip44 (used for address derivation only)
-    const coinData = findCoin({ name: network });
-
-    if (!coinData) {
+    // Keep the existing status alias lookup, then resolve the exact SDK tuple.
+    const namedCoin = findCoin({ name: network });
+    if (!namedCoin) {
       throw new Error(`Coin configuration not found for ${network}`);
     }
-    // Get network config using the coin's slip44 for address derivation
+    const chainId = namedCoin.chainId ?? namedCoin.slip44;
+    const coinData = findUtxoCoinByRegistration({
+      chainId,
+      slip44: namedCoin.slip44,
+    });
+    if (!coinData) throw new Error('Invalid canonical UTXO coin registration');
     const networkConfig = getNetworkConfigFromCoin(coinData);
 
     let explorer: string | undefined = data.explorer;
@@ -414,8 +418,6 @@ export const getSysRpc = async (data: any) => {
       // We accept only trezor blockbook for UTXO chains, this method won't work for non trezor apis
       explorer = data.url.replace(/\/api\/v[12]/, ''); // trimming /api/v{number}/ from explorer
     }
-
-    const chainId = coinData.chainId || coinData.slip44;
 
     // Determine proper currency code from coin data or user input
     const currency = data.symbol
@@ -428,7 +430,7 @@ export const getSysRpc = async (data: any) => {
       currency,
       label: data.label || network,
       default: false, // Custom networks should always be deletable
-      chainId: chainId, // Use user-provided chainId or fall back to slip44
+      chainId,
       slip44: coinData.slip44, // Always use coin's slip44 for BIP44 address derivation
       kind: INetworkType.Syscoin,
     };
