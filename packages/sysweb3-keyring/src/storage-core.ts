@@ -1,5 +1,7 @@
 import CryptoJS from 'crypto-js';
 
+import { currentVaultRefusals } from './current-vault-refusal';
+
 /** A host-owned namespace containing one wallet authority's logical records. */
 export interface VaultStoragePort {
   get(key: string): Promise<unknown>;
@@ -88,6 +90,16 @@ const maybeParseGcmEnvelope = (raw: any): VaultGcmEnvelopeV4 | null => {
     return null;
   }
 };
+
+const isCurrentGcmEnvelope = (
+  envelope: VaultGcmEnvelopeV4 | null
+): envelope is VaultGcmEnvelopeV4 =>
+  !!envelope &&
+  Object.keys(envelope).length === 4 &&
+  /^[0-9a-f]{24}$/i.test(envelope.iv) &&
+  envelope.ct.length >= 32 &&
+  envelope.ct.length % 2 === 0 &&
+  isHex(envelope.ct);
 
 const encryptVaultWebCrypto = async (
   plaintextJson: string,
@@ -193,14 +205,7 @@ export const decryptCurrentVault = async (
   key: string
 ): Promise<unknown> => {
   const envelope = maybeParseGcmEnvelope(vault);
-  if (
-    !envelope ||
-    Object.keys(envelope).length !== 4 ||
-    !/^[0-9a-f]{24}$/i.test(envelope.iv) ||
-    envelope.ct.length < 32 ||
-    envelope.ct.length % 2 !== 0 ||
-    !isHex(envelope.ct)
-  ) {
+  if (!isCurrentGcmEnvelope(envelope)) {
     throw new Error('Invalid encrypted vault format');
   }
   const plaintext = await decryptVaultWebCrypto(envelope, key);
@@ -298,7 +303,18 @@ export const createVaultPersistence = (
       }
       let decryptedVault: string;
       if (maybeEnvelope) {
-        decryptedVault = await decryptVaultWebCrypto(maybeEnvelope, pwd);
+        try {
+          decryptedVault = await decryptVaultWebCrypto(maybeEnvelope, pwd);
+        } catch (error) {
+          if (
+            error instanceof VaultAuthenticationError &&
+            typeof vault === 'string' &&
+            isCurrentGcmEnvelope(maybeEnvelope)
+          ) {
+            currentVaultRefusals.set(error, (candidate) => candidate === vault);
+          }
+          throw error;
+        }
       } else {
         // Legacy CryptoJS passphrase-AES vault (v3 and older v4 canary).
         // An interrupted migration can already have written CBC with the

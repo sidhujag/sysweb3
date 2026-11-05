@@ -25,6 +25,7 @@ const SLH_DSA_DERIVATION_VERSION = 1;
 const SLH_DSA_SETUP_SECRET_HEX_LENGTH = 64;
 const SLH_DSA_PARAMETER_SET = 'SLH-DSA-SHA2-128-24';
 
+import { currentVaultRefusals } from './current-vault-refusal';
 import { getAddress, isHexString } from './ethers-v6';
 import {
   initialActiveImportedAccountState,
@@ -133,6 +134,34 @@ export type DeviceUnlockControls = Readonly<{
   issue(password: string, assertCurrent: () => void): Promise<boolean>;
   resume(assertCurrent: () => void): Promise<boolean>;
 }>;
+
+const currentVaultSalt = (keys: unknown): string | undefined => {
+  const salt =
+    keys && typeof keys === 'object' && Reflect.ownKeys(keys).length === 1
+      ? Object.getOwnPropertyDescriptor(keys, 'salt')?.value
+      : undefined;
+  return typeof salt === 'string' && /^[0-9a-f]{32}$/.test(salt)
+    ? salt
+    : undefined;
+};
+
+const readCurrentVaultPair = async (
+  readPair: NonNullable<KeyringStoragePort['readDeviceUnlockVaultPair']>
+) => {
+  const pair = await readPair();
+  if (pair === null) return null;
+  const { vault, keys, pairFingerprint } = pair;
+  const salt = currentVaultSalt(keys);
+  if (
+    typeof vault !== 'string' ||
+    salt === undefined ||
+    typeof pairFingerprint !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(pairFingerprint)
+  ) {
+    throw new Error('Invalid device unlock vault pair');
+  }
+  return { vault, salt, pairFingerprint };
+};
 
 /** Only the device capabilities consumed by the wallet authority. */
 export interface KeyringLedgerSigner {
@@ -406,25 +435,7 @@ export class KeyringCore<
     port: DeviceUnlockPort,
     readVaultPair: NonNullable<KeyringStoragePort['readDeviceUnlockVaultPair']>
   ): DeviceUnlockControls {
-    const readPair = async () => {
-      const pair = await readVaultPair();
-      if (pair === null) return null;
-      const { vault, keys, pairFingerprint } = pair;
-      const salt =
-        keys && typeof keys === 'object' && Reflect.ownKeys(keys).length === 1
-          ? Object.getOwnPropertyDescriptor(keys, 'salt')?.value
-          : undefined;
-      if (
-        typeof vault !== 'string' ||
-        typeof salt !== 'string' ||
-        !/^[0-9a-f]{32}$/.test(salt) ||
-        typeof pairFingerprint !== 'string' ||
-        !/^[0-9a-f]{64}$/.test(pairFingerprint)
-      ) {
-        throw new Error('Invalid device unlock vault pair');
-      }
-      return { vault, salt, pairFingerprint };
-    };
+    const readPair = () => readCurrentVaultPair(readVaultPair);
 
     let pending = false;
     const run = async (
@@ -839,12 +850,18 @@ export class KeyringCore<
       // v4: Validate password by deriving the session key once and decrypting the vault with it.
       // This avoids an extra KDF pass just for a stored verifier.
       const { salt } = vaultKeys;
+      const readVaultPair = assertCurrent
+        ? this.storage.readDeviceUnlockVaultPair
+        : undefined;
+      const accountingSalt = readVaultPair
+        ? currentVaultSalt(vaultKeys)
+        : undefined;
 
       // Derive session encryption key (in-memory only) used to encrypt/decrypt xprv fields
       // IMPORTANT: This MUST NOT be the same value as the stored verifier above.
       let sessionPasswordKey = await this.deriveStoredSessionKey(
         password,
-        vaultKeys
+        accountingSalt === undefined ? vaultKeys : { salt: accountingSalt }
       );
       assertCurrent?.();
       // Handle migration from old vault format with currentSessionSalt
@@ -939,6 +956,29 @@ export class KeyringCore<
           sessionPasswordKey
         );
       } catch (error) {
+        const matchesRefusedVault =
+          accountingSalt === undefined
+            ? undefined
+            : currentVaultRefusals.get(error);
+        if (matchesRefusedVault && readVaultPair) {
+          const pair = await readCurrentVaultPair(
+            readVaultPair.bind(this.storage)
+          ).catch((readError: unknown) => {
+            // A storage rejection cannot attest to password authentication.
+            if (readError instanceof VaultAuthenticationError)
+              throw new Error('Wallet unlock vault read failed');
+            throw readError;
+          });
+          if (
+            !pair ||
+            !matchesRefusedVault(pair.vault) ||
+            pair.salt !== accountingSalt
+          )
+            throw new Error('Wallet unlock vault changed');
+          // This exact negative result has no session authority. Keep it
+          // available for the host counter even if its owner just retired.
+          return { canLogin: false };
+        }
         assertCurrent?.();
         // Only the historical CBC fallback used the 20k key without metadata.
         // Never try it for GCM, malformed records, or platform/storage failures.
