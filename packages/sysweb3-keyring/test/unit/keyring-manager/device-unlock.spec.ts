@@ -7,6 +7,7 @@ import {
   SoftwareKeyring,
   createSoftwareKeyringHost,
 } from '../../../src/software';
+import { VaultAuthenticationError } from '../../../src/storage-core';
 
 import type {
   DeviceUnlockControls,
@@ -532,6 +533,81 @@ it.each([
     expect(outcome).toEqual(new Error('Wallet unlock session changed'));
   }
 );
+
+it.each([
+  'lock',
+  'changed pair',
+  'pair read error',
+  'authentication-shaped pair read error',
+] as const)(
+  'classifies opted-in password refusal after %s',
+  async (interruption) => {
+    const f = fixture();
+    const { ring } = await f.create();
+    await ring.lockWallet();
+    const changed = interruption === 'changed pair' ? fixture() : undefined;
+    if (changed) await changed.create(newPassword);
+
+    const rejected = deferred<unknown>();
+    const release = deferred<void>();
+    const decrypt = webcrypto.subtle.decrypt.bind(webcrypto.subtle);
+    jest
+      .spyOn(webcrypto.subtle, 'decrypt')
+      .mockImplementationOnce(async (...args) => {
+        try {
+          return await decrypt(...args);
+        } catch (error) {
+          rejected.resolve(error);
+          await release.promise;
+          throw error;
+        }
+      });
+
+    const misleading = interruption === 'authentication-shaped pair read error';
+    const unavailable = misleading
+      ? new VaultAuthenticationError()
+      : new Error('Atomic vault pair temporarily unavailable');
+    const unlocking = ring.unlock(newPassword);
+    try {
+      await expect(rejected.promise).resolves.toMatchObject({
+        name: 'OperationError',
+      });
+      if (interruption === 'lock') await ring.lockWallet();
+      if (changed) {
+        f.records.set('vault', changed.records.get('vault'));
+        f.records.set('vault-keys', changed.records.get('vault-keys'));
+      }
+      if (interruption === 'pair read error' || misleading)
+        f.readPair.mockRejectedValueOnce(unavailable);
+    } finally {
+      release.resolve();
+    }
+    if (interruption === 'lock')
+      await expect(unlocking).resolves.toEqual({ canLogin: false });
+    else if (interruption === 'changed pair')
+      await expect(unlocking).rejects.toThrow('Wallet unlock vault changed');
+    else if (misleading)
+      await expect(unlocking).rejects.toThrow(
+        'Wallet unlock vault read failed'
+      );
+    else await expect(unlocking).rejects.toBe(unavailable);
+    expect(ring.isUnlocked()).toBe(false);
+    expect(f.readPair).toHaveBeenCalledTimes(1);
+    expect(f.writeCredential).not.toHaveBeenCalled();
+  }
+);
+
+it('keeps ordinary password refusal on the default host without a pair read', async () => {
+  const f = fixture();
+  const { ring } = await f.create();
+  await ring.lockWallet();
+  const plain = f.attach(
+    new SoftwareKeyring(createSoftwareKeyringHost(f.storage))
+  );
+  await expect(plain.unlock(newPassword)).resolves.toEqual({ canLogin: false });
+  expect(f.readPair).not.toHaveBeenCalled();
+  expect(plain.isUnlocked()).toBe(false);
+});
 
 it.each(['explicit lock', 'sibling unlock and lock'])(
   'does not reopen a held password unlock after %s',
