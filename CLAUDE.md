@@ -115,7 +115,7 @@ sysweb3-keyring (depends on core, network, utils)
 
 1. Check `shouldUpdateHDSigner()` logic for HD signer recreation
 2. Verify network parameters (chainId, slip44)
-3. Validate RPC endpoint with `validateSysRpc()` or `validateEthRpc()`
+3. Validate RPC endpoint with `getSysRpc(draft, owner)` or `validateEthRpc()`
 4. Check blockbook URL format for UTXO chains
 
 ### Testing Hardware Wallets

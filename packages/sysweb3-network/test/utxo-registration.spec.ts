@@ -3,6 +3,7 @@ import {
   coins,
   findUtxoCoinByRegistration,
   getSysRpc,
+  observeSysRpc,
   INetworkType,
 } from '../src';
 
@@ -47,14 +48,53 @@ it('resolves exact canonical UTXO coordinates without consulting display text', 
   ).toBeUndefined();
 });
 
-it('preserves the RPC preview and display fields for a known status alias', async () => {
+it('requires verification ownership before reading an endpoint', async () => {
   const read = status({ network: 'tSYS', coin: 'Syscoin Testnet' }, 'test');
-  const result = await getSysRpc({
-    url: endpoint,
-    label: 'My test network',
-    symbol: 'CUSTOM',
+  await expect(
+    Reflect.apply(getSysRpc, undefined, [{ url: endpoint }])
+  ).rejects.toThrow('Invalid UTXO registration verification');
+  expect(read).not.toHaveBeenCalled();
+});
+
+function ownedRead(
+  registration: { chainId: number; slip44: number },
+  coinName: string,
+  backendChain: string
+) {
+  const coin = findUtxoCoinByRegistration(registration)!;
+  return {
+    registration,
+    backendChain,
+    signal: new AbortController().signal,
+    assertCurrent: () => undefined,
+    readJson: jest.fn(async (url: string) => {
+      if (url === `${endpoint}api/v2/`)
+        return {
+          blockbook: { coin: coinName },
+          backend: { chain: backendChain },
+        };
+      expect(url).toBe(`${endpoint}api/v2/block-index/0`);
+      return { blockHash: coin.hashGenesisBlock };
+    }),
+  };
+}
+
+it('formats the same verified and first-use display fields after status and genesis', async () => {
+  const owner = ownedRead(
+    { chainId: 5700, slip44: 1 },
+    'Syscoin Testnet',
+    'test'
+  );
+  const draft = { url: endpoint, label: 'My test network' };
+  const verified = await getSysRpc(draft, owner);
+  const observed = await observeSysRpc(draft, {
+    registration: owner.registration,
+    signal: owner.signal,
+    assertCurrent: owner.assertCurrent,
+    readJson: owner.readJson,
   });
-  expect(result).toMatchObject({
+  expect(observed).toEqual(verified);
+  expect(verified).toMatchObject({
     network: 'tSYS',
     chain: 'test',
     rpc: {
@@ -63,41 +103,126 @@ it('preserves the RPC preview and display fields for a known status alias', asyn
         slip44: 1,
         kind: INetworkType.Syscoin,
         label: 'My test network',
-        currency: 'custom',
+        currency: 'tsys',
         url: endpoint,
         explorer: endpoint,
+        utxoBackendChain: 'test',
         default: false,
       },
       networkConfig: { networks: { testnet: { bech32: 'tsys' } } },
     },
   });
-  expect(read).toHaveBeenCalledTimes(1);
+  expect(owner.readJson).toHaveBeenCalledTimes(4);
 });
 
-it('preserves an explicit zero chain ID independent of SLIP44 in the RPC result', async () => {
-  const name = 'Explicit Zero Fixture';
-  const litecoin = coins.find((coin) => coin.name === 'Litecoin')!;
-  coins.push({
-    ...litecoin,
-    chainId: 0,
-    name,
-    coinName: name,
-    coinLabel: name,
-  });
-  const read = status({ coin: name }, 'main');
-  const { rpc } = await getSysRpc({ url: endpoint });
+it('preserves a zero chain ID without treating it as a missing registration', async () => {
+  const owner = ownedRead({ chainId: 0, slip44: 0 }, 'Bitcoin', 'main');
+  const { rpc } = await getSysRpc({ url: endpoint }, owner);
   expect(rpc.formattedNetwork.chainId).toBe(0);
-  expect(rpc.formattedNetwork.slip44).toBe(litecoin.slip44);
-  expect(rpc.networkConfig.networks.mainnet.bech32).toBe('ltc');
-  expect(read).toHaveBeenCalledTimes(1);
+  expect(rpc.formattedNetwork.slip44).toBe(0);
+  expect(rpc.networkConfig.networks.mainnet.bech32).toBe('bc');
+  expect(owner.readJson).toHaveBeenCalledTimes(2);
 });
 
-it('refuses to build RPC configuration for an ambiguous canonical tuple', async () => {
+it('refuses an ambiguous canonical tuple before reading the endpoint', async () => {
+  const owner = ownedRead({ chainId: 2, slip44: 2 }, 'Litecoin', 'main');
   const litecoin = coins.find((coin) => coin.name === 'Litecoin')!;
   coins.push({ ...litecoin, name: 'Duplicate Litecoin Fixture' });
-  const read = status({ coin: 'Litecoin', network: 'LTC' }, 'main');
-  await expect(getSysRpc({ url: endpoint })).rejects.toThrow(
-    'Invalid canonical UTXO coin registration'
+  await expect(getSysRpc({ url: endpoint }, owner)).rejects.toThrow(
+    'Invalid UTXO registration verification'
   );
-  expect(read).toHaveBeenCalledTimes(1);
+  expect(owner.readJson).not.toHaveBeenCalled();
 });
+
+it('refuses to reinterpret a verification request as first-use observation', async () => {
+  const owner = ownedRead(
+    { chainId: 5700, slip44: 1 },
+    'Syscoin Testnet',
+    'test'
+  );
+  await expect(
+    Reflect.apply(observeSysRpc, undefined, [{ url: endpoint }, owner])
+  ).rejects.toThrow('Invalid UTXO registration verification');
+  expect(owner.readJson).not.toHaveBeenCalled();
+});
+
+it.each(['abort', 'stale'])(
+  'refuses a %s first-use preview after the last observation guard',
+  async (kind) => {
+    const { backendChain, ...reader } = ownedRead(
+      { chainId: 5700, slip44: 1 },
+      'Syscoin Testnet',
+      'test'
+    );
+    expect(backendChain).toBe('test');
+    const controller = new AbortController();
+    let guardCalls = 0;
+    let current = true;
+    const observed = observeSysRpc(
+      { url: endpoint },
+      {
+        ...reader,
+        signal: controller.signal,
+        assertCurrent() {
+          if (!current) throw new Error('Draft changed');
+          if (++guardCalls === 5)
+            queueMicrotask(() => {
+              if (kind === 'abort') controller.abort();
+              else current = false;
+            });
+        },
+      }
+    );
+    await expect(observed).rejects.toThrow(
+      'UTXO registration verification cancelled'
+    );
+    expect(reader.readJson).toHaveBeenCalledTimes(2);
+  }
+);
+
+it.each(['replacement', 'in-place mutation'])(
+  'formats first use from the verified coin after a late catalogue %s',
+  async (kind) => {
+    const registration = { chainId: 5700, slip44: 1 };
+    const coin = findUtxoCoinByRegistration(registration)!;
+    const original = { ...coin };
+    const replacement = {
+      ...coin,
+      coinShortcut: 'FAKE',
+      bech32Prefix: 'fake',
+      hashGenesisBlock: 'ab'.repeat(32),
+    };
+    const index = coins.indexOf(coin);
+    const owner = ownedRead(registration, 'Syscoin Testnet', 'test');
+    let checks = 0;
+    try {
+      await expect(
+        observeSysRpc(
+          { url: endpoint },
+          {
+            registration,
+            signal: owner.signal,
+            readJson: owner.readJson,
+            assertCurrent() {
+              if (++checks === 5)
+                queueMicrotask(() => {
+                  if (kind === 'replacement') coins[index] = replacement;
+                  else Object.assign(coin, replacement);
+                });
+            },
+          }
+        )
+      ).resolves.toMatchObject({
+        network: 'tSYS',
+        rpc: {
+          formattedNetwork: { chainId: 5700, slip44: 1, currency: 'tsys' },
+          networkConfig: { networks: { testnet: { bech32: 'tsys' } } },
+        },
+      });
+      expect(coins[index].hashGenesisBlock).toBe(replacement.hashGenesisBlock);
+      expect(owner.readJson).toHaveBeenCalledTimes(2);
+    } finally {
+      Object.assign(coin, original);
+    }
+  }
+);

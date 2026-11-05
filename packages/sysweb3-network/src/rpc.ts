@@ -1,7 +1,7 @@
 import { Chain, chains } from 'eth-chains';
 import { toBeHex } from 'ethers/utils';
 
-import { findCoin, findUtxoCoinByRegistration } from './coin-utils';
+import { findCoin } from './coin-utils';
 // import fetch from "node-fetch";
 import {
   getNetworkConfigFromCoin,
@@ -9,24 +9,22 @@ import {
   INetwork,
   INetworkType,
 } from './networks';
-import { verifyOwnedUtxoRpc } from './ownedUtxoRpc';
+import { observeFirstUseUtxoRpc, verifyOwnedUtxoRpc } from './ownedUtxoRpc';
 import { retryableFetch } from './retryUtils';
 
-import type { OwnedUtxoRpcVerification } from './ownedUtxoRpc';
+import type {
+  OwnedUtxoRpcFirstUse,
+  OwnedUtxoRpcVerification,
+} from './ownedUtxoRpc';
 import type { Coin } from './types';
 
-export type { OwnedUtxoRpcVerification } from './ownedUtxoRpc';
+export type {
+  OwnedUtxoRpcFirstUse,
+  OwnedUtxoRpcVerification,
+} from './ownedUtxoRpc';
 
 const hexRegEx = /^0x[0-9a-f]+$/iu;
 
-// Cache for blockbook validation to prevent repeated calls
-const blockbookValidationCache = new Map<
-  string,
-  {
-    result: { chain: string; network: string; valid: boolean };
-    timestamp: number;
-  }
->();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 // Cache for eth_chainId calls
@@ -40,7 +38,6 @@ const ethChainIdCache = new Map<
 
 // Function to clear RPC caches
 export const clearRpcCaches = () => {
-  blockbookValidationCache.clear();
   ethChainIdCache.clear();
   console.log('[RPC] Cleared all RPC caches');
 };
@@ -299,122 +296,37 @@ export const getEthRpc = async (
 /** end */
 
 /** bitcoin-like rpc */
-export const validateSysRpc = async (
-  url: string
-): Promise<{
-  chain: string;
-  network: string;
-  valid: boolean;
-}> => {
-  try {
-    // Check cache first
-    const cached = blockbookValidationCache.get(url);
-    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-      console.log('[validateSysRpc] Returning cached result for', url);
-      return cached.result;
-    }
-
-    const formatURL = `${url.endsWith('/') ? url.slice(0, -1) : url}/api/v2`;
-
-    // Create AbortController for timeout
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
-
-    try {
-      const response = await retryableFetch(formatURL, {
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to validate UTXO RPC: HTTP ${response.status}`);
-      }
-
-      const data = await response.json();
-
-      if (!data || !data.blockbook || !data.backend) {
-        throw new Error('Invalid response format from UTXO RPC');
-      }
-
-      const {
-        blockbook: { network, coin },
-        backend: { chain },
-      } = data;
-
-      // Handle both old and new Blockbook API formats:
-      // - Newer Blockbook: has "network" field (e.g., "BCH")
-      // - Older Blockbook: only has "coin" field (e.g., "Syscoin")
-      const coinIdentifier = network || coin;
-
-      const valid = Boolean(data && coinIdentifier);
-
-      const result = {
-        valid,
-        network: coinIdentifier,
-        chain,
-      };
-
-      // Cache the result
-      blockbookValidationCache.set(url, {
-        result,
-        timestamp: Date.now(),
-      });
-
-      return result;
-    } catch (error) {
-      if (error.name === 'AbortError') {
-        throw new Error(
-          'UTXO RPC request timeout: The server took too long to respond'
-        );
-      }
-
-      // Handle network/CORS errors
-      if (
-        error instanceof TypeError &&
-        error.message.includes('Failed to fetch')
-      ) {
-        throw new Error(
-          'Network error: Unable to connect to UTXO RPC endpoint. Please check the URL and ensure the service is accessible.'
-        );
-      }
-
-      // Re-throw if it's already a proper Error with a message
-      if (error instanceof Error) {
-        throw error;
-      }
-
-      throw new Error(`Failed to connect to UTXO RPC: ${String(error)}`);
-    } finally {
-      clearTimeout(timeoutId);
-    }
-  } catch (error) {
-    // Properly handle error objects
-    if (error instanceof Error) {
-      throw error;
-    }
-    throw new Error(String(error));
-  }
-};
-
 type SysRpcDraft = {
   url: string;
   explorer?: string;
   label?: string;
-  symbol?: string;
 };
+
+function snapshotSysRpcDraft({
+  url,
+  explorer,
+  label,
+}: SysRpcDraft): SysRpcDraft {
+  if (
+    [explorer, label].some(
+      (value) => value !== undefined && typeof value !== 'string'
+    )
+  )
+    throw new Error('Invalid UTXO registration draft');
+  return { url, explorer, label };
+}
 
 function formatSysRpc(
   data: SysRpcDraft,
   coin: Coin,
   chainId: number,
   network: string,
-  chain: string
+  chain: string,
+  currency: string
 ) {
   const networkConfig = getNetworkConfigFromCoin(coin);
   // The public explorer can differ from the RPC. It is never probed here.
   const explorer = data.explorer || data.url.replace(/\/api\/v[12]/, '');
-  const currency = data.symbol
-    ? data.symbol.toLowerCase()
-    : (coin.shortcut || coin.coinShortcut || network).toLowerCase();
   const formattedNetwork = {
     url: data.url,
     explorer,
@@ -424,58 +336,48 @@ function formatSysRpc(
     chainId,
     slip44: coin.slip44,
     kind: INetworkType.Syscoin,
+    utxoBackendChain: chain,
   };
   return { rpc: { formattedNetwork, networkConfig }, network, chain };
 }
 
 export const getSysRpc = async (
-  data: any,
-  owner?: OwnedUtxoRpcVerification
+  input: SysRpcDraft,
+  owner: OwnedUtxoRpcVerification
 ) => {
-  if (owner !== undefined) {
-    const { url, explorer, label } = data;
-    if (
-      [explorer, label].some(
-        (value) => value !== undefined && typeof value !== 'string'
-      )
-    )
-      throw new Error('Invalid UTXO registration draft');
-    const { assertCurrent, coin, chainId, backendChain, currency } =
-      await verifyOwnedUtxoRpc(url, owner);
-    assertCurrent();
-    return formatSysRpc(
-      { url, explorer, label, symbol: currency },
-      coin,
-      chainId,
-      coin.coinShortcut,
-      backendChain
-    );
-  }
+  const draft = snapshotSysRpcDraft(input);
+  const { assertCurrent, coin, chainId, backendChain, currency } =
+    await verifyOwnedUtxoRpc(draft.url, owner);
+  assertCurrent();
+  return formatSysRpc(
+    draft,
+    coin,
+    chainId,
+    coin.coinShortcut,
+    backendChain,
+    currency
+  );
+};
 
-  try {
-    const { valid, network, chain } = await validateSysRpc(data.url);
-
-    if (!valid) throw new Error('Invalid Trezor Blockbook Explorer URL');
-
-    // Keep the existing status alias lookup, then resolve the exact SDK tuple.
-    const namedCoin = findCoin({ name: network });
-    if (!namedCoin) {
-      throw new Error(`Coin configuration not found for ${network}`);
-    }
-    const chainId = namedCoin.chainId ?? namedCoin.slip44;
-    const coinData = findUtxoCoinByRegistration({
-      chainId,
-      slip44: namedCoin.slip44,
-    });
-    if (!coinData) throw new Error('Invalid canonical UTXO coin registration');
-    return formatSysRpc(data, coinData, chainId, network, chain);
-  } catch (error) {
-    // Properly handle error objects
-    if (error instanceof Error) {
-      throw error;
-    }
-    throw new Error(String(error));
-  }
+/** Preview a previously unpinned HTTPS endpoint for explicit registration. */
+export const observeSysRpc = async (
+  input: SysRpcDraft,
+  owner: OwnedUtxoRpcFirstUse
+) => {
+  const draft = snapshotSysRpcDraft(input);
+  const { assertCurrent, coin, currency, observedBackendChain, registration } =
+    await observeFirstUseUtxoRpc(draft.url, owner);
+  assertCurrent();
+  const result = formatSysRpc(
+    draft,
+    coin,
+    registration.chainId,
+    coin.coinShortcut,
+    observedBackendChain,
+    currency
+  );
+  assertCurrent();
+  return result;
 };
 /** end */
 
