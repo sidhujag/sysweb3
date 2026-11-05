@@ -115,6 +115,54 @@ describe('cancellation original identity admission', () => {
   });
   afterEach(() => jest.restoreAllMocks());
 
+  it.each(['assertCurrentContext', 'validateOriginal'] as const)(
+    'rejects speed-up with no %s before reading the original',
+    async (field) => {
+      const approval = options();
+      await expect(
+        sdk.sendTransactionWithEditedFee(HASH, true, {
+          ...approval,
+          [field]: undefined,
+        } as never)
+      ).rejects.toThrow(/Replacement.*required/);
+      expect(provider.getTransaction).not.toHaveBeenCalled();
+      expect(getKey).not.toHaveBeenCalled();
+      expect(provider.sendTransaction).not.toHaveBeenCalled();
+    }
+  );
+
+  it('rejects an asynchronous cancellation context before RPC or signing', async () => {
+    await expect(
+      sdk.cancelSentTransaction(HASH, true, undefined, {
+        ...options(),
+        assertCurrentContext: async () => undefined,
+      } as never)
+    ).rejects.toThrow('Transaction context guard must be synchronous');
+    expect(provider.getTransaction).not.toHaveBeenCalled();
+    expect(getKey).not.toHaveBeenCalled();
+    expect(provider.sendTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rechecks that a cancellation context stays synchronous after RPC', async () => {
+    let originalRead = false;
+    provider.getTransaction.mockImplementationOnce(async () => {
+      originalRead = true;
+      return row();
+    });
+    await expect(
+      sdk.cancelSentTransaction(HASH, true, undefined, {
+        ...options(),
+        assertCurrentContext: () => {
+          if (originalRead) return Promise.resolve();
+        },
+      })
+    ).rejects.toThrow('Transaction context guard must be synchronous');
+    expect(provider.getTransaction).toHaveBeenCalledTimes(1);
+    expect(validateOriginal).not.toHaveBeenCalled();
+    expect(getKey).not.toHaveBeenCalled();
+    expect(provider.sendTransaction).not.toHaveBeenCalled();
+  });
+
   it('healthy control: admits the authenticated original only to the denied unsigned boundary', async () => {
     expect(await run()).toEqual({
       isCanceled: false,
@@ -392,6 +440,7 @@ describe('cancellation original identity admission', () => {
         await expect(
           sdk.sendTransactionWithEditedFee(HASH, true, {
             previewOnly: true,
+            assertCurrentContext: options().assertCurrentContext,
             validateOriginal,
           })
         ).rejects.toThrow('Original transaction validator must be synchronous');

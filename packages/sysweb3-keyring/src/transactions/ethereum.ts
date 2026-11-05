@@ -240,6 +240,7 @@ const assertSynchronousOriginalValidation = (
   result: unknown,
   message = 'Original transaction validator must be synchronous'
 ): void => {
+  if (result === undefined) return;
   if (
     result !== null &&
     (typeof result === 'object' || typeof result === 'function') &&
@@ -248,8 +249,8 @@ const assertSynchronousOriginalValidation = (
     // A void callback type also accepts async functions. Decline their pending
     // decision and consume a later rejection without allowing signing to start.
     void Promise.resolve(result).catch(() => undefined);
-    throw new Error(message);
   }
+  throw new Error(message);
 };
 
 export class EthereumTransactions<
@@ -1095,7 +1096,12 @@ export class EthereumTransactions<
     ) {
       throw new Error('Cancellation fee approval required');
     }
-    const assertHostContext = options.assertCurrentContext;
+    const { assertCurrentContext, validateOriginal } = options;
+    const assertHostContext = () =>
+      assertSynchronousOriginalValidation(
+        assertCurrentContext(),
+        'Transaction context guard must be synchronous'
+      );
     assertHostContext();
     const state = this.getState();
     const selectedType = state.activeAccountType;
@@ -1209,7 +1215,7 @@ export class EthereumTransactions<
           }
         : undefined;
     assertSynchronousOriginalValidation(
-      options.validateOriginal(tx as TransactionResponse | null)
+      validateOriginal(tx as TransactionResponse | null)
     );
     assertCurrent();
 
@@ -2078,8 +2084,8 @@ export class EthereumTransactions<
   };
   sendTransactionWithEditedFee = async (
     txHash: string,
-    isLegacy = false,
-    options: IEvmReplacementOptions = {}
+    isLegacy: boolean | undefined,
+    options: IEvmReplacementOptions
   ): Promise<{
     maximumFee?: string;
     error?: boolean;
@@ -2090,35 +2096,35 @@ export class EthereumTransactions<
     code?: string;
     message?: string;
   }> => {
-    const {
-      assertCurrentContext,
-      validateOriginal,
-      beforeBroadcast,
-      approvedMaximumFee,
-    } = options;
-    const previewOnly = options.previewOnly === true;
-    if (!previewOnly) this.assertHardwareSignerAvailable(options.targetAccount);
+    const previewOnly = options?.previewOnly === true;
+    const approvedMaximumFee = options?.approvedMaximumFee;
     if (
       !previewOnly &&
       (typeof approvedMaximumFee !== 'string' ||
-        !/^\d{1,78}$/.test(approvedMaximumFee))
-    ) {
+        !/^(0|[1-9][0-9]{0,77})$/.test(approvedMaximumFee))
+    )
       throw new Error('Replacement fee approval required');
-    }
-    let signing: ReturnType<typeof this.captureEvmSigningContext> | undefined;
+    if (typeof options?.assertCurrentContext !== 'function')
+      throw new Error('Replacement context required');
+    if (typeof options.validateOriginal !== 'function')
+      throw new Error('Replacement original validator required');
+    const { assertCurrentContext, validateOriginal, beforeBroadcast } = options;
+    if (!previewOnly) this.assertHardwareSignerAvailable(options.targetAccount);
+    isLegacy ??= false;
+    let assertCapturedSignerCurrent: (() => void) | undefined;
     const assertSigningCurrent = () => {
-      const result = assertCurrentContext?.() as unknown;
       assertSynchronousOriginalValidation(
-        result,
+        assertCurrentContext(),
         'Transaction context guard must be synchronous'
       );
-      if (result !== undefined)
-        throw new Error('Transaction context guard must return undefined');
-      signing?.assertCurrent();
+      assertCapturedSignerCurrent?.();
     };
     const assertBeforeBroadcast = () => {
       assertSigningCurrent();
-      beforeBroadcast?.();
+      assertSynchronousOriginalValidation(
+        beforeBroadcast?.(),
+        'Transaction broadcast guard must be synchronous'
+      );
       assertSigningCurrent();
     };
     const assertSignedSender = (signedTx: string) => {
@@ -2144,7 +2150,9 @@ export class EthereumTransactions<
     ) {
       throw new Error('Replacement signing account is unavailable');
     }
-    if (!previewOnly) signing = this.captureEvmSigningContext(targetAccount);
+    if (!previewOnly)
+      assertCapturedSignerCurrent =
+        this.captureEvmSigningContext(targetAccount).assertCurrent;
     const expectedSender = activeAccount.address.toLowerCase();
     const requestedHash = txHash.toLowerCase();
     const provider = this.web3Provider;
@@ -2179,7 +2187,7 @@ export class EthereumTransactions<
       ) {
         throw new Error('Trezor does not support type 1 replacement signing');
       }
-      assertSynchronousOriginalValidation(validateOriginal?.(authenticated));
+      assertSynchronousOriginalValidation(validateOriginal(authenticated));
       assertCurrent();
       return authenticated;
     };

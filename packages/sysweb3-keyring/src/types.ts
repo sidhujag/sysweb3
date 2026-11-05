@@ -78,39 +78,26 @@ export type EvmFormattedSendArguments =
       options: IEvmSendOptions & { mode: 'specialized' }
     ];
 
-export interface IEvmReplacementOptions {
-  /** Read-only preview; never requests credentials, a device signature or broadcast. */
-  previewOnly?: boolean;
-  /** Required for sending: maximum execution gas fee in decimal wei approved by the user. */
-  approvedMaximumFee?: string;
-  /** Select the locally controlled outer gas payer for a smart-account transaction. */
-  targetAccount?: { id: number; type: KeyringAccountType };
-  /** Host guard for the current account, network, session and pending original. */
-  assertCurrentContext?: () => void;
-  /** Synchronous original admission; Promise/thenable returns are rejected, never awaited. */
-  validateOriginal?: (transaction: TransactionResponse) => void;
-  beforeBroadcast?: () => void;
-}
+export type EvmReplacementFeeApproval =
+  | { previewOnly: true; approvedMaximumFee?: never }
+  | { previewOnly?: false; approvedMaximumFee: string };
 
-export interface IEvmCancellationOptions {
-  /** Select the locally controlled outer gas payer for a smart-account transaction. */
+type EvmOriginalAdmission<Original> = {
+  /** Select a distinct locally controlled gas payer for a smart account. */
   targetAccount?: { id: number; type: KeyringAccountType };
-  /** Read-only preview; never requests credentials, a device signature or broadcast. */
-  previewOnly?: boolean;
-  /** Required for sending: maximum execution gas fee in decimal wei approved by the user. */
-  approvedMaximumFee?: string;
-  /** Synchronous host guard for selection or session state outside the keyring. */
+  /** Synchronous host guard for the current account, network, session and pending original. */
   assertCurrentContext: () => void;
-  /**
-   * Required synchronous host admission for the reviewed pending original.
-   * Non-null values contain detached, authenticated signed fields. Null means
-   * the RPC did not find the original: admit it only when the supplied fallbackNonce
-   * belongs to trusted, still-current local submission data; otherwise throw.
-   * Invalid non-null RPC replies never become a null/fallback admission.
-   * Promise/thenable returns are rejected, never awaited.
-   */
-  validateOriginal: (transaction: TransactionResponse | null) => void;
-}
+  /** Receives authenticated signed fields. Null requires explicit cancellation fallback admission. */
+  validateOriginal: (transaction: Original) => void;
+};
+
+export type IEvmReplacementOptions = EvmReplacementFeeApproval &
+  EvmOriginalAdmission<TransactionResponse> & {
+    beforeBroadcast?: () => void;
+  };
+
+export type IEvmCancellationOptions = EvmReplacementFeeApproval &
+  EvmOriginalAdmission<TransactionResponse | null>;
 
 // Version type is now replaced by SignTypedDataVersion from @metamask/eth-sig-util
 
@@ -180,8 +167,8 @@ export interface IEthereumTransactions {
 
   sendTransactionWithEditedFee: (
     txHash: string,
-    isLegacy?: boolean,
-    options?: IEvmReplacementOptions
+    isLegacy: boolean | undefined,
+    options: IEvmReplacementOptions
   ) => Promise<{
     maximumFee?: string;
     isSpeedUp: boolean;

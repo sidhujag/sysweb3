@@ -156,14 +156,20 @@ describe('source SDK account-scoped replacement signing', () => {
   let beforeBroadcast: jest.Mock;
   let validateOriginal: jest.Mock;
 
-  const options = (targetAccount = payer) => ({
-    targetAccount,
-    approvedMaximumFee: APPROVED_MAXIMUM_FEE,
+  const admission = () => ({
     assertCurrentContext: () => {
       if (!current) throw new Error('PALI_TRANSACTION_CONTEXT_CHANGED');
     },
     validateOriginal,
     beforeBroadcast,
+  });
+  const ordinaryOptions = () => ({
+    ...admission(),
+    approvedMaximumFee: APPROVED_MAXIMUM_FEE,
+  });
+  const options = (targetAccount = payer) => ({
+    ...ordinaryOptions(),
+    targetAccount,
   });
   const useOriginal = (original: any) => {
     provider.getTransaction.mockResolvedValue(original);
@@ -721,7 +727,7 @@ describe('source SDK account-scoped replacement signing', () => {
           state.activeAccountType = payer.type;
           state.activeAccountId = payer.id;
           return sdk.sendTransactionWithEditedFee(hash, legacy, {
-            approvedMaximumFee: APPROVED_MAXIMUM_FEE,
+            ...ordinaryOptions(),
           });
         }
         return sdk.sendTransactionWithEditedFee(hash, legacy, options());
@@ -1210,9 +1216,7 @@ describe('source SDK account-scoped replacement signing', () => {
         sdk.sendTransactionWithEditedFee(
           hash,
           true,
-          caller === 'scoped'
-            ? options(target)
-            : { approvedMaximumFee: APPROVED_MAXIMUM_FEE }
+          caller === 'scoped' ? options(target) : ordinaryOptions()
         )
       ).rejects.toThrow('Trezor does not support type 1 replacement signing');
       expect(provider.getBalance).not.toHaveBeenCalled();
@@ -1258,9 +1262,7 @@ describe('source SDK account-scoped replacement signing', () => {
         sdk.sendTransactionWithEditedFee(
           hash,
           false,
-          caller === 'scoped'
-            ? options(target)
-            : { approvedMaximumFee: APPROVED_MAXIMUM_FEE }
+          caller === 'scoped' ? options(target) : ordinaryOptions()
         )
       ).resolves.toMatchObject({ isSpeedUp: true, transaction: response });
       expect(deviceCall).toHaveBeenCalledWith(
@@ -1351,9 +1353,7 @@ describe('source SDK account-scoped replacement signing', () => {
         sdk.sendTransactionWithEditedFee(
           ORIGINAL,
           false,
-          target.ordinary
-            ? { approvedMaximumFee: APPROVED_MAXIMUM_FEE }
-            : options(target)
+          target.ordinary ? ordinaryOptions() : options(target)
         )
       ).resolves.toMatchObject({ isSpeedUp: false, error: true });
       expect(beforeBroadcast).not.toHaveBeenCalled();
@@ -1388,9 +1388,7 @@ describe('source SDK account-scoped replacement signing', () => {
         sdk.sendTransactionWithEditedFee(
           ORIGINAL,
           false,
-          target.ordinary
-            ? { approvedMaximumFee: APPROVED_MAXIMUM_FEE }
-            : options(target)
+          target.ordinary ? ordinaryOptions() : options(target)
         )
       ).resolves.toMatchObject({ isSpeedUp: false, error: true });
       expect(beforeBroadcast).not.toHaveBeenCalled();

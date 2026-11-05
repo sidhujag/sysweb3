@@ -235,6 +235,8 @@ describe.each(missingHardwareCases)(
         'replacement',
         (sdk) =>
           sdk.sendTransactionWithEditedFee('0x11', false, {
+            assertCurrentContext: () => undefined,
+            validateOriginal: () => undefined,
             approvedMaximumFee: '10',
           }),
       ],
