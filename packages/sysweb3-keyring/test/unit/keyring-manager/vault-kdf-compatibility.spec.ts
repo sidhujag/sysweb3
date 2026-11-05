@@ -50,6 +50,9 @@ describe('production KDF compatibility through the real core adapter', () => {
   };
   const createRing = () => {
     const result = new Keyring(createKeyringHost(storage), {
+      captureEvmSubmission() {
+        throw new Error('EVM submission is outside this fixture');
+      },
       hardwareManager: new HardwareWalletManager(),
     });
     result.setVaultStateGetter(() => ({
