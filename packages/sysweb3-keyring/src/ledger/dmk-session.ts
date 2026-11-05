@@ -344,6 +344,7 @@ export class LedgerDmkSession {
       await this.closing;
       const connection = this.readyConnection;
       const assertCurrent = () => {
+        options.assertCurrent?.();
         if (generation !== this.generation || options.signal?.aborted)
           throw ledgerCancelledError();
         if (

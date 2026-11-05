@@ -8,6 +8,7 @@ import {
   Transaction,
 } from 'ethers';
 
+import { captureHardwareTransactionAuthority } from '../hardware-transaction-authority';
 import {
   ConnectionStatus,
   HardwareWalletType,
@@ -146,7 +147,11 @@ export class LedgerKeyring {
           }
         });
       },
-      signEVMTransaction: async (request) => {
+      signEVMTransaction: async (request, authority) => {
+        const owner =
+          authority === undefined
+            ? undefined
+            : captureHardwareTransactionAuthority(authority);
         const index = accountIndex(request.accountIndex);
         const expected = approvedAddress(request.expectedAddress);
         let transaction: Transaction;
@@ -165,21 +170,30 @@ export class LedgerKeyring {
           unsignedTxHex: transaction.unsignedSerialized.replace(/^0x/, ''),
         };
         const digest = transaction.unsignedHash;
-        return this.run(async (host, assertCurrent) => {
-          const result = await host.evm.signTransaction(approved);
-          assertCurrent();
-          const signature = checkedSignature(result, digest, expected);
-          if (
-            signature.legacyChainId !== null &&
-            signature.legacyChainId !== transaction.chainId
-          )
-            throw invalidSignature();
-          return {
-            r: signature.r.slice(2),
-            s: signature.s.slice(2),
-            v: signature.v.toString(16),
-          };
-        });
+        try {
+          return await this.run(async (host, assertCurrent) => {
+            owner?.assertCurrent();
+            const result = await (owner
+              ? host.evm.signTransaction(approved, owner)
+              : host.evm.signTransaction(approved));
+            owner?.assertCurrent();
+            assertCurrent();
+            const signature = checkedSignature(result, digest, expected);
+            if (
+              signature.legacyChainId !== null &&
+              signature.legacyChainId !== transaction.chainId
+            )
+              throw invalidSignature();
+            return {
+              r: signature.r.slice(2),
+              s: signature.s.slice(2),
+              v: signature.v.toString(16),
+            };
+          }, owner);
+        } catch (error) {
+          owner?.assertCurrent();
+          throw error;
+        }
       },
       signPersonalMessage: async (request) => {
         const expected = approvedAddress(request.expectedAddress);

@@ -6,6 +6,7 @@ export interface LedgerProgress {
 }
 
 export interface LedgerOperationOptions {
+  assertCurrent?: () => void;
   signal?: AbortSignal;
   onProgress?: (progress: LedgerProgress) => void;
 }

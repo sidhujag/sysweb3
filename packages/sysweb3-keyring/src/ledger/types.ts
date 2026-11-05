@@ -1,5 +1,7 @@
 import { SignTypedDataVersion } from '@metamask/eth-sig-util';
 
+import type { HardwareTransactionAuthority } from '../hardware-transaction-authority';
+
 export interface IUTXOMethods {
   getUtxoAddress: ({
     coin,
@@ -44,14 +46,14 @@ export interface IEvmMethods {
     address: string;
     publicKey: string;
   }>;
-  signEVMTransaction: ({
-    rawTx,
-    accountIndex,
-  }: {
-    accountIndex: number;
-    rawTx: string;
-    expectedAddress: string;
-  }) => Promise<{
+  signEVMTransaction: (
+    request: {
+      accountIndex: number;
+      rawTx: string;
+      expectedAddress: string;
+    },
+    authority?: HardwareTransactionAuthority
+  ) => Promise<{
     r: string;
     s: string;
     v: string;

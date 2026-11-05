@@ -16,6 +16,7 @@ import TrezorConnect, {
   trezorResponseError,
 } from './connect';
 import { serializeWitness } from './witness';
+import { captureHardwareTransactionAuthority } from '../hardware-transaction-authority';
 import {
   HardwareWalletManager,
   HardwareWalletType,
@@ -26,6 +27,7 @@ import {
   isEvmCoin,
 } from '../utils/derivation-paths';
 
+import type { HardwareTransactionAuthority } from '../hardware-transaction-authority';
 import type {
   AccountInfo,
   CoinSymbol,
@@ -849,34 +851,52 @@ export class TrezorKeyring {
    * @param tx - ethereum tx object
    * @returns signature object
    */
-  public async signEthTransaction({
-    tx,
-    index,
-    coin,
-    slip44,
-  }: {
-    index: string;
-    tx: EthereumTransaction | EthereumTransactionEIP1559;
-    coin: string;
-    slip44: number;
-  }) {
-    return this.executeWithRetry(async () => {
-      // Wait between popups
-      await new Promise((resolve) => setTimeout(resolve, DELAY_BETWEEN_POPUPS));
+  public async signEthTransaction(
+    {
+      tx,
+      index,
+      coin,
+      slip44,
+    }: {
+      index: string;
+      tx: EthereumTransaction | EthereumTransactionEIP1559;
+      coin: string;
+      slip44: number;
+    },
+    authority?: HardwareTransactionAuthority
+  ) {
+    const check =
+      authority === undefined
+        ? undefined
+        : captureHardwareTransactionAuthority(authority).assertCurrent;
+    return this.executeWithRetry(
+      async () => {
+        check?.();
+        // Wait between popups
+        await new Promise((resolve) =>
+          setTimeout(resolve, DELAY_BETWEEN_POPUPS)
+        );
+        check?.();
 
-      // Use dynamic path generation based on actual network parameters
-      this.setHdPath(coin, Number(index) || 0, slip44);
+        // Use dynamic path generation based on actual network parameters
+        this.setHdPath(coin, Number(index) || 0, slip44);
+        const request = { path: this.hdPath, transaction: tx };
 
-      const response = await TrezorConnect.ethereumSignTransaction({
-        path: this.hdPath,
-        transaction: tx,
-      });
-
-      if (response.success) {
-        return response;
-      }
-      throw trezorResponseError(response);
-    }, 'signEthTransaction');
+        try {
+          const response = await (check
+            ? TrezorConnect.ethereumSignTransactionOwned(request, check)
+            : TrezorConnect.ethereumSignTransaction(request));
+          check?.();
+          if (response.success) return response;
+          throw trezorResponseError(response);
+        } catch (error) {
+          check?.();
+          throw error;
+        }
+      },
+      'signEthTransaction',
+      check
+    );
   }
 
   /**

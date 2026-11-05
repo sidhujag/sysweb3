@@ -1,16 +1,16 @@
 import { TypedDataUtils, SignTypedDataVersion } from '@metamask/eth-sig-util';
 import { hashMessage, Signature, Transaction, Wallet } from 'ethers';
+import { of, Subject } from 'rxjs';
 
 import {
   createLedgerEvmAdapter,
   offlineLedgerContext,
 } from '../../../src/ledger/dmk-evm';
+import { LedgerDmkSession } from '../../../src/ledger/dmk-session';
 import {
   ledgerCancelledError,
   type LedgerTypedData,
 } from '../../../src/ledger/host-types';
-
-import type { LedgerDmkSession } from '../../../src/ledger/dmk-session';
 
 const mockContexts: unknown[] = [];
 const mockSigner = {
@@ -189,6 +189,51 @@ it('denies transaction and typed signing without trusted per-operation approval'
   expect(current.runExclusive).not.toHaveBeenCalled();
   expect(mockSigner.signTransaction).not.toHaveBeenCalled();
   expect(mockSigner.signTypedData).not.toHaveBeenCalled();
+});
+
+it('does not create a device signing action for a retired request in the DMK queue', async () => {
+  const state = new Subject();
+  const dmk = {
+    startDiscovering: jest.fn(() => of({ id: 'test', transport: 'WEB-HID' })),
+    connect: jest.fn().mockResolvedValue('session'),
+    disconnect: jest.fn().mockResolvedValue(undefined),
+    getDeviceSessionState: jest.fn(() => state),
+  };
+  const active = new LedgerDmkSession(dmk as any);
+  await active.connect();
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const previous = active.runExclusive(() => blocked);
+  const approve = jest.fn(async () => true);
+  const host = createLedgerEvmAdapter(active, {
+    confirmBlindSigning: approve,
+  });
+  let live = true;
+  const pending = host.signTransaction(
+    {
+      accountIndex: 0,
+      expectedAddress: address,
+      unsignedTxHex: rawTransaction(),
+    },
+    {
+      signal: new AbortController().signal,
+      assertCurrent() {
+        if (!live) throw ledgerCancelledError();
+      },
+    }
+  );
+  live = false;
+  release();
+  await previous;
+  await expect(pending).rejects.toMatchObject({
+    code: 'HARDWARE_REQUEST_CANCELLED',
+  });
+  expect(mockSigner.getAddress).not.toHaveBeenCalled();
+  expect(approve).not.toHaveBeenCalled();
+  expect(mockSigner.signTransaction).not.toHaveBeenCalled();
+  await active.disconnect();
 });
 
 it('does not sign when the trusted host declines its exact frozen intent', async () => {
