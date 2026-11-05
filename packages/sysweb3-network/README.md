@@ -62,6 +62,13 @@ contacting the endpoint. The caller supplies a bounded, redirect-rejecting
 Use the root `getSysRpc` API with the same owner when you also need the formatted
 network registration.
 
+For a new custom HTTPS endpoint, `observeFirstUseUtxoRpc` uses the same
+transport and owner guard. It accepts an optional exact SDK coin selection and
+returns the matched registration, canonical currency, and
+`observedBackendChain`. The backend token comes from the selected endpoint.
+The caller owns approval and any pin, and must recheck that pin before using it
+as an expected identity on later connections.
+
 ## License
 
 MIT License
