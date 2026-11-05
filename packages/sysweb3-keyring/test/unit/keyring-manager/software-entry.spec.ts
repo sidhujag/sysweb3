@@ -219,7 +219,10 @@ describe.each(missingHardwareCases)(
             specializedApproval
           ),
       ],
-      ['ERC20', (sdk) => sdk.sendSignedErc20Transaction({} as any)],
+      [
+        'ERC20',
+        (sdk) => sdk.sendSignedErc20Transaction({} as any, () => undefined),
+      ],
       ['ERC721', (sdk) => sdk.sendSignedErc721Transaction({} as any)],
       ['ERC1155', (sdk) => sdk.sendSignedErc1155Transaction({} as any)],
       [

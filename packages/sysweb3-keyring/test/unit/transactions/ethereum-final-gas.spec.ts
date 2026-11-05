@@ -271,7 +271,10 @@ describe('shared final EVM gas admission', () => {
         };
         const sending =
           method === 'sendSignedErc20Transaction'
-            ? f.sdk[method]({ ...request, tokenAmountUnits: '1' })
+            ? f.sdk[method](
+                { ...request, isLegacy: true, tokenAmountUnits: '1' },
+                () => undefined
+              )
             : f.sdk[method]({ ...request, tokenId: '1', tokenAmount: '1' });
         await expect(sending).rejects.toBeInstanceOf(EvmGasLimitError);
         expect(f.device).not.toHaveBeenCalled();

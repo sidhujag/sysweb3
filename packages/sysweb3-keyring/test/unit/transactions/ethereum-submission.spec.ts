@@ -222,10 +222,14 @@ function fixture(kind: KeyringAccountType, capture?: CaptureEvmSubmission) {
       maxPriorityFeePerGas: 1,
     };
     if (operation === 'erc20')
-      return sdk.sendSignedErc20Transaction({
-        ...request,
-        tokenAmountUnits: '1',
-      });
+      return sdk.sendSignedErc20Transaction(
+        {
+          ...request,
+          tokenAmountUnits: '1',
+          isLegacy: false,
+        },
+        () => undefined
+      );
     if (operation === 'erc721')
       return sdk.sendSignedErc721Transaction({ ...request, tokenId: '1' });
     return sdk.sendSignedErc1155Transaction({
@@ -346,15 +350,19 @@ it('keeps exact ERC20 amounts on the ERC20 capture and persistence route', async
     await nonceReady.promise;
     return 7;
   });
-  const sending = sdk.sendSignedErc20Transaction({
-    networkUrl: network.url,
-    receiver: to,
-    tokenAddress: to,
-    tokenAmountUnits: '9007199254740993',
-    gasLimit: 42000,
-    maxFeePerGas: 3,
-    maxPriorityFeePerGas: 1,
-  });
+  const sending = sdk.sendSignedErc20Transaction(
+    {
+      networkUrl: network.url,
+      receiver: to,
+      tokenAddress: to,
+      tokenAmountUnits: '9007199254740993',
+      gasLimit: 42000,
+      isLegacy: false,
+      maxFeePerGas: 3,
+      maxPriorityFeePerGas: 1,
+    },
+    () => undefined
+  );
   await Promise.race([nonceRead.promise, sending]);
   expect(capture).toHaveBeenCalledWith(
     expect.objectContaining({ operation: 'erc20' })
@@ -374,6 +382,87 @@ it('keeps exact ERC20 amounts on the ERC20 capture and persistence route', async
   await sending;
   expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
   expect(provider.sendTransaction).toHaveBeenCalledWith(saved.rawTransaction);
+});
+
+it('rejects absent or async review, a different RPC and missing reviewed fees before provider or key entry', async () => {
+  const f = fixture(KeyringAccountType.HDAccount, () => ({
+    assertCurrent: () => undefined,
+    persistSigned: jest.fn(async () => undefined),
+  }));
+  const approved = {
+    networkUrl: f.network.url,
+    receiver: to,
+    tokenAddress: to,
+    tokenAmountUnits: '1',
+    gasLimit: 42000,
+    isLegacy: false as const,
+    maxFeePerGas: 3,
+    maxPriorityFeePerGas: 1,
+  };
+  await expect(
+    (f.sdk.sendSignedErc20Transaction as any)(approved)
+  ).rejects.toThrow('approval required');
+  await expect(
+    f.sdk.sendSignedErc20Transaction(approved, async () => {
+      throw Error('late');
+    })
+  ).rejects.toThrow('must be synchronous');
+  await expect(
+    f.sdk.sendSignedErc20Transaction(
+      { ...approved, networkUrl: 'https://wrong.invalid' },
+      () => undefined
+    )
+  ).rejects.toThrow('network changed');
+  await expect(
+    f.sdk.sendSignedErc20Transaction(
+      { ...approved, maxFeePerGas: undefined } as any,
+      () => undefined
+    )
+  ).rejects.toThrow('ERC20 maximum fee');
+  await expect(
+    f.sdk.sendSignedErc20Transaction(
+      { ...approved, gasPrice: 3 } as any,
+      () => undefined
+    )
+  ).rejects.toThrow('Invalid ERC20 transaction fee model');
+  for (const method of Object.values(f.provider))
+    expect(method).not.toHaveBeenCalled();
+  expect(f.keyAccess).not.toHaveBeenCalled();
+  expect(f.device).not.toHaveBeenCalled();
+});
+
+it('blocks the ERC20 POST when approval closes during durable persistence', async () => {
+  const stored = deferred();
+  const acknowledged = deferred();
+  let current = true;
+  const f = fixture(KeyringAccountType.HDAccount, () => ({
+    assertCurrent: () => undefined,
+    async persistSigned() {
+      stored.resolve();
+      await acknowledged.promise;
+    },
+  }));
+  const sending = f.sdk.sendSignedErc20Transaction(
+    {
+      networkUrl: f.network.url,
+      receiver: to,
+      tokenAddress: to,
+      tokenAmountUnits: '1',
+      gasLimit: 42000,
+      isLegacy: true,
+      gasPrice: 3,
+    },
+    () => {
+      if (!current) throw Error('Review closed');
+    }
+  );
+  await Promise.race([stored.promise, sending]);
+  current = false;
+  acknowledged.resolve();
+  await expect(sending).rejects.toMatchObject({
+    transactionNotBroadcast: true,
+  });
+  expect(f.provider.sendTransaction).not.toHaveBeenCalled();
 });
 
 it.each(operations)(

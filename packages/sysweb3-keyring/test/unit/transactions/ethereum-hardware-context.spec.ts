@@ -540,10 +540,17 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
         decimals?: number;
         isLegacy?: boolean;
       }) =>
-        sdk.sendSignedErc20Transaction({
-          ...tokenRequest(),
-          ...fields,
-        } as Parameters<typeof sdk.sendSignedErc20Transaction>[0]);
+        sdk.sendSignedErc20Transaction(
+          {
+            ...tokenRequest(),
+            isLegacy: false,
+            ...fields,
+            ...(fields.isLegacy
+              ? { gasPrice: 100 }
+              : { maxFeePerGas: 100, maxPriorityFeePerGas: 2 }),
+          } as Parameters<typeof sdk.sendSignedErc20Transaction>[0],
+          () => undefined
+        );
       const expectNoTokenIo = () => {
         expect(captureSubmission).not.toHaveBeenCalled();
         expect(provider.getFeeData).not.toHaveBeenCalled();
@@ -745,7 +752,23 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
               : { maxFeePerGas: '100', maxPriorityFeePerGas: '2' }),
           };
           return method === 'sendSignedErc20Transaction'
-            ? sdk[method]({ ...request, tokenAmountUnits: atomic })
+            ? sdk[method](
+                {
+                  networkUrl: request.networkUrl,
+                  tokenAddress,
+                  receiver: recipient,
+                  gasLimit: request.gasLimit,
+                  tokenAmountUnits: atomic,
+                  ...(legacy
+                    ? { isLegacy: true, gasPrice: '100' }
+                    : {
+                        isLegacy: false,
+                        maxFeePerGas: '100',
+                        maxPriorityFeePerGas: '2',
+                      }),
+                },
+                () => undefined
+              )
             : sdk[method]({
                 ...request,
                 tokenId: '9007199254740993',

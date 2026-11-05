@@ -226,15 +226,19 @@ describe('Ethereum Transactions', () => {
         JSON.parse(JSON.stringify(BigNumber.from(value)));
 
       await expect(
-        keyringManager.ethereumTransaction.sendSignedErc20Transaction({
-          gasLimit: serializeBigNumber('100000'),
-          maxFeePerGas: serializeBigNumber('20000000000'),
-          maxPriorityFeePerGas: serializeBigNumber('2000000000'),
-          networkUrl: 'https://rpc.example',
-          receiver: '0x2c7536E3605D9C16a7a3D7b1898e529396a65c23',
-          tokenAddress: '0x1111111111111111111111111111111111111111',
-          tokenAmountUnits: '1000000000000000000',
-        })
+        keyringManager.ethereumTransaction.sendSignedErc20Transaction(
+          {
+            gasLimit: serializeBigNumber('100000'),
+            maxFeePerGas: serializeBigNumber('20000000000'),
+            maxPriorityFeePerGas: serializeBigNumber('2000000000'),
+            networkUrl: currentVaultState.activeNetwork.url,
+            receiver: '0x2c7536E3605D9C16a7a3D7b1898e529396a65c23',
+            tokenAddress: '0x1111111111111111111111111111111111111111',
+            tokenAmountUnits: '1000000000000000000',
+            isLegacy: false,
+          },
+          () => undefined
+        )
       ).resolves.toBeDefined();
 
       expect(provider.sendTransaction).toHaveBeenCalledTimes(1);

@@ -2557,15 +2557,24 @@ export class EthereumTransactions<
     }
   };
   sendSignedErc20Transaction = async (
-    request: ISendSignedErc20TransactionProps
+    request: ISendSignedErc20TransactionProps,
+    assertApproved: () => void
   ): Promise<IResponseFromSendErcSignedTransaction> => {
-    const { receiver, tokenAddress, tokenAmountUnits, gasLimit, saveTrezorTx } =
-      request;
-    let {
-      isLegacy = false,
-      maxPriorityFeePerGas,
-      maxFeePerGas,
-      gasPrice,
+    if (typeof assertApproved !== 'function')
+      throw new Error('ERC20 transaction approval required');
+    const assertApproval = () =>
+      assertSynchronousOriginalValidation(
+        assertApproved(),
+        'ERC20 transaction approval must be synchronous'
+      );
+    assertApproval();
+    const {
+      receiver,
+      tokenAddress,
+      tokenAmountUnits,
+      saveTrezorTx,
+      networkUrl,
+      isLegacy,
     } = request;
     const {
       activeAccount,
@@ -2576,6 +2585,8 @@ export class EthereumTransactions<
       assertCurrent: assertSigningCurrent,
     } = this.captureEvmSigningContext();
     const activeAccountAddress = activeAccount.address;
+    if (networkUrl !== activeNetwork.url)
+      throw new Error('ERC20 transaction approval network changed');
     if (
       'tokenAmount' in request ||
       'decimals' in request ||
@@ -2587,27 +2598,54 @@ export class EthereumTransactions<
       tokenAmountUnits,
       'ERC20 amount'
     );
+    if (
+      typeof isLegacy !== 'boolean' ||
+      (isLegacy
+        ? request.maxFeePerGas !== undefined ||
+          request.maxPriorityFeePerGas !== undefined
+        : request.gasPrice !== undefined)
+    )
+      throw new Error('Invalid ERC20 transaction fee model');
+    const gasLimit = BigNumber.from(
+      assertEvmGasLimit(
+        parseEvmFeeQuantity(request.gasLimit, 'ERC20 gas limit'),
+        BigInt(activeNetwork.chainId)
+      )
+    );
+    const gasPrice = isLegacy
+      ? BigNumber.from(parseEvmFeeQuantity(request.gasPrice, 'ERC20 gas price'))
+      : undefined;
+    const maxFeePerGas = !isLegacy
+      ? BigNumber.from(
+          parseEvmFeeQuantity(request.maxFeePerGas, 'ERC20 maximum fee')
+        )
+      : undefined;
+    const maxPriorityFeePerGas = !isLegacy
+      ? BigNumber.from(
+          parseEvmFeeQuantity(
+            request.maxPriorityFeePerGas,
+            'ERC20 priority fee'
+          )
+        )
+      : undefined;
+    if (
+      (gasPrice && gasPrice.isZero()) ||
+      (maxFeePerGas &&
+        (maxFeePerGas.isZero() || maxPriorityFeePerGas!.gt(maxFeePerGas)))
+    )
+      throw new Error('Invalid ERC20 fees');
     const submission = this.captureSubmission(
       'erc20',
       activeAccount,
       activeAccountType,
       activeAccountId,
       activeNetwork,
-      assertSigningCurrent
+      () => {
+        assertApproval();
+        assertSigningCurrent();
+      }
     );
     const assertCurrent = submission.assertCurrent;
-    ({ gasPrice, isLegacy, maxFeePerGas, maxPriorityFeePerGas } =
-      await this.resolveEvmFeeParams(
-        {
-          gasPrice,
-          isLegacy,
-          maxFeePerGas,
-          maxPriorityFeePerGas,
-        },
-        provider
-      ));
-    assertCurrent();
-
     const sendERC20Token = async () => {
       assertCurrent();
       const { decryptedPrivateKey } = this.getDecryptedPrivateKey();
@@ -2625,9 +2663,10 @@ export class EthereumTransactions<
               'pending'
             ),
             gasPrice,
-            ...(gasLimit && { gasLimit }),
+            gasLimit,
             type: 0, // Explicitly set Type 0 for legacy token transfers
           };
+          assertCurrent();
           transferMethod = await _contract.transfer.populateTransaction(
             receiver,
             exactTokenAmount,
@@ -2641,9 +2680,10 @@ export class EthereumTransactions<
             ),
             maxPriorityFeePerGas,
             maxFeePerGas,
-            ...(gasLimit && { gasLimit }),
+            gasLimit,
           };
 
+          assertCurrent();
           transferMethod = await _contract.transfer.populateTransaction(
             receiver,
             exactTokenAmount,
@@ -2689,15 +2729,12 @@ export class EthereumTransactions<
           exactTokenAmount,
         ]);
 
-        // Use fallback gas limit if not provided (for auto-estimation)
-        const effectiveGasLimit = gasLimit || this.toBigNumber('100000'); // ERC20 fallback
-
         let txFormattedForEthers;
         if (isLegacy) {
           txFormattedForEthers = {
             to: tokenAddress,
             value: '0x0',
-            gasLimit: effectiveGasLimit,
+            gasLimit: gasLimit,
             gasPrice,
             data: txData,
             nonce: transactionNonce,
@@ -2708,7 +2745,7 @@ export class EthereumTransactions<
           txFormattedForEthers = {
             to: tokenAddress,
             value: '0x0',
-            gasLimit: effectiveGasLimit,
+            gasLimit: gasLimit,
             maxFeePerGas,
             maxPriorityFeePerGas,
             data: txData,
@@ -2784,15 +2821,12 @@ export class EthereumTransactions<
           exactTokenAmount,
         ]);
 
-        // Use fallback gas limit if not provided (for auto-estimation)
-        const effectiveGasLimit = gasLimit || this.toBigNumber('100000'); // ERC20 fallback
-
         let txToBeSignedByTrezor;
         if (isLegacy) {
           txToBeSignedByTrezor = {
             to: tokenAddress,
             value: '0x0',
-            gasLimit: this.toHex0x(effectiveGasLimit, 'gasLimit'),
+            gasLimit: this.toHex0x(gasLimit, 'gasLimit'),
             gasPrice: this.toHex0x(gasPrice, 'gasPrice'),
             nonce: this.toBigNumber(transactionNonce)._hex,
             chainId: activeNetwork.chainId,
@@ -2802,7 +2836,7 @@ export class EthereumTransactions<
           txToBeSignedByTrezor = {
             to: tokenAddress,
             value: '0x0',
-            gasLimit: this.toHex0x(effectiveGasLimit, 'gasLimit'),
+            gasLimit: this.toHex0x(gasLimit, 'gasLimit'),
             maxFeePerGas: this.toHex0x(maxFeePerGas, 'maxFeePerGas'),
             maxPriorityFeePerGas: this.toHex0x(
               maxPriorityFeePerGas,
@@ -2834,7 +2868,7 @@ export class EthereumTransactions<
               txFormattedForEthers = {
                 to: tokenAddress,
                 value: '0x0',
-                gasLimit: effectiveGasLimit,
+                gasLimit: gasLimit,
                 gasPrice,
                 data: txData,
                 nonce: transactionNonce,
@@ -2845,7 +2879,7 @@ export class EthereumTransactions<
               txFormattedForEthers = {
                 to: tokenAddress,
                 value: '0x0',
-                gasLimit: effectiveGasLimit,
+                gasLimit: gasLimit,
                 maxFeePerGas,
                 maxPriorityFeePerGas,
                 data: txData,
