@@ -54,7 +54,7 @@ const storage = () => {
 (async () => {
   const {
     SoftwareKeyring,
-    createSoftwareKeyringHost,
+    createKeyringHost,
     KeyringAccountType,
     INetworkType,
   } = require(entry);
@@ -78,9 +78,11 @@ const storage = () => {
   });
   const first = storage();
   const second = storage();
-  const firstHost = createSoftwareKeyringHost(first);
-  const a = new SoftwareKeyring(firstHost);
-  const b = new SoftwareKeyring(createSoftwareKeyringHost(second));
+  const firstHost = createKeyringHost(first);
+  const a = new SoftwareKeyring(firstHost, { captureEvmSubmission: null });
+  const b = new SoftwareKeyring(createKeyringHost(second), {
+    captureEvmSubmission: null,
+  });
   const aState = makeState();
   const bState = makeState();
   a.setVaultStateGetter(() => aState);
@@ -176,9 +178,16 @@ const storage = () => {
     await assert.rejects(a.importLedgerAccount(), {
       code: 'HARDWARE_SIGNER_UNAVAILABLE',
     });
-    const restarted = new SoftwareKeyring(firstHost);
+    const restarted = new SoftwareKeyring(firstHost, {
+      captureEvmSubmission: null,
+    });
     restarted.setVaultStateGetter(() => aState);
     try {
+      await assert.rejects(
+        restarted.unlock(password),
+        /owned by another keyring/
+      );
+      await a.lockWallet();
       assert.equal((await restarted.unlock(password)).canLogin, true);
     } finally {
       await restarted.destroy();

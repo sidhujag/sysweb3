@@ -10,6 +10,11 @@ import { BigNumber } from '../../../src/ethers-v6';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
 import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
 
+const specializedApproval = {
+  mode: 'specialized' as const,
+  assertCurrent: () => undefined,
+};
+
 describe('Ethereum Transactions', () => {
   let keyringManager: KeyringManager;
   let mockVaultStateGetter: jest.Mock;
@@ -50,7 +55,11 @@ describe('Ethereum Transactions', () => {
       };
 
       const result =
-        await keyringManager.ethereumTransaction.sendFormattedTransaction(tx);
+        await keyringManager.ethereumTransaction.sendFormattedTransaction(
+          tx,
+          undefined,
+          specializedApproval
+        );
       expect(result).toBeDefined();
       expect(result.hash).toBeDefined();
     });
@@ -83,7 +92,11 @@ describe('Ethereum Transactions', () => {
       };
 
       await expect(
-        keyringManager.ethereumTransaction.sendFormattedTransaction(tx)
+        keyringManager.ethereumTransaction.sendFormattedTransaction(
+          tx,
+          undefined,
+          specializedApproval
+        )
       ).resolves.toMatchObject({ hash, blockNumber: null });
       expect(provider.getTransaction).not.toHaveBeenCalled();
       expect(provider.getBlock).not.toHaveBeenCalled();
@@ -275,7 +288,11 @@ describe('Ethereum Transactions', () => {
         chainId: 1,
       };
 
-      await keyringManager.ethereumTransaction.sendFormattedTransaction(tx);
+      await keyringManager.ethereumTransaction.sendFormattedTransaction(
+        tx,
+        undefined,
+        specializedApproval
+      );
 
       const signedTx = provider.sendTransaction.mock.calls.at(-1)?.[0];
       expect(signedTx).toBeDefined();
@@ -295,7 +312,11 @@ describe('Ethereum Transactions', () => {
         chainId: 1,
       };
 
-      await keyringManager.ethereumTransaction.sendFormattedTransaction(tx);
+      await keyringManager.ethereumTransaction.sendFormattedTransaction(
+        tx,
+        undefined,
+        specializedApproval
+      );
 
       expect(provider.estimateGas).toHaveBeenLastCalledWith(
         expect.not.objectContaining({ gasPrice: expect.anything() })
@@ -316,7 +337,11 @@ describe('Ethereum Transactions', () => {
       };
 
       await expect(
-        keyringManager.ethereumTransaction.sendFormattedTransaction(tx)
+        keyringManager.ethereumTransaction.sendFormattedTransaction(
+          tx,
+          undefined,
+          specializedApproval
+        )
       ).rejects.toMatchObject({ transactionNotBroadcast: true });
       expect(provider.estimateGas).not.toHaveBeenCalled();
       expect(provider.sendTransaction).not.toHaveBeenCalled();
@@ -620,7 +645,11 @@ describe('Ethereum Transactions', () => {
       };
 
       const result =
-        await keyringManager.ethereumTransaction.sendFormattedTransaction(tx);
+        await keyringManager.ethereumTransaction.sendFormattedTransaction(
+          tx,
+          undefined,
+          specializedApproval
+        );
       expect(result).toBeDefined();
       expect(result.hash).toBeDefined();
     });

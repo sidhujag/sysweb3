@@ -3,12 +3,17 @@ import { Transaction } from 'ethers';
 import { BigNumber } from '../../../src/ethers-v6';
 import {
   SoftwareKeyring,
-  createSoftwareKeyringHost,
+  createKeyringHost,
   KeyringAccountType,
   INetworkType,
 } from '../../../src/software';
 
 import type { EvmSignedSubmission } from '../../../src/transactions/evm-submission';
+
+const specializedApproval = {
+  mode: 'specialized' as const,
+  assertCurrent: () => undefined,
+};
 const phrase =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 const password = 'Public SDK submission fixture 1!';
@@ -45,7 +50,8 @@ it.each(['healthy', 'lock', 'account-change'] as const)(
         return true;
       },
     };
-    const host = createSoftwareKeyringHost(storage, {
+    const host = createKeyringHost(storage);
+    const ring = new SoftwareKeyring(host, {
       captureEvmSubmission: () => ({
         assertCurrent() {
           return undefined;
@@ -57,7 +63,6 @@ it.each(['healthy', 'lock', 'account-change'] as const)(
         },
       }),
     });
-    const ring = new SoftwareKeyring(host);
     const state: any = {
       activeAccount: { id: 0, type: KeyringAccountType.HDAccount },
       activeNetwork: {
@@ -106,7 +111,8 @@ it.each(['healthy', 'lock', 'account-change'] as const)(
             gasPrice: 2,
             nonce: 7,
           } as any,
-          true
+          true,
+          specializedApproval
         )
         .catch((e) => e);
       await Promise.race([

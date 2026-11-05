@@ -8,13 +8,18 @@ import { Transaction } from 'ethers/transaction';
 import { Wallet } from 'ethers/wallet';
 
 import { BigNumber, serializeTransaction } from '../../../src/ethers-v6';
-import { KeyringManager } from '../../../src/keyring-manager';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import {
   privateKeyToAccount,
   sendLocalEvmTransaction,
 } from '../../../src/transactions/evm-local-signer';
 import { KeyringAccountType } from '../../../src/types';
+import {
+  createTestSubmissionCapture,
+  testSubmissionBoundary,
+} from '../../helpers/evm-submission';
+import { createTestKeyringHost, testHardware } from '../../helpers/keyring-host';
+import { KeyringManager } from '../../../src/keyring-manager';
 
 // Keep the provider's real response normalization, which the shared setup
 // omits from its provider mock. All RPCs are supplied by each test.
@@ -35,9 +40,6 @@ jest.mock('crypto-js', () => ({
 jest.mock('syscoinjs-lib', () => ({
   utils: { bitcoinjs: {} },
   networks: { bitcoin: {}, syscoin: {} },
-}));
-jest.mock('../../../src/hardware-wallet-manager-singleton', () => ({
-  HardwareWalletManagerSingleton: { getInstance: () => ({}) },
 }));
 jest.mock('../../../src/ledger', () => ({
   LedgerKeyring: jest.fn(),
@@ -154,14 +156,20 @@ describe('source SDK account-scoped replacement signing', () => {
   let beforeBroadcast: jest.Mock;
   let validateOriginal: jest.Mock;
 
-  const options = (targetAccount = payer) => ({
-    targetAccount,
-    approvedMaximumFee: APPROVED_MAXIMUM_FEE,
+  const admission = () => ({
     assertCurrentContext: () => {
       if (!current) throw new Error('PALI_TRANSACTION_CONTEXT_CHANGED');
     },
     validateOriginal,
     beforeBroadcast,
+  });
+  const ordinaryOptions = () => ({
+    ...admission(),
+    approvedMaximumFee: APPROVED_MAXIMUM_FEE,
+  });
+  const options = (targetAccount = payer) => ({
+    ...ordinaryOptions(),
+    targetAccount,
   });
   const useOriginal = (original: any) => {
     provider.getTransaction.mockResolvedValue(original);
@@ -232,7 +240,9 @@ describe('source SDK account-scoped replacement signing', () => {
       getKey as any,
       (() => state) as any,
       ledger as any,
-      trezor as any
+      trezor as any,
+      undefined,
+      createTestSubmissionCapture()
     );
     Object.defineProperty(sdk, 'web3Provider', {
       configurable: true,
@@ -717,7 +727,7 @@ describe('source SDK account-scoped replacement signing', () => {
           state.activeAccountType = payer.type;
           state.activeAccountId = payer.id;
           return sdk.sendTransactionWithEditedFee(hash, legacy, {
-            approvedMaximumFee: APPROVED_MAXIMUM_FEE,
+            ...ordinaryOptions(),
           });
         }
         return sdk.sendTransactionWithEditedFee(hash, legacy, options());
@@ -1206,9 +1216,7 @@ describe('source SDK account-scoped replacement signing', () => {
         sdk.sendTransactionWithEditedFee(
           hash,
           true,
-          caller === 'scoped'
-            ? options(target)
-            : { approvedMaximumFee: APPROVED_MAXIMUM_FEE }
+          caller === 'scoped' ? options(target) : ordinaryOptions()
         )
       ).rejects.toThrow('Trezor does not support type 1 replacement signing');
       expect(provider.getBalance).not.toHaveBeenCalled();
@@ -1254,9 +1262,7 @@ describe('source SDK account-scoped replacement signing', () => {
         sdk.sendTransactionWithEditedFee(
           hash,
           false,
-          caller === 'scoped'
-            ? options(target)
-            : { approvedMaximumFee: APPROVED_MAXIMUM_FEE }
+          caller === 'scoped' ? options(target) : ordinaryOptions()
         )
       ).resolves.toMatchObject({ isSpeedUp: true, transaction: response });
       expect(deviceCall).toHaveBeenCalledWith(
@@ -1347,9 +1353,7 @@ describe('source SDK account-scoped replacement signing', () => {
         sdk.sendTransactionWithEditedFee(
           ORIGINAL,
           false,
-          target.ordinary
-            ? { approvedMaximumFee: APPROVED_MAXIMUM_FEE }
-            : options(target)
+          target.ordinary ? ordinaryOptions() : options(target)
         )
       ).resolves.toMatchObject({ isSpeedUp: false, error: true });
       expect(beforeBroadcast).not.toHaveBeenCalled();
@@ -1384,9 +1388,7 @@ describe('source SDK account-scoped replacement signing', () => {
         sdk.sendTransactionWithEditedFee(
           ORIGINAL,
           false,
-          target.ordinary
-            ? { approvedMaximumFee: APPROVED_MAXIMUM_FEE }
-            : options(target)
+          target.ordinary ? ordinaryOptions() : options(target)
         )
       ).resolves.toMatchObject({ isSpeedUp: false, error: true });
       expect(beforeBroadcast).not.toHaveBeenCalled();
@@ -1395,7 +1397,10 @@ describe('source SDK account-scoped replacement signing', () => {
   );
 
   it('passes the exact account to the actual keyring credential getter without replacing the vault getter', async () => {
-    const manager: any = new KeyringManager();
+    const manager: any = new KeyringManager(createTestKeyringHost(), {
+      ...testHardware(),
+      captureEvmSubmission: createTestSubmissionCapture(),
+    });
     const vault = {
       activeNetwork: state.activeNetwork,
       activeAccount: smart,
@@ -1548,7 +1553,13 @@ describe('source SDK account-scoped replacement signing', () => {
         'mocked-private-key',
         transaction(),
         beforeBroadcast,
-        options().assertCurrentContext
+        options().assertCurrentContext,
+        undefined,
+        testSubmissionBoundary(
+          PAYER,
+          state.activeNetwork.chainId,
+          options().assertCurrentContext
+        )
       )
     ).rejects.toThrow('PALI_TRANSACTION_CONTEXT_CHANGED');
     expect(sign).not.toHaveBeenCalled();

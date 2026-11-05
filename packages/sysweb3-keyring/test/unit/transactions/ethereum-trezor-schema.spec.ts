@@ -7,6 +7,12 @@ import { BigNumber, serializeTransaction } from '../../../src/ethers-v6';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import { TrezorKeyring } from '../../../src/trezor';
 import { KeyringAccountType } from '../../../src/types';
+import { createTestSubmissionCapture } from '../../helpers/evm-submission';
+
+const specializedApproval = {
+  mode: 'specialized' as const,
+  assertCurrent: () => undefined,
+};
 
 const connect = jest.requireMock('../../../src/trezor/connect');
 const schemaHelper = path.join(
@@ -103,7 +109,8 @@ beforeEach(() => {
     () => state,
     undefined,
     trezor,
-    () => () => undefined
+    () => () => undefined,
+    createTestSubmissionCapture()
   );
   jest.spyOn(sdk, 'setWeb3Provider').mockImplementation(() => {
     (sdk as any)._web3Provider = provider;
@@ -143,7 +150,8 @@ it.each([
         gasLimit: 21000,
         gasPrice,
       } as any,
-      true
+      true,
+      specializedApproval
     );
     await expect(finishDeviceRequest(pending)).resolves.toHaveProperty('hash');
     expect(connect.ethereumSignTransaction).toHaveBeenCalledTimes(1);
@@ -181,7 +189,8 @@ it('keeps every EIP1559 quantity in the published Connect schema after request c
         { address: recipient, storageKeys: [`0x${'33'.repeat(32)}`] },
       ],
     } as any,
-    false
+    false,
+    specializedApproval
   );
   await expect(finishDeviceRequest(pending)).resolves.toHaveProperty('hash');
   const wire = requests[0].transaction;
@@ -211,7 +220,8 @@ it('formats autofilled EIP1559 fees, gas and nonce for the real Connect schema',
       value: 0,
       data: '0x',
     } as any,
-    false
+    false,
+    specializedApproval
   );
   await expect(finishDeviceRequest(pending)).resolves.toHaveProperty('hash');
   const wire = requests[0].transaction;

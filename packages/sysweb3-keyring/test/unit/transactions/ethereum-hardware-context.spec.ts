@@ -12,6 +12,12 @@ import { Wallet } from 'ethers/wallet';
 import { BigNumber, serializeTransaction } from '../../../src/ethers-v6';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import { KeyringAccountType } from '../../../src/types';
+import { createTestSubmissionCapture } from '../../helpers/evm-submission';
+
+const specializedApproval = {
+  mode: 'specialized' as const,
+  assertCurrent: () => undefined,
+};
 
 // The public key is an offline device response fixture, never a live wallet.
 // SDK serialization/context/broadcast classification are real; physical I/O and
@@ -47,7 +53,11 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
         : { maxFeePerGas: '100', maxPriorityFeePerGas: '2' }),
     });
     const send = (legacy = false) =>
-      sdk.sendFormattedTransaction(request(legacy), legacy);
+      sdk.sendFormattedTransaction(
+        request(legacy),
+        legacy,
+        specializedApproval
+      );
 
     beforeEach(() => {
       state = {
@@ -125,7 +135,8 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
             if (sessionGeneration !== captured)
               throw new Error('Wallet signing context changed');
           };
-        }
+        },
+        createTestSubmissionCapture()
       );
       jest.spyOn(sdk, 'setWeb3Provider').mockImplementation((network: any) => {
         (sdk as any)._web3Provider =
@@ -158,7 +169,8 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
           provider.getTransactionCount.mockResolvedValue(99);
           await sdk.sendFormattedTransaction(
             { ...request(legacy), nonce: value } as any,
-            legacy
+            legacy,
+            specializedApproval
           );
           expect(device).toHaveBeenCalledTimes(1);
           expect(Transaction.from(device.mock.calls[0][0]).nonce).toBe(
@@ -178,7 +190,8 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
           provider.getTransactionCount.mockResolvedValue(99);
           await sdk.sendFormattedTransaction(
             { ...request(legacy), nonce } as any,
-            legacy
+            legacy,
+            specializedApproval
           );
           expect(provider.getTransactionCount).toHaveBeenCalledWith(
             wallet.address,
@@ -203,7 +216,11 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
           nonce: 7,
           gasLimit: undefined,
         } as any;
-        const sending = sdk.sendFormattedTransaction(params, legacy);
+        const sending = sdk.sendFormattedTransaction(
+          params,
+          legacy,
+          specializedApproval
+        );
         await entered.promise;
         params.nonce = 99;
         gas.resolve(BigNumber.from(21000));
@@ -239,7 +256,11 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
           gasLimit: undefined,
           ...(legacy ? {} : { accessList }),
         };
-        const pending = sdk.sendFormattedTransaction(params, legacy);
+        const pending = sdk.sendFormattedTransaction(
+          params,
+          legacy,
+          specializedApproval
+        );
         await entered.promise;
         params.to = wallet.address;
         value._hex = '0xffff';
@@ -283,7 +304,11 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
           }
         );
         await expect(
-          sdk.sendFormattedTransaction({ ...request(), nonce: 0 } as any, false)
+          sdk.sendFormattedTransaction(
+            { ...request(), nonce: 0 } as any,
+            false,
+            specializedApproval
+          )
         ).rejects.toMatchObject({ transactionNotBroadcast: true });
         expect(persistSigned).not.toHaveBeenCalled();
         expect(provider.sendTransaction).not.toHaveBeenCalled();
@@ -293,7 +318,7 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
       'rejects a missing request %s before transaction work',
       async (params) => {
         await expect(
-          sdk.sendFormattedTransaction(params as any, true)
+          sdk.sendFormattedTransaction(params as any, true, specializedApproval)
         ).rejects.toMatchObject({ transactionNotBroadcast: true });
         expect(device).not.toHaveBeenCalled();
         expect(provider.sendTransaction).not.toHaveBeenCalled();
@@ -304,7 +329,8 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
       provider.getGasPrice = jest.fn().mockResolvedValue(BigNumber.from(99));
       await sdk.sendFormattedTransaction(
         { ...request(true), nonce: 0, gasPrice: '0x0' } as any,
-        true
+        true,
+        specializedApproval
       );
       expect(
         Transaction.from(provider.sendTransaction.mock.calls[0][0]).gasPrice
@@ -331,7 +357,7 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
             [field]: malformed,
           };
           await expect(
-            sdk.sendFormattedTransaction(params, true)
+            sdk.sendFormattedTransaction(params, true, specializedApproval)
           ).rejects.toMatchObject({ transactionNotBroadcast: true });
         }
         expect(provider.getTransactionCount).not.toHaveBeenCalled();
@@ -344,7 +370,11 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
       'rejects an invalid explicit nonce %s before RPC, device or broadcast',
       async (nonce) => {
         await expect(
-          sdk.sendFormattedTransaction({ ...request(), nonce } as any, false)
+          sdk.sendFormattedTransaction(
+            { ...request(), nonce } as any,
+            false,
+            specializedApproval
+          )
         ).rejects.toMatchObject({ transactionNotBroadcast: true });
         expect(provider.getTransactionCount).not.toHaveBeenCalled();
         expect(device).not.toHaveBeenCalled();
@@ -445,7 +475,11 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
           delete params.maxFeePerGas;
           delete params.maxPriorityFeePerGas;
         }
-        const signing = sdk.sendFormattedTransaction(params, false);
+        const signing = sdk.sendFormattedTransaction(
+          params,
+          false,
+          specializedApproval
+        );
         const rejection = expect(signing).rejects.toMatchObject({
           transactionNotBroadcast: true,
         });
@@ -1088,7 +1122,8 @@ describe('EVM cancellation signing context', () => {
         return () => {
           if (captured !== session) throw new Error('Session changed');
         };
-      }
+      },
+      createTestSubmissionCapture()
     );
     Object.defineProperty(sdk, 'web3Provider', {
       get: () => currentProvider,

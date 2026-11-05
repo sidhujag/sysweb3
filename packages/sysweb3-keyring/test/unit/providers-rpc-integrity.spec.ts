@@ -37,7 +37,9 @@ const sdkFor = (provider: any) => {
     },
     () => ({ activeNetwork: network }),
     {},
-    {}
+    {},
+    undefined,
+    null
   );
   Object.defineProperty(sdk, 'web3Provider', { get: () => provider });
   return sdk;

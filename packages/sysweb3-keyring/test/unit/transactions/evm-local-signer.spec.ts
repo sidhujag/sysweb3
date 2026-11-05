@@ -12,6 +12,7 @@ import {
   signPersonalMessage,
   signTransaction,
 } from '../../../src/transactions/evm-local-signer';
+import { testSubmissionBoundary } from '../../helpers/evm-submission';
 
 const PRIVATE_KEY =
   '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
@@ -91,17 +92,25 @@ describe('EVM local signer', () => {
     } as any;
 
     await expect(
-      sendLocalEvmTransaction(provider, PRIVATE_KEY, {
-        from: '0x0000000000000000000000000000000000000001',
-        to: ADDRESS,
-        value: '0x0',
-        gasLimit: '0x5208',
-        gasPrice: '0x01',
-        nonce: 0,
-        chainId: 1,
-        type: 0,
-        data: '0x',
-      })
+      sendLocalEvmTransaction(
+        provider,
+        PRIVATE_KEY,
+        {
+          from: '0x0000000000000000000000000000000000000001',
+          to: ADDRESS,
+          value: '0x0',
+          gasLimit: '0x5208',
+          gasPrice: '0x01',
+          nonce: 0,
+          chainId: 1,
+          type: 0,
+          data: '0x',
+        },
+        undefined,
+        undefined,
+        undefined,
+        testSubmissionBoundary(ADDRESS, 1)
+      )
     ).rejects.toThrow('Transaction from does not match EVM private key');
     expect(provider.sendTransaction).not.toHaveBeenCalled();
   });
@@ -132,11 +141,19 @@ describe('EVM local signer', () => {
         }),
     } as any;
 
-    await sendLocalEvmTransaction(provider, PRIVATE_KEY, {
-      to: ADDRESS,
-      value: '0x0',
-      data: '0x',
-    });
+    await sendLocalEvmTransaction(
+      provider,
+      PRIVATE_KEY,
+      {
+        to: ADDRESS,
+        value: '0x0',
+        data: '0x',
+      },
+      undefined,
+      undefined,
+      undefined,
+      testSubmissionBoundary(ADDRESS, 1)
+    );
 
     expect(provider.getFeeData).toHaveBeenCalledTimes(1);
     expect(provider.getGasPrice).not.toHaveBeenCalled();
@@ -168,11 +185,19 @@ describe('EVM local signer', () => {
         }),
     } as any;
 
-    await sendLocalEvmTransaction(provider, PRIVATE_KEY, {
-      to: 'alice.eth',
-      value: '0x0',
-      data: '0x',
-    });
+    await sendLocalEvmTransaction(
+      provider,
+      PRIVATE_KEY,
+      {
+        to: 'alice.eth',
+        value: '0x0',
+        data: '0x',
+      },
+      undefined,
+      undefined,
+      undefined,
+      testSubmissionBoundary(ADDRESS, 1)
+    );
 
     expect(provider.resolveName).toHaveBeenCalledWith('alice.eth');
     expect(provider.verifyConfiguredChainId).toHaveBeenCalledTimes(1);
@@ -192,11 +217,19 @@ describe('EVM local signer', () => {
     } as any;
 
     await expect(
-      sendLocalEvmTransaction(provider, PRIVATE_KEY, {
-        to: 'missing.eth',
-        value: '0x0',
-        data: '0x',
-      })
+      sendLocalEvmTransaction(
+        provider,
+        PRIVATE_KEY,
+        {
+          to: 'missing.eth',
+          value: '0x0',
+          data: '0x',
+        },
+        undefined,
+        undefined,
+        undefined,
+        testSubmissionBoundary(ADDRESS, 1)
+      )
     ).rejects.toThrow('Unable to resolve EVM transaction recipient');
 
     expect(provider.resolveName).toHaveBeenCalledWith('missing.eth');
@@ -226,13 +259,21 @@ describe('EVM local signer', () => {
         }),
     } as any;
 
-    await sendLocalEvmTransaction(provider, PRIVATE_KEY, {
-      type: '0x1',
-      to: ADDRESS,
-      value: '0x0',
-      data: '0x',
-      accessList: [],
-    });
+    await sendLocalEvmTransaction(
+      provider,
+      PRIVATE_KEY,
+      {
+        type: '0x1',
+        to: ADDRESS,
+        value: '0x0',
+        data: '0x',
+        accessList: [],
+      },
+      undefined,
+      undefined,
+      undefined,
+      testSubmissionBoundary(ADDRESS, 1)
+    );
 
     expect(provider.getGasPrice).toHaveBeenCalledTimes(1);
     expect(provider.getFeeData).not.toHaveBeenCalled();
@@ -311,7 +352,8 @@ describe('EVM local signer', () => {
       },
       beforeBroadcast,
       beforeSign,
-      validate
+      validate,
+      testSubmissionBoundary(ADDRESS, 1)
     );
 
     expect(validate).toHaveBeenCalledTimes(1);
@@ -359,7 +401,8 @@ describe('EVM local signer', () => {
           { to: ADDRESS },
           beforeBroadcast,
           beforeSign,
-          validate
+          validate,
+          testSubmissionBoundary(ADDRESS, 1)
         )
       ).rejects.toBe(error);
       expect(validate).toHaveBeenCalledTimes(1);
@@ -411,7 +454,8 @@ describe('EVM local signer', () => {
           },
           beforeBroadcast,
           undefined,
-          validate
+          validate,
+          testSubmissionBoundary(ADDRESS, 1)
         );
         const rejected = expect(result).rejects.toThrow(
           'Transaction validation must be synchronous'
@@ -462,7 +506,8 @@ describe('EVM local signer', () => {
           },
           beforeBroadcast,
           undefined,
-          validate
+          validate,
+          testSubmissionBoundary(ADDRESS, 1)
         )
       ).rejects.toThrow('Transaction validation must be synchronous');
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -500,7 +545,9 @@ describe('EVM local signer', () => {
       },
       () => {
         order.push('context');
-      }
+      },
+      undefined,
+      testSubmissionBoundary(ADDRESS, 1)
     );
     expect(order).toEqual(['context', 'beforeBroadcast', 'broadcast']);
     expect(provider.sendTransaction).toHaveBeenCalledTimes(1);

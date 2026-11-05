@@ -9,9 +9,12 @@ import {
   INetworkType,
   KeyringAccountType,
   SoftwareKeyring,
-  createSoftwareKeyringHost,
+  createKeyringHost,
 } from '../../../src/software';
-import { SyscoinTransactions } from '../../../src/transactions/syscoin';
+import {
+  readPublicSyscoinFee,
+  SyscoinTransactionsCore,
+} from '../../../src/transactions/syscoin-core';
 import { PsbtUtils } from '../../../src/utils/psbt';
 
 import type { KeyringStoragePort } from '../../../src/software';
@@ -74,8 +77,8 @@ async function fixture() {
       SmartAccount: {},
     },
   };
-  const host = createSoftwareKeyringHost(storage);
-  const ring = new SoftwareKeyring(host);
+  const host = createKeyringHost(storage);
+  const ring = new SoftwareKeyring(host, { captureEvmSubmission: null });
   rings.push(ring);
   ring.setVaultStateGetter(() => state);
   const account = await ring.initializeWalletSecurely(
@@ -136,7 +139,7 @@ afterEach(async () => {
   jest.restoreAllMocks();
 });
 
-it('routes real legacy PSBT fee, funding and prevout through one owned GET transport with identical default unsigned bytes', async () => {
+it('requires ownership and routes real legacy PSBT fee, funding and prevout through one scoped GET transport', async () => {
   const { ring, state } = await fixture();
   const signer = bitcoin.ECPair.fromPrivateKey(Buffer.alloc(32, 1), {
     network,
@@ -155,6 +158,7 @@ it('routes real legacy PSBT fee, funding and prevout through one owned GET trans
   const txid = previous.getId();
   const route = fundingRoute(account.address);
   const rawUrl = `${base}/api/v2/tx/${txid}`;
+  let advertised = 100000;
   const reply = (url: string) => {
     if (url === feeUrl) return fee();
     if (url === route)
@@ -162,7 +166,7 @@ it('routes real legacy PSBT fee, funding and prevout through one owned GET trans
         {
           txid,
           vout: 0,
-          value: '100000',
+          value: String(advertised),
           address: account.address,
           confirmations: 10,
         },
@@ -171,11 +175,17 @@ it('routes real legacy PSBT fee, funding and prevout through one owned GET trans
     throw new Error('Unexpected route');
   };
   const ambient = jest.mocked(globalThis.fetch);
-  ambient.mockImplementation(async (url) => reply(String(url)));
-  const legacyQuote =
-    await ring.syscoinTransaction.getEstimateSysTransactionFee(request);
-  expect(ambient.mock.calls).toEqual([[feeUrl], [route], [rawUrl]]);
-  ambient.mockClear().mockRejectedValue(new Error('Ambient HTTP is forbidden'));
+  await expect(
+    Reflect.apply(
+      ring.syscoinTransaction.getEstimateSysTransactionFee,
+      undefined,
+      [request]
+    )
+  ).rejects.toMatchObject({
+    code: 'TRANSACTION_CREATION_FAILED',
+    message: 'Missing owned UTXO read',
+  });
+  expect(ambient).not.toHaveBeenCalled();
 
   const transport = owned(reply);
   const quote = await ring.syscoinTransaction.getEstimateSysTransactionFee(
@@ -183,12 +193,24 @@ it('routes real legacy PSBT fee, funding and prevout through one owned GET trans
     transport.options
   );
   expect(transport.calls).toEqual([feeUrl, route, rawUrl]);
-  expect(quote).toEqual(legacyQuote);
   const psbt = PsbtUtils.fromPali(quote.psbt, state.activeNetwork);
   expect(Buffer.from(psbt.data.inputs[0].nonWitnessUtxo!).toString('hex')).toBe(
     previous.toHex()
   );
   expect(psbt.data.inputs[0].finalScriptSig).toBeUndefined();
+  expect(ambient).not.toHaveBeenCalled();
+
+  advertised = 70000;
+  const dishonest = owned(reply);
+  await expect(
+    ring.syscoinTransaction.getEstimateSysTransactionFee(
+      { ...request, feeRate: 0.00000002 },
+      dishonest.options
+    )
+  ).rejects.toMatchObject({
+    message: 'Mismatched owned legacy previous transaction value',
+  });
+  expect(dishonest.calls).toEqual([route, rawUrl]);
   expect(ambient).not.toHaveBeenCalled();
 });
 
@@ -397,7 +419,7 @@ it.each(['lock', 'network', 'network ABA', 'response body lock'])(
 
 it('revokes a held fee after a real software session is transferred away and back', async () => {
   const { ring, state, account, host } = await fixture();
-  const sibling = new SoftwareKeyring(host);
+  const sibling = new SoftwareKeyring(host, { captureEvmSubmission: null });
   sibling.setVaultStateGetter(() => state);
   rings.push(sibling);
   const started = deferred();
@@ -438,22 +460,19 @@ it('revokes a held fee after a real software session is transferred away and bac
   expect(globalThis.fetch).not.toHaveBeenCalled();
 });
 
-it('keeps opted-in fee quotes separate from the legacy cache and rejects an asynchronous host guard', async () => {
+it('requires scoped fee reads, separates public fee, and refuses async guards or wrong endpoints', async () => {
   const { ring } = await fixture();
   const ambient = jest.mocked(globalThis.fetch);
-  ambient.mockImplementation(async () => fee());
-  expect(await ring.syscoinTransaction.getRecommendedFee(endpoint)).toBe(
-    0.00000001
-  );
+  await expect(
+    Reflect.apply(ring.syscoinTransaction.getRecommendedFee, undefined, [
+      endpoint,
+    ])
+  ).rejects.toThrow('Missing owned UTXO read');
   const read = owned(() => Response.json({ result: '0.00002048' }));
-  expect(
-    await ring.syscoinTransaction.getRecommendedFee(endpoint, read.options)
-  ).toBe(0.00000002);
+  await expect(
+    ring.syscoinTransaction.getRecommendedFee(endpoint, read.options)
+  ).resolves.toBe(0.00000002);
   expect(read.calls).toEqual([feeUrl]);
-  expect(await ring.syscoinTransaction.getRecommendedFee(endpoint)).toBe(
-    0.00000001
-  );
-  expect(ambient.mock.calls).toEqual([[feeUrl]]);
   await expect(
     ring.syscoinTransaction.getRecommendedFee(endpoint, {
       ...read.options,
@@ -469,13 +488,19 @@ it('keeps opted-in fee quotes separate from the legacy cache and rejects an asyn
     )
   ).rejects.toThrow('endpoint changed');
   expect(read.calls).toEqual([feeUrl]);
+  await ring.lockWallet();
+  const publicRead = owned(() => fee());
+  await expect(
+    readPublicSyscoinFee(endpoint, publicRead.options)
+  ).resolves.toBe(0.00000001);
+  expect(publicRead.calls).toEqual([feeUrl]);
+  expect(ambient).not.toHaveBeenCalled();
 });
 
-it('refuses owned preparation through an unscoped legacy builder and address callback', async () => {
-  const { account, state } = await fixture();
+it('refuses owned preparation through an unscoped legacy builder', async () => {
+  const { state } = await fixture();
   const read = owned(() => fee());
-  const getAddress = jest.fn(async () => account.address);
-  const legacy = new SyscoinTransactions(
+  const legacy = new SyscoinTransactionsCore(
     jest.fn(),
     () => ({ main: new syscoinjs.SyscoinJSLib(null, endpoint, network) }),
     () => ({
@@ -484,9 +509,8 @@ it('refuses owned preparation through an unscoped legacy builder and address cal
       activeAccountType: state.activeAccount.type,
       activeNetwork: state.activeNetwork,
     }),
-    getAddress,
-    undefined as any,
-    undefined as any
+    {},
+    () => () => undefined
   );
   const outcome = await legacy
     .getEstimateSysTransactionFee(
@@ -495,7 +519,6 @@ it('refuses owned preparation through an unscoped legacy builder and address cal
     )
     .catch((error) => error);
   expect(globalThis.fetch).not.toHaveBeenCalled();
-  expect(getAddress).not.toHaveBeenCalled();
   expect(read.calls).toEqual([]);
   expect(outcome).toMatchObject({
     code: 'TRANSACTION_CREATION_FAILED',
@@ -533,18 +556,16 @@ async function missingPathPreparation() {
   return { ...selected, quote, accountReply };
 }
 
-it('uses the original software missing-path signer with only the owned xpub read', async () => {
+it('requires an owner and uses the original software missing-path signer through scoped xpub reads', async () => {
   const { ring, state, account, quote, accountReply } =
     await missingPathPreparation();
   const ambient = jest.mocked(globalThis.fetch);
-  ambient.mockImplementationOnce(async (url) => {
-    expect(String(url)).toBe(accountRoute(account.xpub));
-    return accountReply();
-  });
-  const unowned = await ring.syscoinTransaction.signPSBT({ psbt: quote.psbt });
-  expect(ambient.mock.calls).toEqual([[accountRoute(account.xpub)]]);
-  const expected = PsbtUtils.fromPali(unowned, state.activeNetwork);
-  ambient.mockClear();
+  await expect(
+    Reflect.apply(ring.syscoinTransaction.signPSBT, undefined, [
+      { psbt: quote.psbt },
+    ])
+  ).rejects.toThrow('Missing owned UTXO read');
+  expect(ambient).not.toHaveBeenCalled();
 
   const transport = owned(() => accountReply());
   const signed = await Reflect.apply(
@@ -553,9 +574,7 @@ it('uses the original software missing-path signer with only the owned xpub read
     [{ psbt: quote.psbt }, transport.options]
   );
   const psbt = PsbtUtils.fromPali(signed, state.activeNetwork);
-  expect(psbt.extractTransaction().toHex()).toBe(
-    expected.extractTransaction().toHex()
-  );
+  expect(psbt.extractTransaction().ins[0].witness).toHaveLength(2);
   expect(psbt.data.globalMap.unsignedTx.toBuffer()).toEqual(
     PsbtUtils.fromPali(
       quote.psbt,
@@ -585,7 +604,7 @@ it('rejects a failed owned missing-path read without ambient fallback or partial
 it('rejects a held owned missing-path signature after actual keyring ownership ABA', async () => {
   const { ring, state, account, host, quote, accountReply } =
     await missingPathPreparation();
-  const sibling = new SoftwareKeyring(host);
+  const sibling = new SoftwareKeyring(host, { captureEvmSubmission: null });
   rings.push(sibling);
   sibling.setVaultStateGetter(() => state);
   const started = deferred();
@@ -611,5 +630,134 @@ it('rejects a held owned missing-path signature after actual keyring ownership A
     await checked;
   }
   expect(transport.calls).toEqual([accountRoute(account.xpub)]);
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
+async function signedOwnedFixture() {
+  const { ring, state, quote, accountReply } = await missingPathPreparation();
+  const transport = owned(accountReply);
+  const signed = await ring.syscoinTransaction.signPSBT(
+    { psbt: quote.psbt },
+    transport.options
+  );
+  const transaction = PsbtUtils.fromPali(
+    signed,
+    state.activeNetwork
+  ).extractTransaction();
+  return { ring, state, raw: transaction.toHex(), txid: transaction.getId() };
+}
+
+const submitUrl = `${base}/api/v2/sendtx/`;
+
+function acknowledgment(txid: string): Response {
+  const response = Response.json({ result: txid });
+  Object.defineProperty(response, 'url', { value: submitUrl });
+  return response;
+}
+
+it('refuses an omitted owner and old PSBT argument before ambient dispatch', async () => {
+  const { ring, state, raw } = await signedOwnedFixture();
+  const signed = PsbtUtils.toPali(
+    PsbtUtils.fromPali(
+      {
+        psbt: new bitcoin.Psbt().toBase64(),
+        assets: '[]',
+      },
+      state.activeNetwork
+    )
+  );
+  for (const value of [raw, signed]) {
+    await expect(
+      Reflect.apply(ring.syscoinTransaction.sendTransaction, undefined, [value])
+    ).rejects.toMatchObject({
+      code: 'UTXO_SUBMISSION_NOT_DISPATCHED',
+      transactionNotBroadcast: true,
+    });
+  }
+  const fetch = jest.fn();
+  await expect(
+    Reflect.apply(ring.syscoinTransaction.sendTransaction, undefined, [
+      raw,
+      {
+        assertCurrent: () => undefined,
+        fetch,
+        signal: new AbortController().signal,
+      },
+    ])
+  ).rejects.toMatchObject({
+    code: 'UTXO_SUBMISSION_NOT_DISPATCHED',
+    transactionNotBroadcast: true,
+  });
+  expect(fetch).not.toHaveBeenCalled();
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
+it('dispatches only after the captured descriptor is admitted, and preserves an ACK across a later selection change', async () => {
+  const { ring, state, raw, txid } = await signedOwnedFixture();
+  const hold = deferred();
+  const admitted = deferred();
+  const fetch = jest.fn(async () => {
+    state.activeNetwork.url = 'https://other.invalid';
+    return acknowledgment(txid);
+  });
+  const signal = new AbortController().signal;
+  const pending = ring.syscoinTransaction.sendTransaction(raw, {
+    signal,
+    fetch,
+    assertCurrent: () => undefined,
+    async prepare(descriptor) {
+      expect(Object.isFrozen(descriptor)).toBe(true);
+      expect(descriptor).toEqual({ url: submitUrl, rawTransaction: raw, txid });
+      admitted.resolve();
+      await hold.promise;
+    },
+  });
+  await Promise.race([admitted.promise, pending]);
+  expect(fetch).not.toHaveBeenCalled();
+  hold.resolve();
+  await expect(pending).resolves.toEqual({ txid });
+  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(fetch).toHaveBeenCalledWith(
+    submitUrl,
+    expect.objectContaining({ method: 'POST', body: raw, signal })
+  );
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
+it('classifies lost authority before POST separately from a lost acknowledgment after dispatch', async () => {
+  const { ring, state, raw, txid } = await signedOwnedFixture();
+  const fetch = jest.fn().mockRejectedValue(new Error('Response lost'));
+  const signal = new AbortController().signal;
+  await expect(
+    ring.syscoinTransaction.sendTransaction(raw, {
+      signal,
+      fetch,
+      assertCurrent: () => undefined,
+      async prepare() {
+        state.activeNetwork.url = 'https://other.invalid';
+      },
+    })
+  ).rejects.toMatchObject({
+    code: 'UTXO_SUBMISSION_NOT_DISPATCHED',
+    transactionNotBroadcast: true,
+    txid,
+  });
+  expect(fetch).not.toHaveBeenCalled();
+  state.activeNetwork.url = endpoint;
+  await expect(
+    ring.syscoinTransaction.sendTransaction(raw, {
+      signal,
+      fetch,
+      assertCurrent: () => undefined,
+      async prepare() {
+        return undefined;
+      },
+    })
+  ).rejects.toMatchObject({
+    code: 'UTXO_SUBMISSION_UNKNOWN',
+    transactionNotBroadcast: false,
+    txid,
+  });
+  expect(fetch).toHaveBeenCalledTimes(1);
   expect(globalThis.fetch).not.toHaveBeenCalled();
 });

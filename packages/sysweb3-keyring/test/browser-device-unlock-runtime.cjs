@@ -12,15 +12,14 @@ process.env.SYSWEB3_PBKDF2_ENC_ITERS = '1000';
 const compiled = path.resolve(
   process.argv[2] || path.join(__dirname, '../dist/cjs')
 );
-const { KeyringManager, createKeyringManagerHost } = require(path.join(
-  compiled,
-  'keyring-manager.js'
-));
+const sdk = require(path.join(compiled, 'index.js'));
 const {
+  createKeyringHost,
+  KeyringManager,
   HardwareWalletManager,
   HardwareWalletType,
   KeyringAccountType,
-} = require(path.join(compiled, 'index.js'));
+} = sdk;
 const phrase =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 const password = 'public browser fixture password';
@@ -97,10 +96,23 @@ function fixture() {
   };
 }
 
+const offlineLedger = {
+  evm: {},
+  utxo: {},
+  async connect() {},
+  async disconnect() {},
+  getStatus: () => ({ connected: false }),
+};
+
 function manager(host, receive = true, hardwareManager, ledgerHost) {
   let controls;
   const options = {
-    host,
+    captureEvmSubmission() {
+      throw new Error('EVM submission is outside this fixture');
+    },
+    ...(hardwareManager
+      ? { hardwareManager }
+      : { ledgerHost: ledgerHost ?? offlineLedger }),
     ...(receive
       ? {
           receiveDeviceUnlock: (value) => {
@@ -109,7 +121,7 @@ function manager(host, receive = true, hardwareManager, ledgerHost) {
         }
       : {}),
   };
-  const ring = new KeyringManager(hardwareManager, ledgerHost, options);
+  const ring = new KeyringManager(host, options);
   const state = {
     activeAccount: { id: 0, type: KeyringAccountType.HDAccount },
     activeNetwork: {
@@ -142,24 +154,20 @@ async function initialize(owner) {
 test('compiled browser owner shares controls and one session across replacement managers', async () => {
   const f = fixture(),
     other = fixture();
-  const host = createKeyringManagerHost(f.storage, f.port);
+  const host = createKeyringHost(f.storage, { deviceUnlock: f.port });
   const source = manager(host),
     target = manager(host),
     fresh = manager(host);
-  const foreign = manager(createKeyringManagerHost(other.storage, other.port));
+  const foreign = manager(
+    createKeyringHost(other.storage, { deviceUnlock: other.port })
+  );
   try {
     await initialize(source);
     await initialize(foreign);
     target.state.accounts.HDAccount[0] = fresh.state.accounts.HDAccount[0] =
       source.state.accounts.HDAccount[0];
-    assert.throws(
-      () => source.ring.setStorage({}),
-      /Storage replacement is unavailable/
-    );
-    assert.throws(
-      () => source.ring.receiveSessionOwnership({}, {}),
-      /Direct session injection/
-    );
+    assert.equal('setStorage' in source.ring, false);
+    assert.equal('receiveSessionOwnership' in source.ring, false);
     assert.equal(await source.controls.issue('wrong password', current), false);
     assert.equal(f.counts().writes, 0);
     assert.equal(await source.controls.issue(password, current), true);
@@ -189,7 +197,7 @@ test('compiled receiver-free browser sibling wins over held protected read', asy
   const f = fixture(),
     entered = deferred(),
     release = deferred();
-  const host = createKeyringManagerHost(f.storage, f.port);
+  const host = createKeyringHost(f.storage, { deviceUnlock: f.port });
   const source = manager(host),
     contender = manager(host),
     winner = manager(host, false);
@@ -223,21 +231,34 @@ test('compiled browser host rejects missing atomic storage and never falls back 
     failure = new Error('Atomic fixture read failed');
   assert.throws(
     () =>
-      createKeyringManagerHost(
+      createKeyringHost(
         { ...f.storage, readDeviceUnlockVaultPair: undefined },
-        f.port
+        { deviceUnlock: f.port }
       ),
     /atomic vault pair reader/
   );
   assert.throws(
-    () => createKeyringManagerHost({ ...f.storage, setClient() {} }, f.port),
+    () =>
+      createKeyringHost(
+        { ...f.storage, setClient() {} },
+        { deviceUnlock: f.port }
+      ),
     /fixed wallet storage/
   );
   assert.throws(
-    () => new KeyringManager(undefined, undefined, { host: {} }),
-    /Invalid browser keyring host/
+    () =>
+      new KeyringManager(
+        {},
+        {
+          captureEvmSubmission: () => {
+            throw new Error('EVM submission is outside this fixture');
+          },
+          ledgerHost: offlineLedger,
+        }
+      ),
+    /Invalid keyring host/
   );
-  const owner = manager(createKeyringManagerHost(f.storage, f.port));
+  const owner = manager(createKeyringHost(f.storage, { deviceUnlock: f.port }));
   try {
     f.failPair(failure);
     const counts = f.counts();
@@ -252,40 +273,64 @@ test('compiled browser host rejects missing atomic storage and never falls back 
   }
 });
 
-test('compiled default browser manager still binds legacy storage and never exposes controls', async () => {
-  const legacy = new Map();
-  let unvalidated;
+test('compiled fixed browser host preserves the existing storage namespace without biometrics', async () => {
+  assert.equal(sdk.getDecryptedVault, undefined);
+  assert.equal(sdk.setEncryptedVault, undefined);
+  assert.equal(sdk.HardwareWalletManagerSingleton, undefined);
+  assert.equal(sdk.createKeyringManagerHost, undefined);
+  const records = new Map();
+  const keyFor = (key) => `sysweb3-${key}`;
+  const host = createKeyringHost({
+    async get(key) {
+      return records.get(keyFor(key));
+    },
+    async set(key, value) {
+      records.set(keyFor(key), value);
+    },
+    async deleteItem(key) {
+      records.delete(keyFor(key));
+    },
+    async createManyIfAbsent(items) {
+      const entries = Object.entries(items);
+      if (entries.some(([key]) => records.has(keyFor(key)))) return false;
+      for (const [key, value] of entries) records.set(keyFor(key), value);
+      return true;
+    },
+  });
+  const owner = manager(host, false);
+  const sibling = manager(host, false);
   try {
-    assert.throws(() => {
-      unvalidated = new KeyringManager(undefined, undefined, {
-        receiveDeviceUnlock() {},
-      });
-    }, /explicit browser keyring host/);
-  } finally {
-    await unvalidated?.destroy();
-  }
-  const owner = manager(undefined, false);
-  try {
-    owner.ring.setStorage({
-      getItem: (key) => legacy.get(key) ?? null,
-      setItem: (key, value) => legacy.set(key, value),
-      removeItem: (key) => legacy.delete(key),
-      createItemsIfAbsent(items) {
-        if (Object.keys(items).some((key) => legacy.has(key))) return false;
-        for (const [key, value] of Object.entries(items))
-          legacy.set(key, value);
-        return true;
-      },
-    });
+    assert.throws(
+      () =>
+        new KeyringManager(undefined, {
+          captureEvmSubmission: () => {
+            throw new Error('EVM submission is outside this fixture');
+          },
+          ledgerHost: offlineLedger,
+        }),
+      /Invalid keyring host/
+    );
+    assert.throws(() => manager(host), /unavailable in this host/);
     await initialize(owner);
-    assert.ok(legacy.has('sysweb3-vault') && legacy.has('sysweb3-vault-keys'));
+    assert.ok(
+      records.has('sysweb3-vault') && records.has('sysweb3-vault-keys')
+    );
     assert.equal(owner.controls, undefined);
     assert.equal(Reflect.has(owner.ring, 'issue'), false);
     assert.equal(Reflect.has(owner.ring, 'resume'), false);
     assert.equal(typeof owner.ring.ledgerSigner.ensureConnection, 'function');
+    await assert.rejects(
+      sibling.ring.unlock(password),
+      /owned by another keyring/
+    );
+    sibling.state.accounts.HDAccount[0] = owner.state.accounts.HDAccount[0];
+    owner.ring.transferSessionTo(sibling.ring);
+    assert.equal(owner.ring.isUnlocked(), false);
+    assert.equal(sibling.ring.isUnlocked(), true);
+    assert.equal(await sibling.ring.getSeed(password), phrase);
   } finally {
-    owner.ring.setStorage(undefined);
     await owner.ring.destroy();
+    await sibling.ring.destroy();
   }
 });
 
@@ -293,7 +338,7 @@ for (const sharedManager of [true, false]) {
   const transport = sharedManager ? 'hardware manager' : 'Ledger host';
   test(`a refused browser receiver leaves the existing ${transport} connected and no usable controls`, async () => {
     const f = fixture();
-    const host = createKeyringManagerHost(f.storage, f.port);
+    const host = createKeyringHost(f.storage, { deviceUnlock: f.port });
     let connected = false;
     let disconnects = 0;
     const ledger = {
@@ -324,8 +369,11 @@ for (const sharedManager of [true, false]) {
       assert.equal(connected, true);
       assert.throws(
         () =>
-          new KeyringManager(hardwareManager, ledgerHost, {
-            host,
+          new KeyringManager(host, {
+            captureEvmSubmission: () => {
+              throw new Error('EVM submission is outside this fixture');
+            },
+            ...(ledgerHost ? { ledgerHost } : { hardwareManager }),
             receiveDeviceUnlock(value) {
               abandoned = value;
               if (sharedManager) throw new Error('fixture refused delivery');

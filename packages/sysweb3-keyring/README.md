@@ -61,18 +61,28 @@ yarn add @sidhujag/sysweb3-keyring
 ### Basic Setup
 
 ```javascript
-import { KeyringManager } from '@sidhujag/sysweb3-keyring';
+import { createKeyringHost, KeyringManager } from '@sidhujag/sysweb3-keyring';
 
 // Create a vault state getter function (e.g., from Redux store)
 const vaultStateGetter = () => store.getState().vault;
 
-// Initialize the keyring manager
+const walletHost = createKeyringHost(walletStorage);
+const walletOptions = {
+  ledgerHost: authorizedLedgerHostPort,
+  captureEvmSubmission: captureReviewedSubmission,
+};
 const keyringManager = await KeyringManager.createInitialized(
+  walletHost,
   seedPhrase,
   password,
-  vaultStateGetter
+  vaultStateGetter,
+  walletOptions
 );
 ```
+
+The application supplies fixed wallet storage and a durable submission
+capability. The capability checks the active approval and persists exact
+signed bytes before the SDK can broadcast them.
 
 ### Account Management
 
@@ -212,7 +222,7 @@ const vaultStateGetter = () => ({
 });
 
 // The keyring manager will call this function to get current state
-const keyringManager = new KeyringManager();
+const keyringManager = new KeyringManager(walletHost, walletOptions);
 keyringManager.setVaultStateGetter(vaultStateGetter);
 ```
 
@@ -339,7 +349,10 @@ const host = createLedgerDmkHost({
 });
 
 // Wallet authority: use a secured semantic port to that page, not a raw APDU port.
-const wallet = new KeyringManager(undefined, authorizedLedgerHostPort);
+const wallet = new KeyringManager(walletHost, {
+  ledgerHost: authorizedLedgerHostPort,
+  captureEvmSubmission: captureReviewedSubmission,
+});
 ```
 
 Use only the ESM host entry with a browser bundler and its required platform

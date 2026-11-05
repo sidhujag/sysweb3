@@ -5,7 +5,7 @@ import {
   INetworkType,
   KeyringAccountType,
   SoftwareKeyring,
-  createSoftwareKeyringHost,
+  createKeyringHost,
 } from '../../../src/software';
 import { VaultAuthenticationError } from '../../../src/storage-core';
 
@@ -34,9 +34,9 @@ function deferred<T>() {
 function holdVaultRead(storage: KeyringStoragePort, readNumber: number) {
   const started = deferred<void>();
   const release = deferred<Error | undefined>();
-  const get = storage.get.bind(storage);
+  const get = jest.mocked(storage.get).getMockImplementation()!;
   let reads = 0;
-  jest.spyOn(storage, 'get').mockImplementation(async (key) => {
+  jest.mocked(storage.get).mockImplementation(async (key) => {
     const value = await get(key);
     if (key === 'vault' && ++reads === readNumber) {
       started.resolve();
@@ -66,7 +66,7 @@ function fixture() {
     return { vault, keys, pairFingerprint };
   });
   const storage: KeyringStoragePort = {
-    get: async (key) => records.get(key),
+    get: jest.fn(async (key) => records.get(key)),
     set: async (key, value) => {
       records.set(key, value);
     },
@@ -109,7 +109,7 @@ function fixture() {
     },
   } as any;
   const createHost = () =>
-    createSoftwareKeyringHost(storage, {
+    createKeyringHost(storage, {
       deviceUnlock: { readCredential, writeCredential },
     });
   const attach = (ring: SoftwareKeyring) => {
@@ -119,7 +119,12 @@ function fixture() {
   };
   const open = (host = createHost()) => {
     const receive = jest.fn<void, [DeviceUnlockControls]>();
-    const ring = attach(new SoftwareKeyring(host, receive));
+    const ring = attach(
+      new SoftwareKeyring(host, {
+        captureEvmSubmission: null,
+        receiveDeviceUnlock: receive,
+      })
+    );
     expect(receive).toHaveBeenCalledTimes(1);
     return { ring, controls: receive.mock.calls[0][0] };
   };
@@ -146,13 +151,17 @@ function fixture() {
 
 it('provides no addressable device capability to an unconfigured host', async () => {
   const f = fixture();
-  const host = createSoftwareKeyringHost(f.storage);
-  const ring = new SoftwareKeyring(host);
+  const host = createKeyringHost(f.storage);
+  const ring = new SoftwareKeyring(host, { captureEvmSubmission: null });
   rings.push(ring);
   const receive = jest.fn();
-  expect(() => new SoftwareKeyring(host, receive)).toThrow(
-    'Device unlock is unavailable in this host'
-  );
+  expect(
+    () =>
+      new SoftwareKeyring(host, {
+        captureEvmSubmission: null,
+        receiveDeviceUnlock: receive,
+      })
+  ).toThrow('Device unlock is unavailable in this host');
   expect(receive).not.toHaveBeenCalled();
   for (const name of [
     'issue',
@@ -166,17 +175,16 @@ it('provides no addressable device capability to an unconfigured host', async ()
     expect(Reflect.has(ring, name)).toBe(false);
     expect(Reflect.has(host, name)).toBe(false);
   }
-  expect(() => ring.receiveSessionOwnership({} as any, {} as any)).toThrow();
+  expect('receiveSessionOwnership' in ring).toBe(false);
   expect(f.readPair).not.toHaveBeenCalled();
   expect(f.readCredential).not.toHaveBeenCalled();
 
-  const withoutPair = createSoftwareKeyringHost(
-    { ...f.storage, readDeviceUnlockVaultPair: undefined },
-    { deviceUnlock: f }
-  );
-  expect(() => new SoftwareKeyring(withoutPair, receive)).toThrow(
-    'Device unlock requires an atomic vault pair reader'
-  );
+  expect(() =>
+    createKeyringHost(
+      { ...f.storage, readDeviceUnlockVaultPair: undefined },
+      { deviceUnlock: f }
+    )
+  ).toThrow('Device unlock requires an atomic vault pair reader');
   expect(receive).not.toHaveBeenCalled();
 });
 
@@ -384,7 +392,9 @@ it('moves the host owner on transfer and retires the source device controls', as
   const host = f.createHost();
   const source = await f.create(password, host);
   await expect(source.controls.issue(password, current)).resolves.toBe(true);
-  const target = f.attach(new SoftwareKeyring(host));
+  const target = f.attach(
+    new SoftwareKeyring(host, { captureEvmSubmission: null })
+  );
   const fresh = f.open(host);
   const started = deferred<void>();
   const release = deferred<void>();
@@ -447,7 +457,9 @@ it('refuses a held device resume when a password unlock on a receiver-free sibli
   const resume = device.controls.resume(current);
   await started.promise;
 
-  const winner = f.attach(new SoftwareKeyring(host));
+  const winner = f.attach(
+    new SoftwareKeyring(host, { captureEvmSubmission: null })
+  );
   await expect(winner.unlock(password)).resolves.toEqual({ canLogin: true });
   release.resolve(credential);
   await expect(resume).rejects.toThrow(
@@ -466,8 +478,10 @@ it('keeps a device winner through a competing password unlock and loser cleanup'
   await expect(device.controls.issue(password, current)).resolves.toBe(true);
   await device.ring.lockWallet();
 
-  const contender = f.attach(new SoftwareKeyring(host));
-  const get = f.storage.get.bind(f.storage);
+  const contender = f.attach(
+    new SoftwareKeyring(host, { captureEvmSubmission: null })
+  );
+  const get = jest.mocked(f.storage.get).getMockImplementation()!;
   const started = deferred<void>();
   const release = deferred<void>();
   jest.spyOn(f.storage, 'get').mockImplementationOnce(async (key) => {
@@ -602,7 +616,10 @@ it('keeps ordinary password refusal on the default host without a pair read', as
   const { ring } = await f.create();
   await ring.lockWallet();
   const plain = f.attach(
-    new SoftwareKeyring(createSoftwareKeyringHost(f.storage))
+    new SoftwareKeyring(
+      createKeyringHost({ ...f.storage, readDeviceUnlockVaultPair: undefined }),
+      { captureEvmSubmission: null }
+    )
   );
   await expect(plain.unlock(newPassword)).resolves.toEqual({ canLogin: false });
   expect(f.readPair).not.toHaveBeenCalled();
@@ -793,7 +810,9 @@ it('revokes a held device resume when a sibling takes and releases ownership bet
   const resume = device.controls.resume(current);
   await started.promise;
 
-  const sibling = f.attach(new SoftwareKeyring(host));
+  const sibling = f.attach(
+    new SoftwareKeyring(host, { captureEvmSubmission: null })
+  );
   await expect(sibling.unlock(password)).resolves.toEqual({ canLogin: true });
   expect(sibling.isUnlocked()).toBe(true);
   await sibling.lockWallet();
@@ -809,7 +828,9 @@ it('keeps a held owner enrollment current through a nonowner lock and destroy', 
   const f = fixture();
   const host = f.createHost();
   const owner = await f.create(password, host);
-  const sibling = f.attach(new SoftwareKeyring(host));
+  const sibling = f.attach(
+    new SoftwareKeyring(host, { captureEvmSubmission: null })
+  );
 
   const started = deferred<void>();
   const release = deferred<void>();

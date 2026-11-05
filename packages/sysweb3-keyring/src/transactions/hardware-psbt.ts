@@ -11,7 +11,7 @@ import { assertPsbtAccountScope } from '../utils/psbt-account-scope';
 import type { LedgerKeyring } from '../ledger';
 import type { TrezorKeyring } from '../trezor';
 
-/** Legacy device adapter. The software transaction engine never imports it. */
+/** The software transaction engine never imports this device adapter. */
 export function createLedgerPsbtSigner(
   ledger: LedgerKeyring
 ): ISyscoinHardwareSigner {
@@ -22,6 +22,7 @@ export function createLedgerPsbtSigner(
     scope,
     assertCurrent,
     getRawTransaction,
+    signal,
   }) => {
     if (
       typeof ledger?.signPsbt !== 'function' ||
@@ -32,9 +33,6 @@ export function createLedgerPsbtSigner(
     // CRITICAL: Enhance PSBT with required Ledger fields
     const accountXpub = account.xpub;
     const accountId = account.id;
-
-    // Enrich PSBT with nonWitnessUtxo for Ledger compatibility
-    const blockbookUrl = activeNetwork.url;
 
     // Some unit tests mock PSBTs without bitcoinjs-lib internals (data/txInputs).
     // Only attempt enrichment when the PSBT looks like a real bitcoinjs-lib Psbt.
@@ -62,7 +60,8 @@ export function createLedgerPsbtSigner(
           const prevTxId = Buffer.from(tx.hash).reverse().toString('hex');
 
           // Fetch the raw transaction
-          const rawTxResponse = await getRawTransaction(blockbookUrl, prevTxId);
+          const rawTxResponse = await getRawTransaction(prevTxId);
+          assertCurrent();
 
           // Handle different response formats (string, object with 'hex', or object with 'result')
           let rawTxHex: string;
@@ -106,6 +105,7 @@ export function createLedgerPsbtSigner(
 
       // Wait for all inputs to be enriched
       const results = await Promise.all(txFetchPromises);
+      assertCurrent();
       const failedInputs = results.filter((r) => !r.success);
 
       if (failedInputs.length > 0) {
@@ -119,13 +119,16 @@ export function createLedgerPsbtSigner(
     assertCurrent();
     assertPsbtAccountScope(psbt, scope);
     // The host verifies the device xpub and signs in one serialized operation.
-    const { fingerprint, signatures } = await ledger.signPsbt({
-      currency: activeNetwork.currency,
-      slip44: activeNetwork.slip44,
-      accountIndex: accountId,
-      accountXpub,
-      psbtBase64: psbt.toBase64(),
-    });
+    const { fingerprint, signatures } = await ledger.signPsbt(
+      {
+        currency: activeNetwork.currency,
+        slip44: activeNetwork.slip44,
+        accountIndex: accountId,
+        accountXpub,
+        psbtBase64: psbt.toBase64(),
+      },
+      { assertCurrent, signal }
+    );
     assertCurrent();
     const enhancedPsbt = prepareLedgerPsbt(
       psbt,
@@ -218,7 +221,11 @@ export function createTrezorPsbtSigner(
       network: bitcoinjsNetwork || undefined, // Pass network config for isScriptHash check
     });
     assertCurrent();
-    const signedPsbt = await trezor.signUtxoTransaction(trezorTx, psbt);
+    const signedPsbt = await trezor.signUtxoTransaction(
+      trezorTx,
+      psbt,
+      assertCurrent
+    );
     assertCurrent();
     return signedPsbt;
   };

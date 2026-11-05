@@ -1,9 +1,21 @@
+import { INetworkType } from '@sidhujag/sysweb3-network';
+
 import { KeyringAccountType } from '../../types';
-import { SyscoinTransactions } from '../syscoin';
+import {
+  createLedgerPsbtSigner,
+  createTrezorPsbtSigner,
+} from '../hardware-psbt';
+import { SyscoinTransactionsCore } from '../syscoin-core';
+
+const testOwner = {
+  assertCurrent: () => undefined,
+  fetch: jest.fn().mockRejectedValue(new Error('Unexpected Blockbook request')),
+  signal: new AbortController().signal,
+};
 
 // Integration tests for the complete transaction flow
 describe('PSBT Transaction Flow Integration', () => {
-  let syscoinTransactions: SyscoinTransactions;
+  let syscoinTransactions: SyscoinTransactionsCore;
   let mockSigner: any;
   let mockState: any;
   let mockLedger: any;
@@ -35,7 +47,13 @@ describe('PSBT Transaction Flow Integration', () => {
           0: { xpub: 'xpub123', id: 0 },
         },
       },
-      activeNetwork: { currency: 'sys', chainId: 57 },
+      activeNetwork: {
+        currency: 'sys',
+        chainId: 57,
+        slip44: 57,
+        kind: INetworkType.Syscoin,
+        url: 'https://blockbook.test',
+      },
     };
 
     mockLedger = {
@@ -54,46 +72,50 @@ describe('PSBT Transaction Flow Integration', () => {
       signUtxoTransaction: jest.fn(),
     } as any;
 
-    syscoinTransactions = new SyscoinTransactions(
+    syscoinTransactions = new SyscoinTransactionsCore(
       () => mockSigner,
-      () => mockSigner, // getReadOnlySigner - same mock for testing
+      () => ({ ...mockSigner, getOwnedAddress: mockGetAddress }),
       () => mockState,
-      mockGetAddress,
-      mockLedger,
-      mockTrezor
+      {
+        ledger: createLedgerPsbtSigner(mockLedger),
+        trezor: createTrezorPsbtSigner(mockTrezor),
+      },
+      () => () => undefined
     );
   });
 
   describe('Complete Native Transaction Flow', () => {
-    it('should handle native transaction from creation to broadcast', async () => {
+    it('should prepare and sign a native transaction', async () => {
       // Step 1: Create unsigned PSBT and get fee
       const { fee, psbt: unsignedPsbt } =
-        await syscoinTransactions.getEstimateSysTransactionFee({
-          amount: 1,
-          receivingAddress: 'sys1qtest',
-          feeRate: 0.00001,
-        });
+        await syscoinTransactions.getEstimateSysTransactionFee(
+          {
+            amount: 1,
+            receivingAddress: 'sys1qtest',
+            feeRate: 0.00001,
+          },
+          testOwner
+        );
 
       expect(fee).toBeGreaterThan(0);
       expect(unsignedPsbt).toBeDefined();
 
       // Step 2: Sign the PSBT
-      const signedPsbt = await syscoinTransactions.signPSBT({
-        psbt: unsignedPsbt,
-        isTrezor: false,
-        isLedger: false,
-      });
+      const signedPsbt = await syscoinTransactions.signPSBT(
+        {
+          psbt: unsignedPsbt,
+          isTrezor: false,
+          isLedger: false,
+        },
+        testOwner
+      );
 
-      // Step 3: Send the signed PSBT
-      const result = await syscoinTransactions.sendTransaction(signedPsbt);
-
-      expect(result.txid).toBe('final-txid');
-      expect(mockSigner.main.send).toHaveBeenCalledWith(signedPsbt);
+      expect(signedPsbt).toBeDefined();
     });
   });
 
   describe('Complete Token Transaction Flow', () => {
-    it('should handle token transaction from creation to broadcast', async () => {
+    it('should prepare and sign a token transaction', async () => {
       // Mock token lookup
       jest.doMock('@sidhujag/sysweb3-utils', () => ({
         getAsset: jest.fn().mockResolvedValue({
@@ -104,11 +126,14 @@ describe('PSBT Transaction Flow Integration', () => {
 
       // Step 1: Create unsigned token PSBT and get fee
       const { fee, psbt: unsignedPsbt } =
-        await syscoinTransactions.getEstimateSysTransactionFee({
-          amount: 100,
-          receivingAddress: 'sys1qtest',
-          token: { guid: 'token123', symbol: 'TEST' },
-        });
+        await syscoinTransactions.getEstimateSysTransactionFee(
+          {
+            amount: 100,
+            receivingAddress: 'sys1qtest',
+            token: { guid: 'token123', symbol: 'TEST' },
+          },
+          testOwner
+        );
 
       expect(fee).toBeGreaterThan(0);
       expect(unsignedPsbt).toBeDefined();
@@ -121,16 +146,16 @@ describe('PSBT Transaction Flow Integration', () => {
       );
 
       // Step 2: Sign the token PSBT
-      const signedPsbt = await syscoinTransactions.signPSBT({
-        psbt: unsignedPsbt,
-        isTrezor: false,
-        isLedger: false,
-      });
+      const signedPsbt = await syscoinTransactions.signPSBT(
+        {
+          psbt: unsignedPsbt,
+          isTrezor: false,
+          isLedger: false,
+        },
+        testOwner
+      );
 
-      // Step 3: Send the signed PSBT
-      const result = await syscoinTransactions.sendTransaction(signedPsbt);
-
-      expect(result.txid).toBe('final-txid');
+      expect(signedPsbt).toBeDefined();
     });
   });
 
@@ -145,28 +170,29 @@ describe('PSBT Transaction Flow Integration', () => {
 
       // Create unsigned PSBT
       const { fee, psbt: unsignedPsbt } =
-        await syscoinTransactions.getEstimateSysTransactionFee({
-          amount: 1,
-          receivingAddress: 'sys1qtest',
-        });
+        await syscoinTransactions.getEstimateSysTransactionFee(
+          {
+            amount: 1,
+            receivingAddress: 'sys1qtest',
+          },
+          testOwner
+        );
 
       expect(fee).toBeGreaterThan(0);
       expect(unsignedPsbt).toBeDefined();
 
       // Sign with Trezor
-      const signedPsbt = await syscoinTransactions.signPSBT({
-        psbt: unsignedPsbt,
-        isTrezor: true,
-      });
+      const signedPsbt = await syscoinTransactions.signPSBT(
+        {
+          psbt: unsignedPsbt,
+          isTrezor: true,
+        },
+        testOwner
+      );
 
       expect(mockTrezor.init).toHaveBeenCalled();
       expect(mockTrezor.signUtxoTransaction).toHaveBeenCalled();
       expect(signedPsbt).toBe('trezor-signed-psbt');
-
-      // Send
-      const result = await syscoinTransactions.sendTransaction(signedPsbt);
-
-      expect(result.txid).toBe('final-txid');
     });
 
     it('should handle Ledger transaction flow', async () => {
@@ -188,27 +214,28 @@ describe('PSBT Transaction Flow Integration', () => {
 
       // Create unsigned PSBT
       const { fee, psbt: unsignedPsbt } =
-        await syscoinTransactions.getEstimateSysTransactionFee({
-          amount: 1,
-          receivingAddress: 'sys1qtest',
-        });
+        await syscoinTransactions.getEstimateSysTransactionFee(
+          {
+            amount: 1,
+            receivingAddress: 'sys1qtest',
+          },
+          testOwner
+        );
 
       expect(fee).toBeGreaterThan(0);
       expect(unsignedPsbt).toBeDefined();
 
       // Sign with Ledger
-      const signedPsbt = await syscoinTransactions.signPSBT({
-        psbt: unsignedPsbt,
-        isLedger: true,
-      });
+      const signedPsbt = await syscoinTransactions.signPSBT(
+        {
+          psbt: unsignedPsbt,
+          isLedger: true,
+        },
+        testOwner
+      );
 
       expect(mockLedger.ledgerUtxoClient.signPsbt).toHaveBeenCalled();
       expect(signedPsbt).toBeDefined();
-
-      // Send
-      const result = await syscoinTransactions.sendTransaction(signedPsbt);
-
-      expect(result.txid).toBe('final-txid');
     });
   });
 
@@ -220,26 +247,20 @@ describe('PSBT Transaction Flow Integration', () => {
         .mockRejectedValue(new Error('Device disconnected'));
 
       await expect(
-        syscoinTransactions.getEstimateSysTransactionFee({
-          amount: 1,
-          receivingAddress: 'sys1qtest',
-        })
+        syscoinTransactions.getEstimateSysTransactionFee(
+          {
+            amount: 1,
+            receivingAddress: 'sys1qtest',
+          },
+          testOwner
+        )
       ).rejects.toThrow('Failed to sign transaction: Device disconnected');
-
-      // Test sending error
-      mockSigner.main.send = jest
-        .fn()
-        .mockRejectedValue(new Error('Network error'));
-
-      await expect(
-        syscoinTransactions.sendTransaction('valid-psbt')
-      ).rejects.toThrow('Failed to send transaction');
     });
 
-    it('should require PSBT for sendTransaction', async () => {
-      await expect(syscoinTransactions.sendTransaction('')).rejects.toThrow(
-        'Pre-signed PSBT is required'
-      );
+    it('requires explicit submission ownership', async () => {
+      await expect(
+        Reflect.apply(syscoinTransactions.sendTransaction, undefined, ['00'])
+      ).rejects.toMatchObject({ code: 'UTXO_SUBMISSION_NOT_DISPATCHED' });
     });
   });
 
@@ -265,11 +286,14 @@ describe('PSBT Transaction Flow Integration', () => {
         },
       }));
 
-      const { fee } = await syscoinTransactions.getEstimateSysTransactionFee({
-        amount: 0.8, // Amount that requires multiple UTXOs
-        receivingAddress: 'sys1qtest',
-        feeRate: 0.00001,
-      });
+      const { fee } = await syscoinTransactions.getEstimateSysTransactionFee(
+        {
+          amount: 0.8, // Amount that requires multiple UTXOs
+          receivingAddress: 'sys1qtest',
+          feeRate: 0.00001,
+        },
+        testOwner
+      );
 
       // Fee should be proportional to transaction size
       expect(fee).toBeGreaterThan(0.00001); // More than minimum
@@ -278,10 +302,13 @@ describe('PSBT Transaction Flow Integration', () => {
 
   describe('RBF Support', () => {
     it('should create RBF-enabled transactions by default', async () => {
-      await syscoinTransactions.getEstimateSysTransactionFee({
-        amount: 1,
-        receivingAddress: 'sys1qtest',
-      });
+      await syscoinTransactions.getEstimateSysTransactionFee(
+        {
+          amount: 1,
+          receivingAddress: 'sys1qtest',
+        },
+        testOwner
+      );
 
       // Check that RBF was enabled in the transaction options
       expect(mockSigner.main.createPSBTFromRes).toHaveBeenCalled();
@@ -290,11 +317,14 @@ describe('PSBT Transaction Flow Integration', () => {
     });
 
     it('should disable RBF when requested', async () => {
-      await syscoinTransactions.getEstimateSysTransactionFee({
-        amount: 1,
-        receivingAddress: 'sys1qtest',
-        txOptions: { rbf: false },
-      });
+      await syscoinTransactions.getEstimateSysTransactionFee(
+        {
+          amount: 1,
+          receivingAddress: 'sys1qtest',
+          txOptions: { rbf: false },
+        },
+        testOwner
+      );
 
       const callArgs = mockSigner.main.createPSBTFromRes.mock.calls[0];
       expect(callArgs[0]).toMatchObject({ rbf: false });

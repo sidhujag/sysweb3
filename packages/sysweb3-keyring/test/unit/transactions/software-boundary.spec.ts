@@ -4,6 +4,7 @@ import { Psbt, Transaction, payments } from 'bitcoinjs-lib';
 import { SyscoinTransactionsCore } from '../../../src/transactions/syscoin-core';
 import { KeyringAccountType } from '../../../src/types';
 import { PsbtUtils } from '../../../src/utils/psbt';
+import { ownedUtxoTestRead } from '../../helpers/utxoAuthority';
 
 import type { ISyscoinHardwareSigners } from '../../../src/transactions/syscoin-core';
 
@@ -19,7 +20,7 @@ const network = {
   url: 'https://offline.invalid',
 } as any;
 
-function fixture(hardware?: ISyscoinHardwareSigners) {
+function fixture(hardware: ISyscoinHardwareSigners = {}) {
   const syscoinjs = jest.requireActual('syscoinjs-lib');
   const config = getNetworkConfig(1, 'tSYS');
   const hd = new syscoinjs.utils.HDSigner(
@@ -68,7 +69,6 @@ function fixture(hardware?: ISyscoinHardwareSigners) {
     getSigner,
     () => ({ main: {} }),
     () => state,
-    jest.fn(),
     hardware,
     capture
   );
@@ -104,7 +104,10 @@ function fixture(hardware?: ISyscoinHardwareSigners) {
 
 test('software core signs the existing authenticated HD PSBT without a hardware adapter', async () => {
   const f = fixture();
-  const result = await f.tx.signPSBT({ psbt: PsbtUtils.toPali(f.makePsbt()) });
+  const result = await f.tx.signPSBT(
+    { psbt: PsbtUtils.toPali(f.makePsbt()) },
+    ownedUtxoTestRead()
+  );
   const signed = PsbtUtils.fromPali(result, network);
   expect(signed.data.inputs[0].finalScriptWitness).toBeDefined();
   expect(f.getSigner).toHaveBeenCalledTimes(1);
@@ -117,11 +120,14 @@ test.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
     f.state.activeAccountType = kind;
     f.state.accounts[kind][0] = { ...f.account };
     await expect(
-      f.tx.signPSBT({
-        psbt: PsbtUtils.toPali(f.makePsbt()),
-        isLedger: false,
-        isTrezor: false,
-      })
+      f.tx.signPSBT(
+        {
+          psbt: PsbtUtils.toPali(f.makePsbt()),
+          isLedger: false,
+          isTrezor: false,
+        },
+        ownedUtxoTestRead()
+      )
     ).rejects.toMatchObject({ code: 'HARDWARE_SIGNER_UNAVAILABLE' });
     expect(f.getSigner).not.toHaveBeenCalled();
   }
@@ -131,7 +137,7 @@ test('hardware metadata on an otherwise software account cannot select a softwar
   const f = fixture();
   f.state.accounts.HDAccount[0].isLedgerWallet = true;
   await expect(
-    f.tx.signPSBT({ psbt: PsbtUtils.toPali(f.makePsbt()) })
+    f.tx.signPSBT({ psbt: PsbtUtils.toPali(f.makePsbt()) }, ownedUtxoTestRead())
   ).rejects.toMatchObject({ code: 'HARDWARE_SIGNER_UNAVAILABLE' });
   expect(f.getSigner).not.toHaveBeenCalled();
 });
@@ -155,7 +161,10 @@ test('hardware adapters cannot mutate wallet network or signing context snapshot
   const f = fixture({ ledger });
   f.state.activeAccountType = KeyringAccountType.Ledger;
   f.state.accounts.Ledger[0] = { ...f.account };
-  await f.tx.signPSBT({ psbt: PsbtUtils.toPali(f.makePsbt()) });
+  await f.tx.signPSBT(
+    { psbt: PsbtUtils.toPali(f.makePsbt()) },
+    ownedUtxoTestRead()
+  );
   expect(f.state.activeNetwork.url).toBe(originalUrl);
   expect(f.getSigner).not.toHaveBeenCalled();
 });
@@ -177,7 +186,10 @@ test('injected hardware completion is rejected after a session cycle', async () 
   const f = fixture({ ledger });
   f.state.activeAccountType = KeyringAccountType.Ledger;
   f.state.accounts.Ledger[0] = { ...f.account, xprv: 'encrypted-test-secret' };
-  const result = f.tx.signPSBT({ psbt: PsbtUtils.toPali(f.makePsbt()) });
+  const result = f.tx.signPSBT(
+    { psbt: PsbtUtils.toPali(f.makePsbt()) },
+    ownedUtxoTestRead()
+  );
   const rejected = expect(result).rejects.toThrow(
     'Wallet signing context changed'
   );
@@ -206,8 +218,8 @@ test.each([
     // Only physical device I/O is replaced with a deterministic signature fixture.
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const {
-      SyscoinTransactions,
-    } = require('../../../src/transactions/syscoin');
+      createLedgerPsbtSigner,
+    } = require('../../../src/transactions/hardware-psbt');
     const f = fixture();
     f.state.activeAccountType = KeyringAccountType.Ledger;
     f.state.accounts.Ledger[0] = { ...f.account };
@@ -235,22 +247,23 @@ test.each([
       ],
     }));
     const ledger = { signPsbt };
-    const tx = new SyscoinTransactions(
+    const tx = new SyscoinTransactionsCore(
       f.getSigner,
       () => ({ main: {} }),
       () => f.state,
-      jest.fn(),
-      ledger,
-      undefined
+      { ledger: createLedgerPsbtSigner(ledger as any) },
+      () => () => undefined
     );
-    jest.spyOn(tx, 'txUtilsFunctions').mockReturnValue({ getRawTransaction });
     const approvedPsbt = f.makePsbt();
     if (response === 'requested-sighash')
       approvedPsbt.updateInput(0, { sighashType: Transaction.SIGHASH_NONE });
-    const pending = tx.signPSBT({
-      psbt: PsbtUtils.toPali(approvedPsbt),
-      isLedger: false,
-    });
+    const pending = tx.signPSBT(
+      {
+        psbt: PsbtUtils.toPali(approvedPsbt),
+        isLedger: false,
+      },
+      ownedUtxoTestRead(getRawTransaction)
+    );
     if (response === 'foreign-key') {
       await expect(pending).rejects.toThrow(
         'PSBT input is outside the approved account'

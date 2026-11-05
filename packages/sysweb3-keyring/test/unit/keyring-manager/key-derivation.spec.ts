@@ -3,6 +3,7 @@ import { INetworkType } from '@sidhujag/sysweb3-network';
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { privateKeyToAccount } from '../../../src/transactions/evm-local-signer';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
+import { createTestKeyring } from '../../helpers/keyring-host';
 import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
 
 describe('KeyringManager - Key Derivation', () => {
@@ -578,7 +579,7 @@ describe('KeyringManager - Key Derivation', () => {
 
   describe('Edge Cases', () => {
     it('should handle account creation when no HD signer exists', async () => {
-      keyringManager = new KeyringManager();
+      keyringManager = createTestKeyring();
 
       // Set up mock vault state getter for initializeWalletSecurely
       currentVaultState = createMockVaultState({

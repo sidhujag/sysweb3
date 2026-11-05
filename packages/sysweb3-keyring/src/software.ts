@@ -1,102 +1,27 @@
 /** Software-only entry: explicit host storage, no browser/device initialization. */
 import { KeyringCore } from './keyring-core';
-import { createVaultPersistence } from './storage-core';
+import { prepareKeyringHost } from './keyring-host';
 
-import type {
-  DeviceUnlockControls,
-  DeviceUnlockPort,
-  KeyringCoreDependencies,
-  KeyringStoragePort,
-} from './keyring-core';
+import type { KeyringHost, KeyringOptions } from './keyring-host';
 import type {
   EncryptedEvmHdRuntimeAccount,
   EvmHdRuntimeAccountOptions,
   EvmHdRuntimeAccountRequest,
 } from './software-hd-account';
-import type { VaultPersistence } from './storage-core';
-import type { CaptureEvmSubmission } from './transactions/evm-submission';
 import type {
   PreparedEvmSigningOptions,
   PreparedSoftwareEvmSigningRequest,
   SignedPreparedEvmTransaction,
 } from './transactions/prepared-evm';
 
-declare const softwareHostBrand: unique symbol;
-/** Opaque handle minted by createSoftwareKeyringHost; no injectable persistence. */
-export interface SoftwareKeyringHost {
-  readonly [softwareHostBrand]: true;
-}
-
-const hosts = new WeakMap<
-  SoftwareKeyringHost,
-  {
-    storage: KeyringStoragePort;
-    vaultPersistence: VaultPersistence;
-    captureEvmSubmission?: CaptureEvmSubmission;
-    deviceUnlock?: DeviceUnlockPort;
-    sessionOwner?: KeyringCoreDependencies<
-      undefined,
-      undefined
-    >['sessionOwner'];
-  }
->();
-
-/** Create once per wallet authority, then share with its per-network keyrings. */
-export const createSoftwareKeyringHost = (
-  storage: KeyringStoragePort,
-  options?: {
-    captureEvmSubmission?: CaptureEvmSubmission;
-    deviceUnlock?: DeviceUnlockPort;
-  }
-): SoftwareKeyringHost => {
-  const vaultPersistence = createVaultPersistence(storage);
-  if (typeof storage.deleteItem !== 'function') {
-    throw new TypeError('Keyring storage port must provide deleteItem');
-  }
-  const host = Object.freeze({}) as SoftwareKeyringHost;
-  const deviceUnlock = options?.deviceUnlock;
-  hosts.set(host, {
-    storage,
-    vaultPersistence,
-    captureEvmSubmission: options?.captureEvmSubmission,
-    sessionOwner: deviceUnlock ? { epoch: 0 } : undefined,
-    deviceUnlock:
-      deviceUnlock &&
-      Object.freeze({
-        readCredential: deviceUnlock.readCredential.bind(deviceUnlock),
-        writeCredential: deviceUnlock.writeCredential.bind(deviceUnlock),
-      }),
-  });
-  return host;
-};
-
-const requireHost = (host: SoftwareKeyringHost) => {
-  const dependencies = hosts.get(host);
-  if (!dependencies) throw new TypeError('Invalid software keyring host');
-  return dependencies;
-};
-
 export class SoftwareKeyring extends KeyringCore<undefined, undefined> {
-  constructor(
-    host: SoftwareKeyringHost,
-    receiveDeviceUnlock?: (controls: DeviceUnlockControls) => void
-  ) {
-    const dependencies = requireHost(host);
-    if (receiveDeviceUnlock && !dependencies.deviceUnlock)
-      throw new TypeError('Device unlock is unavailable in this host');
-    super({
-      authority: host,
-      captureEvmSubmission: dependencies.captureEvmSubmission,
-      sessionOwner: dependencies.sessionOwner,
-      storage: dependencies.storage,
-      vaultPersistence: dependencies.vaultPersistence,
+  constructor(host: KeyringHost, options: KeyringOptions) {
+    const { binding, publishControls } = prepareKeyringHost(host, options);
+    super(binding, {
       ledgerSigner: undefined,
       trezorSigner: undefined,
-      deviceUnlock:
-        receiveDeviceUnlock && dependencies.deviceUnlock
-          ? { port: dependencies.deviceUnlock, receive: receiveDeviceUnlock }
-          : undefined,
     });
+    publishControls?.();
   }
 
   /**
@@ -123,33 +48,22 @@ export class SoftwareKeyring extends KeyringCore<undefined, undefined> {
     return this.signPreparedSoftwareEvmTransaction(request, options);
   }
 
-  /** Software authorities cannot rebind their backing store after creation. */
-  public override setStorage = (client: any): never => {
-    void client;
-    throw new Error('Storage replacement is unavailable in this host');
-  };
-
-  /** Sessions may move only through the core's same-authority transfer path. */
-  public override receiveSessionOwnership = (
-    ...session: Parameters<KeyringCore['receiveSessionOwnership']>
-  ): never => {
-    void session;
-    throw new Error('Direct session injection is unavailable in this host');
-  };
-
   public static async createInitialized(
-    host: SoftwareKeyringHost,
+    host: KeyringHost,
     seed: string,
     password: string,
-    vaultStateGetter: () => any
+    vaultStateGetter: () => any,
+    options: KeyringOptions
   ): Promise<SoftwareKeyring> {
-    const keyring = new SoftwareKeyring(host);
+    const keyring = new SoftwareKeyring(host, options);
     keyring.setVaultStateGetter(vaultStateGetter);
     await keyring.initializeWalletSecurely(seed, password);
     return keyring;
   }
 }
 
+export { createKeyringHost } from './keyring-host';
+export type { KeyringHost, KeyringOptions } from './keyring-host';
 export { KeyringAccountType } from './types';
 export { INetworkType } from '@sidhujag/sysweb3-network';
 export type { INetwork } from '@sidhujag/sysweb3-network';
@@ -160,7 +74,12 @@ export type {
   DeviceUnlockVaultPair,
   KeyringStoragePort,
 } from './keyring-core';
-export type { IKeyringAccountState, SyscoinOwnedReadOptions } from './types';
+export type {
+  IKeyringAccountState,
+  SyscoinOwnedReadOptions,
+  SyscoinOwnedSubmissionOptions,
+  SyscoinSubmissionDescriptor,
+} from './types';
 
 export type {
   PreparedEvmTransaction,

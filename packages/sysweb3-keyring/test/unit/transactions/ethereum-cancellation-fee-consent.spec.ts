@@ -10,6 +10,7 @@ import { BigNumber, serializeTransaction } from '../../../src/ethers-v6';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import * as localSigner from '../../../src/transactions/evm-local-signer';
 import { KeyringAccountType } from '../../../src/types';
+import { createTestSubmissionCapture } from '../../helpers/evm-submission';
 
 // Keep real signed-response normalization; the shared fixture omits it.
 jest.mock('../../../src/providers', () => ({
@@ -156,7 +157,8 @@ function fixture(
       return () => {
         if (generation !== captured) throw new Error('Session changed');
       };
-    }
+    },
+    createTestSubmissionCapture()
   );
   const providerAccess = jest.fn(() => currentProvider);
   Object.defineProperty(sdk, 'web3Provider', { get: providerAccess });

@@ -247,7 +247,10 @@ export function preparedEvmGuard(input: unknown): () => void {
 export function signPreparedEvmEnvelope(
   transaction: PreparedEvmTransaction,
   privateKey: string
-): SignedPreparedEvmTransaction {
+): Readonly<{
+  signed: SignedPreparedEvmTransaction;
+  expectedUnsigned: string;
+}> {
   const unsigned = {
     type: transaction.type,
     to: transaction.to,
@@ -263,11 +266,11 @@ export function signPreparedEvmEnvelope(
           maxPriorityFeePerGas: BigInt(transaction.maxPriorityFeePerGas),
         }),
   };
-  const expected = Transaction.from(unsigned);
+  const expectedUnsigned = Transaction.from(unsigned).unsignedSerialized;
   const rawTransaction = signTransaction(unsigned, privateKey);
   const signed = assertSignedEvmTransactionMatches(
     rawTransaction,
-    expected.unsignedSerialized,
+    expectedUnsigned,
     transaction.from
   );
   if (signed.hash !== keccak256(rawTransaction))
@@ -275,10 +278,13 @@ export function signPreparedEvmEnvelope(
       'Prepared EVM signature does not match requested transaction'
     );
   return Object.freeze({
-    rawTransaction,
-    hash: signed.hash!,
-    unsignedHash: signed.unsignedHash,
-    from: signed.from!,
-    transaction,
+    expectedUnsigned,
+    signed: Object.freeze({
+      rawTransaction,
+      hash: signed.hash!,
+      unsignedHash: signed.unsignedHash,
+      from: signed.from!,
+      transaction,
+    }),
   });
 }

@@ -1,10 +1,11 @@
 import * as syscoinjs from 'syscoinjs-lib';
 
-import { SyscoinTransactions } from '../../../src/transactions/syscoin';
+import { readPublicSyscoinFee } from '../../../src/transactions/syscoin-core';
 import {
   fetchBackendAccountCached,
   invalidateBlockbookAccountCache,
 } from '../../../src/utils/blockbook-cache';
+import { ownedUtxoTestRead } from '../../helpers/utxoAuthority';
 
 const URL = 'https://blockbook.test';
 const XPUB = 'zpub-test-account';
@@ -73,54 +74,27 @@ describe('blockbook account cache', () => {
   });
 });
 
-describe('getRecommendedFee cache', () => {
-  const buildTransactions = () =>
-    new SyscoinTransactions(
-      jest.fn() as any,
-      jest.fn() as any,
-      jest.fn() as any,
-      jest.fn() as any,
-      {} as any,
-      {} as any
-    );
-
+describe('public Blockbook fee ownership', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     fetchEstimateFeeMock.mockResolvedValue(10);
   });
 
-  it('caches the recommended fee per explorer url', async () => {
-    const transactions = buildTransactions();
-
-    const fee1 = await transactions.getRecommendedFee(URL);
-    const fee2 = await transactions.getRecommendedFee(URL);
-
-    expect(fetchEstimateFeeMock).toHaveBeenCalledTimes(1);
-    expect(fee1).toBe(10 / 1024);
-    expect(fee2).toBe(fee1);
-  });
-
-  it('fetches separately for different explorers', async () => {
-    const transactions = buildTransactions();
-
-    await transactions.getRecommendedFee(URL);
-    await transactions.getRecommendedFee('https://other-blockbook.test');
-
-    expect(fetchEstimateFeeMock).toHaveBeenCalledTimes(2);
-  });
-
-  it('refreshes the fee after the TTL expires', async () => {
-    const transactions = buildTransactions();
-    const nowSpy = jest.spyOn(Date, 'now');
-    const base = 1_750_000_000_000;
-
-    nowSpy.mockReturnValue(base);
-    await transactions.getRecommendedFee(URL);
-
-    nowSpy.mockReturnValue(base + 61_000); // TTL is 60s
-    await transactions.getRecommendedFee(URL);
-
-    expect(fetchEstimateFeeMock).toHaveBeenCalledTimes(2);
-    nowSpy.mockRestore();
+  it('requires a public read owner without opening any wallet session', async () => {
+    await expect(
+      Reflect.apply(readPublicSyscoinFee, undefined, [URL])
+    ).rejects.toThrow('Missing owned UTXO read');
+    expect(fetchEstimateFeeMock).not.toHaveBeenCalled();
+    const authority = ownedUtxoTestRead();
+    await expect(readPublicSyscoinFee(URL, authority)).resolves.toBe(10 / 1024);
+    expect(fetchEstimateFeeMock).toHaveBeenCalledWith(
+      URL,
+      1,
+      undefined,
+      expect.objectContaining({
+        signal: authority.signal,
+        fetch: expect.any(Function),
+      })
+    );
   });
 });

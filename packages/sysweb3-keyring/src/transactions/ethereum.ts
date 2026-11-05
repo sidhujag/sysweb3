@@ -51,6 +51,7 @@ import {
   IEthereumTransactions,
   IEvmCancellationOptions,
   IEvmReplacementOptions,
+  EvmFormattedSendArguments,
   IEvmSendOptions,
   SimpleTransactionRequest,
   KeyringAccountType,
@@ -75,6 +76,11 @@ import {
   type CaptureEvmSubmission,
   type EvmSubmissionContext,
 } from './evm-submission';
+import {
+  signPreparedEvmEnvelope,
+  snapshotPreparedEvmRequest,
+  type PreparedEvmTransaction,
+} from './prepared-evm';
 import { getAddressDerivationPath } from '../utils/derivation-paths';
 
 import type { LedgerKeyring } from '../ledger';
@@ -234,6 +240,7 @@ const assertSynchronousOriginalValidation = (
   result: unknown,
   message = 'Original transaction validator must be synchronous'
 ): void => {
+  if (result === undefined) return;
   if (
     result !== null &&
     (typeof result === 'object' || typeof result === 'function') &&
@@ -242,8 +249,8 @@ const assertSynchronousOriginalValidation = (
     // A void callback type also accepts async functions. Decline their pending
     // decision and consume a later rejection without allowing signing to start.
     void Promise.resolve(result).catch(() => undefined);
-    throw new Error(message);
   }
+  throw new Error(message);
 };
 
 export class EthereumTransactions<
@@ -257,7 +264,7 @@ export class EthereumTransactions<
   public ledgerSigner: TLedger;
   private getNetwork: () => INetwork;
   private captureSigningContext?: () => () => void;
-  private readonly captureSubmissionLifecycle?: CaptureEvmSubmission;
+  private readonly captureSubmissionLifecycle: CaptureEvmSubmission | null;
   private abortController: AbortController;
   private getDecryptedPrivateKey: (
     targetAccount?: IEvmReplacementOptions['targetAccount']
@@ -306,9 +313,16 @@ export class EthereumTransactions<
     },
     ledgerSigner: TLedger,
     trezorSigner: TTrezor,
-    captureSigningContext?: () => () => void,
-    captureSubmissionLifecycle?: CaptureEvmSubmission
+    captureSigningContext: (() => () => void) | undefined,
+    captureSubmissionLifecycle: CaptureEvmSubmission | null
   ) {
+    if (
+      captureSubmissionLifecycle !== null &&
+      typeof captureSubmissionLifecycle !== 'function'
+    )
+      throw new TypeError(
+        'Ethereum transactions require an explicit submission capability'
+      );
     this.getNetwork = getNetwork;
     this.getDecryptedPrivateKey = (targetAccount) => {
       this.assertHardwareSignerAvailable(targetAccount);
@@ -409,8 +423,10 @@ export class EthereumTransactions<
     network: INetwork,
     assertCurrent: () => void,
     originalHash?: string
-  ) =>
-    captureEvmSubmission(
+  ) => {
+    if (!this.captureSubmissionLifecycle)
+      throw new TypeError('A durable EVM submission lifecycle is required');
+    return captureEvmSubmission(
       {
         operation,
         account: { address: account.address, type, id },
@@ -425,6 +441,7 @@ export class EthereumTransactions<
       assertCurrent,
       this.captureSubmissionLifecycle
     );
+  };
 
   // Getter that automatically ensures providers are initialized when accessed
   public get web3Provider(): CustomJsonRpcProvider {
@@ -1079,7 +1096,12 @@ export class EthereumTransactions<
     ) {
       throw new Error('Cancellation fee approval required');
     }
-    const assertHostContext = options.assertCurrentContext;
+    const { assertCurrentContext, validateOriginal } = options;
+    const assertHostContext = () =>
+      assertSynchronousOriginalValidation(
+        assertCurrentContext(),
+        'Transaction context guard must be synchronous'
+      );
     assertHostContext();
     const state = this.getState();
     const selectedType = state.activeAccountType;
@@ -1129,11 +1151,11 @@ export class EthereumTransactions<
         throw new Error('Wallet signing context changed');
       }
     };
-    const assertCurrent = () => {
+    const assertSigningCurrent = () => {
       assertHostContext();
       assertKeyringContext();
     };
-    assertCurrent();
+    assertSigningCurrent();
     const submission = previewOnly
       ? undefined
       : this.captureSubmission(
@@ -1142,9 +1164,10 @@ export class EthereumTransactions<
           activeAccountType,
           activeAccountId,
           activeNetwork,
-          assertCurrent,
+          assertSigningCurrent,
           txHash
         );
+    const assertCurrent = submission?.assertCurrent ?? assertSigningCurrent;
     const currentEip1559Fees = async () => {
       const feeData = await this.getFeeDataWithDynamicMaxPriorityFeePerGas(
         provider
@@ -1192,7 +1215,7 @@ export class EthereumTransactions<
           }
         : undefined;
     assertSynchronousOriginalValidation(
-      options.validateOriginal(tx as TransactionResponse | null)
+      validateOriginal(tx as TransactionResponse | null)
     );
     assertCurrent();
 
@@ -1277,7 +1300,7 @@ export class EthereumTransactions<
 
     const maximumFee = BigNumber.from(feePlan.maximumFee);
     assertCurrent();
-    if (previewOnly)
+    if (!submission)
       return {
         isCanceled: false,
         error: false,
@@ -1542,33 +1565,41 @@ export class EthereumTransactions<
     }
   };
   //TODO: This function needs to be refactored
-  sendFormattedTransaction = async (
-    params: SimpleTransactionRequest,
-    isLegacy?: boolean,
-    options?: IEvmSendOptions
-  ) => {
+  sendFormattedTransaction = async (...args: EvmFormattedSendArguments) => {
+    const [params, isLegacy, options] = args;
     let broadcastAttempted = false;
     try {
       if (
-        options !== undefined &&
-        (!options || typeof options !== 'object' || Array.isArray(options))
+        !options ||
+        typeof options !== 'object' ||
+        Array.isArray(options) ||
+        (options.mode !== 'reviewed-native' &&
+          options.mode !== 'specialized') ||
+        typeof options.assertCurrent !== 'function'
       )
-        throw new Error('Invalid transaction context options');
+        throw new Error('Explicit transaction approval is required');
       // Capture once; later caller mutations cannot replace this invocation's
       // admission decision while chain checks or device approval are pending.
-      const assertHostCurrent = options?.assertCurrent;
-      if (
-        assertHostCurrent !== undefined &&
-        typeof assertHostCurrent !== 'function'
-      )
-        throw new Error('Invalid transaction context guard');
+      const { assertCurrent: assertHostCurrent, mode } = options;
+      const assertApproved = () => {
+        const result: unknown = assertHostCurrent();
+        if (result !== undefined) {
+          assertSynchronousOriginalValidation(
+            result,
+            'Transaction context guard must be synchronous'
+          );
+          throw new Error('Transaction context guard must return undefined');
+        }
+      };
+      assertApproved();
       return await this.sendFormattedTransactionInternal(
         params,
         isLegacy,
         () => {
           broadcastAttempted = true;
         },
-        assertHostCurrent
+        assertApproved,
+        mode
       );
     } catch (error) {
       // A broadcast transport error may mean the node accepted the signed
@@ -1592,10 +1623,11 @@ export class EthereumTransactions<
   };
 
   private sendFormattedTransactionInternal = async (
-    params: SimpleTransactionRequest,
+    input: SimpleTransactionRequest | PreparedEvmTransaction,
     isLegacy: boolean | undefined,
     beforeBroadcast: () => void,
-    assertHostCurrent?: () => void
+    assertHostCurrent: () => void,
+    mode: IEvmSendOptions['mode']
   ) => {
     // Hardware approval may outlive the selected account, network or unlocked
     // session. Keep immutable identities and one provider for this invocation.
@@ -1607,33 +1639,76 @@ export class EthereumTransactions<
       provider,
       assertCurrent: assertKeyringCurrent,
     } = this.captureEvmSigningContext();
-    const assertCurrent = () => {
-      const result: unknown = assertHostCurrent?.();
-      if (result !== undefined) {
-        assertSynchronousOriginalValidation(
-          result,
-          'Transaction context guard must be synchronous'
-        );
-        throw new Error('Transaction context guard must return undefined');
-      }
+    const assertSigningCurrent = () => {
+      assertHostCurrent();
       assertKeyringCurrent();
     };
     const assertBeforeBroadcast = () => {
       assertCurrent();
       beforeBroadcast();
     };
-    assertCurrent();
     const submission = this.captureSubmission(
       'send',
       activeAccount,
       activeAccountType,
       activeAccountId,
       activeNetwork,
-      assertCurrent
+      assertSigningCurrent
     );
+    const assertCurrent = submission.assertCurrent;
+
+    if (mode === 'reviewed-native') {
+      const { transaction } = snapshotPreparedEvmRequest({
+        account: {
+          id: activeAccountId,
+          type: activeAccountType,
+          expectedAddress: activeAccount.address,
+        },
+        network: {
+          kind: activeNetwork.kind,
+          chainId: String(activeNetwork.chainId),
+          slip44: activeNetwork.slip44,
+          url: activeNetwork.url,
+        },
+        transaction: input,
+      });
+      const minimum = this.gasOverrides.minGasLimit;
+      if (
+        transaction.data !== '0x' ||
+        BigInt(transaction.value) === 0n ||
+        BigInt(transaction.gasLimit) < 21000n ||
+        (transaction.type === 2 && BigInt(transaction.maxFeePerGas) === 0n) ||
+        (minimum && BigInt(transaction.gasLimit) < minimum.toBigInt()) ||
+        (isLegacy !== undefined && isLegacy !== (transaction.type === 0))
+      )
+        throw new Error('Invalid reviewed native transfer approval');
+      assertCurrent();
+      await provider.verifyConfiguredChainId();
+      assertCurrent();
+      if (this.gasOverrides.minGasLimit !== minimum)
+        throw new Error('Reviewed native gas policy changed');
+      const { address, decryptedPrivateKey } = this.getDecryptedPrivateKey();
+      if (address.toLowerCase() !== transaction.from.toLowerCase())
+        throw new Error(
+          'Reviewed native signer does not match the approved account'
+        );
+      assertCurrent();
+      const { signed, expectedUnsigned } = signPreparedEvmEnvelope(
+        transaction,
+        decryptedPrivateKey
+      );
+      return submitSignedEvmTransaction(
+        signed.rawTransaction,
+        (raw) => provider.sendTransaction(raw),
+        submission,
+        assertBeforeBroadcast,
+        expectedUnsigned
+      );
+    }
 
     // Detach supplied values before any RPC/device await. Autofill updates only
     // this invocation; caller mutations cannot replace already supplied fields.
+    let params = input as SimpleTransactionRequest;
     if (!params || typeof params !== 'object' || Array.isArray(params))
       throw new TypeError('Invalid EVM transaction request');
     const supplied: Record<string, any> = { ...params };
@@ -2009,8 +2084,8 @@ export class EthereumTransactions<
   };
   sendTransactionWithEditedFee = async (
     txHash: string,
-    isLegacy = false,
-    options: IEvmReplacementOptions = {}
+    isLegacy: boolean | undefined,
+    options: IEvmReplacementOptions
   ): Promise<{
     maximumFee?: string;
     error?: boolean;
@@ -2021,43 +2096,43 @@ export class EthereumTransactions<
     code?: string;
     message?: string;
   }> => {
-    const {
-      assertCurrentContext,
-      validateOriginal,
-      beforeBroadcast,
-      approvedMaximumFee,
-    } = options;
-    const previewOnly = options.previewOnly === true;
-    if (!previewOnly) this.assertHardwareSignerAvailable(options.targetAccount);
+    const previewOnly = options?.previewOnly === true;
+    const approvedMaximumFee = options?.approvedMaximumFee;
     if (
       !previewOnly &&
       (typeof approvedMaximumFee !== 'string' ||
-        !/^\d{1,78}$/.test(approvedMaximumFee))
-    ) {
+        !/^(0|[1-9][0-9]{0,77})$/.test(approvedMaximumFee))
+    )
       throw new Error('Replacement fee approval required');
-    }
-    let signing: ReturnType<typeof this.captureEvmSigningContext> | undefined;
-    const assertCurrent = () => {
-      const result = assertCurrentContext?.() as unknown;
+    if (typeof options?.assertCurrentContext !== 'function')
+      throw new Error('Replacement context required');
+    if (typeof options.validateOriginal !== 'function')
+      throw new Error('Replacement original validator required');
+    const { assertCurrentContext, validateOriginal, beforeBroadcast } = options;
+    if (!previewOnly) this.assertHardwareSignerAvailable(options.targetAccount);
+    isLegacy ??= false;
+    let assertCapturedSignerCurrent: (() => void) | undefined;
+    const assertSigningCurrent = () => {
       assertSynchronousOriginalValidation(
-        result,
+        assertCurrentContext(),
         'Transaction context guard must be synchronous'
       );
-      if (result !== undefined)
-        throw new Error('Transaction context guard must return undefined');
-      signing?.assertCurrent();
+      assertCapturedSignerCurrent?.();
     };
     const assertBeforeBroadcast = () => {
-      assertCurrent();
-      beforeBroadcast?.();
-      assertCurrent();
+      assertSigningCurrent();
+      assertSynchronousOriginalValidation(
+        beforeBroadcast?.(),
+        'Transaction broadcast guard must be synchronous'
+      );
+      assertSigningCurrent();
     };
     const assertSignedSender = (signedTx: string) => {
       if (Transaction.from(signedTx).from?.toLowerCase() !== expectedSender) {
         throw new Error('Replacement signature does not match account');
       }
     };
-    assertCurrent();
+    assertSigningCurrent();
     const state = this.getState();
     const activeAccountType =
       options.targetAccount?.type ?? state.activeAccountType;
@@ -2075,11 +2150,13 @@ export class EthereumTransactions<
     ) {
       throw new Error('Replacement signing account is unavailable');
     }
-    if (!previewOnly) signing = this.captureEvmSigningContext(targetAccount);
+    if (!previewOnly)
+      assertCapturedSignerCurrent =
+        this.captureEvmSigningContext(targetAccount).assertCurrent;
     const expectedSender = activeAccount.address.toLowerCase();
     const requestedHash = txHash.toLowerCase();
     const provider = this.web3Provider;
-    assertCurrent();
+    assertSigningCurrent();
     const submission = previewOnly
       ? undefined
       : this.captureSubmission(
@@ -2088,9 +2165,10 @@ export class EthereumTransactions<
           activeAccountType,
           activeAccountId,
           activeNetwork,
-          assertCurrent,
+          assertSigningCurrent,
           txHash
         );
+    const assertCurrent = submission?.assertCurrent ?? assertSigningCurrent;
     const validateLookup = (transaction: TransactionResponse | null) => {
       assertCurrent();
       if (!transaction) return null;
@@ -2109,7 +2187,7 @@ export class EthereumTransactions<
       ) {
         throw new Error('Trezor does not support type 1 replacement signing');
       }
-      assertSynchronousOriginalValidation(validateOriginal?.(authenticated));
+      assertSynchronousOriginalValidation(validateOriginal(authenticated));
       assertCurrent();
       return authenticated;
     };
@@ -2229,7 +2307,7 @@ export class EthereumTransactions<
             maxPriorityFeePerGas: newGasValues.maxPriorityFeePerGas,
           }),
     };
-    if (previewOnly)
+    if (!submission)
       return { isSpeedUp: false, maximumFee: maximumFee.toString() };
     if (maximumFee.gt(approvedMaximumFee!))
       throw new Error('Replacement fee exceeds approval');
@@ -2495,7 +2573,7 @@ export class EthereumTransactions<
       activeAccountId,
       activeNetwork,
       provider,
-      assertCurrent,
+      assertCurrent: assertSigningCurrent,
     } = this.captureEvmSigningContext();
     const activeAccountAddress = activeAccount.address;
     if (
@@ -2515,8 +2593,9 @@ export class EthereumTransactions<
       activeAccountType,
       activeAccountId,
       activeNetwork,
-      assertCurrent
+      assertSigningCurrent
     );
+    const assertCurrent = submission.assertCurrent;
     ({ gasPrice, isLegacy, maxFeePerGas, maxPriorityFeePerGas } =
       await this.resolveEvmFeeParams(
         {
@@ -2826,7 +2905,7 @@ export class EthereumTransactions<
       activeAccountId,
       activeNetwork,
       provider,
-      assertCurrent,
+      assertCurrent: assertSigningCurrent,
     } = this.captureEvmSigningContext();
     if ('tokenAmountUnits' in request)
       throw new Error('ERC20 amount is not allowed for NFT transfers');
@@ -2837,8 +2916,9 @@ export class EthereumTransactions<
       activeAccountType,
       activeAccountId,
       activeNetwork,
-      assertCurrent
+      assertSigningCurrent
     );
+    const assertCurrent = submission.assertCurrent;
     if (tokenId === undefined || tokenId === null) {
       throw new Error('ERC721 tokenId is required');
     }
@@ -3153,7 +3233,7 @@ export class EthereumTransactions<
       activeAccountId,
       activeNetwork,
       provider,
-      assertCurrent,
+      assertCurrent: assertSigningCurrent,
     } = this.captureEvmSigningContext();
     if ('tokenAmountUnits' in request)
       throw new Error('ERC20 amount is not allowed for NFT transfers');
@@ -3164,8 +3244,9 @@ export class EthereumTransactions<
       activeAccountType,
       activeAccountId,
       activeNetwork,
-      assertCurrent
+      assertSigningCurrent
     );
+    const assertCurrent = submission.assertCurrent;
     ({ gasPrice, isLegacy, maxFeePerGas, maxPriorityFeePerGas } =
       await this.resolveEvmFeeParams(
         {

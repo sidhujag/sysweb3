@@ -5,11 +5,13 @@ jest.unmock('syscoinjs-lib');
 if ((global as any).window)
   (global as any).window.location = { href: 'http://localhost/' };
 
+import { INetworkType } from '@sidhujag/sysweb3-network';
 import * as syscoinjs from 'syscoinjs-lib';
 
-import { SyscoinTransactions } from '../../../src/transactions/syscoin';
+import { SyscoinTransactionsCore } from '../../../src/transactions/syscoin-core';
 import { KeyringAccountType } from '../../../src/types';
 import { PsbtUtils } from '../../../src/utils/psbt';
+import { ownedUtxoTestRead } from '../../helpers/utxoAuthority';
 
 describe('explicit native sweep quotes', () => {
   const network = syscoinjs.utils.syscoinNetworks.testnet;
@@ -26,7 +28,7 @@ describe('explicit native sweep quotes', () => {
     ...extra,
   });
   let main: any;
-  let sdk: SyscoinTransactions;
+  let sdk: SyscoinTransactionsCore;
   let fetchUtxos: jest.SpyInstance;
   let create: jest.SpyInstance;
   let getSigner: jest.Mock;
@@ -53,22 +55,30 @@ describe('explicit native sweep quotes', () => {
       activeAccountId: 0,
       activeAccountType: KeyringAccountType.HDAccount,
       accounts: { HDAccount: { 0: { xpub: 'vpub-offline', address } } },
-      activeNetwork: { slip44: 1, currency: 'TSYS' },
+      activeNetwork: {
+        kind: INetworkType.Syscoin,
+        chainId: 5700,
+        slip44: 1,
+        currency: 'TSYS',
+        url: main.blockbookURL,
+      },
     };
-    sdk = new SyscoinTransactions(
+    sdk = new SyscoinTransactionsCore(
       getSigner,
-      () => ({ main }),
+      () => ({ main, getOwnedAddress: async () => address }),
       () => state,
-      async () => address,
-      {} as any,
-      {} as any
+      {},
+      () => () => undefined
     );
   });
   afterEach(() => jest.restoreAllMocks());
 
   it('quotes the reported summary mismatch from one current UTXO snapshot', async () => {
     const sanitize = jest.spyOn(syscoinjs.utils, 'sanitizeBlockbookUTXOs');
-    const quote = await sdk.getEstimateSysTransactionFee(request);
+    const quote = await sdk.getEstimateSysTransactionFee(
+      request,
+      ownedUtxoTestRead()
+    );
     expect(quote).toMatchObject({
       grossAmount: '0.06547561',
       recipientAmount: '0.06547335',
@@ -86,9 +96,30 @@ describe('explicit native sweep quotes', () => {
     expect(getSigner).not.toHaveBeenCalled();
   });
 
+  it.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
+    'quotes selected %s through the owned read path without touching its device signer',
+    async (kind) => {
+      state.activeAccountType = kind;
+      state.accounts[kind] = { 0: { ...state.accounts.HDAccount[0] } };
+      const owner = ownedUtxoTestRead();
+      const quote = await sdk.getEstimateSysTransactionFee(request, owner);
+      expect(quote.recipientAmount).toBe('0.06547335');
+      expect(fetchUtxos).toHaveBeenCalledWith(
+        main.blockbookURL,
+        'vpub-offline',
+        undefined,
+        expect.objectContaining({ signal: owner.signal })
+      );
+      expect(getSigner).not.toHaveBeenCalled();
+    }
+  );
+
   it('quotes a fresh larger balance only when nativeSweep was explicitly requested', async () => {
     fetchUtxos.mockResolvedValue([utxo('12000000')]);
-    const quote = await sdk.getEstimateSysTransactionFee(request);
+    const quote = await sdk.getEstimateSysTransactionFee(
+      request,
+      ownedUtxoTestRead()
+    );
     expect(quote.grossAmount).toBe('0.12');
     expect(quote.recipientAmount).toBe('0.11999774');
   });
@@ -97,8 +128,16 @@ describe('explicit native sweep quotes', () => {
     state.activeAccountType = KeyringAccountType.Imported;
     state.accounts.Imported = { 0: { xpub: address, address } };
     fetchUtxos.mockResolvedValue([utxo('6547561', 1, { address: undefined })]);
-    const quote = await sdk.getEstimateSysTransactionFee(request);
-    expect(fetchUtxos).toHaveBeenCalledWith(main.blockbookURL, address);
+    const quote = await sdk.getEstimateSysTransactionFee(
+      request,
+      ownedUtxoTestRead()
+    );
+    expect(fetchUtxos).toHaveBeenCalledWith(
+      main.blockbookURL,
+      address,
+      undefined,
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
     expect(quote.grossAmount).toBe('0.06547561');
     expect(quote.recipientAmount).toBe('0.06547335');
     expect(getSigner).not.toHaveBeenCalled();
@@ -108,7 +147,10 @@ describe('explicit native sweep quotes', () => {
     let value = 9775331n;
     for (let parent = 1; parent <= 4; parent++) {
       fetchUtxos.mockResolvedValueOnce([utxo(value.toString(), parent)]);
-      const quote = await sdk.getEstimateSysTransactionFee(request);
+      const quote = await sdk.getEstimateSysTransactionFee(
+        request,
+        ownedUtxoTestRead()
+      );
       const psbt = PsbtUtils.fromPali(quote.psbt, {
         slip44: 1,
         currency: 'TSYS',
@@ -124,7 +166,10 @@ describe('explicit native sweep quotes', () => {
 
   it('keeps an ordinary full-balance manual request bounded and failing with the exact shortfall', async () => {
     await expect(
-      sdk.getEstimateSysTransactionFee({ ...request, nativeSweep: false })
+      sdk.getEstimateSysTransactionFee(
+        { ...request, nativeSweep: false },
+        ownedUtxoTestRead()
+      )
     ).rejects.toMatchObject({
       code: 'INSUFFICIENT_FUNDS',
       shortfall: 0.0322777,
@@ -133,12 +178,15 @@ describe('explicit native sweep quotes', () => {
   });
 
   it('retains the ordinary manual quote shape and exact recipient amount', async () => {
-    const quote = await sdk.getEstimateSysTransactionFee({
-      ...request,
-      amount: '0.01',
-      nativeSweep: false,
-      isMax: false,
-    });
+    const quote = await sdk.getEstimateSysTransactionFee(
+      {
+        ...request,
+        amount: '0.01',
+        nativeSweep: false,
+        isMax: false,
+      },
+      ownedUtxoTestRead()
+    );
     expect(Object.keys(quote).sort()).toEqual(['fee', 'psbt']);
     const psbt = PsbtUtils.fromPali(quote.psbt, {
       slip44: 1,
@@ -152,7 +200,10 @@ describe('explicit native sweep quotes', () => {
       utxo(),
       utxo('1000000', 2, { assetInfo: { assetGuid: '123', value: '10' } }),
     ]);
-    const quote = await sdk.getEstimateSysTransactionFee(request);
+    const quote = await sdk.getEstimateSysTransactionFee(
+      request,
+      ownedUtxoTestRead()
+    );
     expect(quote.grossAmount).toBe('0.06547561');
     const psbt = PsbtUtils.fromPali(quote.psbt, {
       slip44: 1,
@@ -167,10 +218,13 @@ describe('explicit native sweep quotes', () => {
   it('spends rewards at the same address without spending linked collateral on MAX', async () => {
     const collateral = utxo('10000000000000', 2);
     fetchUtxos.mockResolvedValue([collateral, utxo('1000000')]);
-    const quote = await sdk.getEstimateSysTransactionFee({
-      ...request,
-      excludedOutpoints: [{ txid: collateral.txid, vout: 0 }],
-    });
+    const quote = await sdk.getEstimateSysTransactionFee(
+      {
+        ...request,
+        excludedOutpoints: [{ txid: collateral.txid, vout: 0 }],
+      },
+      ownedUtxoTestRead()
+    );
     expect(quote.grossAmount).toBe('0.01');
     const psbt = PsbtUtils.fromPali(quote.psbt, {
       slip44: 1,
@@ -187,13 +241,16 @@ describe('explicit native sweep quotes', () => {
     const collateral = utxo('10000000000000', 2);
     fetchUtxos.mockResolvedValue([collateral, utxo('1000000')]);
     const excludedOutpoints = [{ txid: collateral.txid, vout: 0 }];
-    const quote = await sdk.getEstimateSysTransactionFee({
-      ...request,
-      nativeSweep: false,
-      isMax: false,
-      amount: '0.001',
-      excludedOutpoints,
-    });
+    const quote = await sdk.getEstimateSysTransactionFee(
+      {
+        ...request,
+        nativeSweep: false,
+        isMax: false,
+        amount: '0.001',
+        excludedOutpoints,
+      },
+      ownedUtxoTestRead()
+    );
     const psbt = PsbtUtils.fromPali(quote.psbt, {
       slip44: 1,
       currency: 'TSYS',
@@ -203,13 +260,16 @@ describe('explicit native sweep quotes', () => {
       utxo().txid
     );
     await expect(
-      sdk.getEstimateSysTransactionFee({
-        ...request,
-        nativeSweep: false,
-        isMax: false,
-        amount: '1',
-        excludedOutpoints,
-      })
+      sdk.getEstimateSysTransactionFee(
+        {
+          ...request,
+          nativeSweep: false,
+          isMax: false,
+          amount: '1',
+          excludedOutpoints,
+        },
+        ownedUtxoTestRead()
+      )
     ).rejects.toMatchObject({ code: 'INSUFFICIENT_FUNDS' });
   });
 
@@ -221,12 +281,15 @@ describe('explicit native sweep quotes', () => {
       psbt: new syscoinjs.utils.bitcoinjs.Psbt({ network }),
       fee: 226,
     });
-    await sdk.getEstimateSysTransactionFee({
-      ...request,
-      nativeSweep: false,
-      token: { guid: '123' },
-      excludedOutpoints: [{ txid: collateral.txid, vout: 0 }],
-    });
+    await sdk.getEstimateSysTransactionFee(
+      {
+        ...request,
+        nativeSweep: false,
+        token: { guid: '123' },
+        excludedOutpoints: [{ txid: collateral.txid, vout: 0 }],
+      },
+      ownedUtxoTestRead()
+    );
     expect(allocate.mock.calls[0][5]).toEqual({ utxos: [utxo()], assets });
     expect(fetchUtxos).toHaveBeenCalledTimes(1);
   });
@@ -248,14 +311,17 @@ describe('explicit native sweep quotes', () => {
             }
           : [collateral, utxo(), carrier]
       );
-      const quote = await sdk.getEstimateSysTransactionFee({
-        ...request,
-        amount: '0.00000005',
-        nativeSweep: false,
-        isMax: false,
-        token: { guid: '123' },
-        excludedOutpoints: [{ txid: collateral.txid, vout: 0 }],
-      });
+      const quote = await sdk.getEstimateSysTransactionFee(
+        {
+          ...request,
+          amount: '0.00000005',
+          nativeSweep: false,
+          isMax: false,
+          token: { guid: '123' },
+          excludedOutpoints: [{ txid: collateral.txid, vout: 0 }],
+        },
+        ownedUtxoTestRead()
+      );
       const psbt = PsbtUtils.fromPali(quote.psbt, {
         slip44: 1,
         currency: 'TSYS',
@@ -289,18 +355,24 @@ describe('explicit native sweep quotes', () => {
       .spyOn(main, 'assetAllocationSend')
       .mockResolvedValue({ psbt, fee: 226 });
     await expect(
-      sdk.getEstimateSysTransactionFee({
-        ...request,
-        nativeSweep: false,
-        token: { guid: '123' },
-        excludedOutpoints: [{ txid: collateral.txid, vout: 0 }],
-      })
+      sdk.getEstimateSysTransactionFee(
+        {
+          ...request,
+          nativeSweep: false,
+          token: { guid: '123' },
+          excludedOutpoints: [{ txid: collateral.txid, vout: 0 }],
+        },
+        ownedUtxoTestRead()
+      )
     ).rejects.toMatchObject({ code: 'PROTECTED_COLLATERAL' });
   });
 
   it('includes an uneconomic native outpoint in the complete sweep', async () => {
     fetchUtxos.mockResolvedValue({ utxos: [utxo('1000000'), utxo('1', 2)] });
-    const quote = await sdk.getEstimateSysTransactionFee(request);
+    const quote = await sdk.getEstimateSysTransactionFee(
+      request,
+      ownedUtxoTestRead()
+    );
     expect(quote.grossAmount).toBe('0.01000001');
     expect(quote.recipientAmount).toBe('0.00999639');
     expect(
@@ -313,11 +385,14 @@ describe('explicit native sweep quotes', () => {
       psbt: new syscoinjs.utils.bitcoinjs.Psbt({ network }),
       fee: 226,
     });
-    const quote = await sdk.getEstimateSysTransactionFee({
-      ...request,
-      nativeSweep: false,
-      token: { guid: '123' },
-    });
+    const quote = await sdk.getEstimateSysTransactionFee(
+      {
+        ...request,
+        nativeSweep: false,
+        token: { guid: '123' },
+      },
+      ownedUtxoTestRead()
+    );
     expect(Object.keys(quote).sort()).toEqual(['fee', 'psbt']);
     expect(allocate).toHaveBeenCalledTimes(1);
     expect(create).not.toHaveBeenCalled();
@@ -331,7 +406,10 @@ describe('explicit native sweep quotes', () => {
     { nativeSweep: 'true' },
   ])('rejects invalid sweep intent before fetching: %p', async (change) => {
     await expect(
-      sdk.getEstimateSysTransactionFee({ ...request, ...change } as any)
+      sdk.getEstimateSysTransactionFee(
+        { ...request, ...change } as any,
+        ownedUtxoTestRead()
+      )
     ).rejects.toMatchObject({ code: 'INVALID_NATIVE_SWEEP' });
     expect(fetchUtxos).not.toHaveBeenCalled();
     expect(create).not.toHaveBeenCalled();
@@ -351,7 +429,7 @@ describe('explicit native sweep quotes', () => {
     async (...inputs) => {
       fetchUtxos.mockResolvedValue(inputs);
       await expect(
-        sdk.getEstimateSysTransactionFee(request)
+        sdk.getEstimateSysTransactionFee(request, ownedUtxoTestRead())
       ).rejects.toMatchObject({ code: 'INVALID_NATIVE_SWEEP_UTXOS' });
       expect(create).not.toHaveBeenCalled();
     }
@@ -366,7 +444,7 @@ describe('explicit native sweep quotes', () => {
     async (...inputs) => {
       fetchUtxos.mockResolvedValue(inputs);
       await expect(
-        sdk.getEstimateSysTransactionFee(request)
+        sdk.getEstimateSysTransactionFee(request, ownedUtxoTestRead())
       ).rejects.toMatchObject({ error: true });
     }
   );
@@ -376,7 +454,7 @@ describe('explicit native sweep quotes', () => {
       Array.from({ length: 1500 }, (_, i) => utxo('10000', i + 1))
     );
     await expect(
-      sdk.getEstimateSysTransactionFee(request)
+      sdk.getEstimateSysTransactionFee(request, ownedUtxoTestRead())
     ).rejects.toMatchObject({ error: true });
   });
 
@@ -385,7 +463,10 @@ describe('explicit native sweep quotes', () => {
       utxo('4503599627370496'),
       utxo('4503599627370497', 2),
     ]);
-    const quote = await sdk.getEstimateSysTransactionFee(request);
+    const quote = await sdk.getEstimateSysTransactionFee(
+      request,
+      ownedUtxoTestRead()
+    );
     expect(quote.grossAmount).toBe('90071992.54740993');
     expect(quote.recipientAmount).toBe('90071992.54740631');
     expect(create.mock.calls[0][2][0].value.toString()).toBe(
@@ -396,7 +477,7 @@ describe('explicit native sweep quotes', () => {
   it('fails closed when an individual input exceeds the existing builder numeric limit', async () => {
     fetchUtxos.mockResolvedValue([utxo('9007199254740993')]);
     await expect(
-      sdk.getEstimateSysTransactionFee(request)
+      sdk.getEstimateSysTransactionFee(request, ownedUtxoTestRead())
     ).rejects.toMatchObject({ error: true });
   });
 
@@ -410,7 +491,7 @@ describe('explicit native sweep quotes', () => {
       return { ...result, fee: result.fee + 1 };
     });
     await expect(
-      sdk.getEstimateSysTransactionFee(request)
+      sdk.getEstimateSysTransactionFee(request, ownedUtxoTestRead())
     ).rejects.toMatchObject({ code: 'INCOMPLETE_NATIVE_SWEEP' });
   });
 
@@ -418,7 +499,7 @@ describe('explicit native sweep quotes', () => {
     fetchUtxos.mockResolvedValue([utxo(), utxo('1000000', 2)]);
     create.mockResolvedValue({ psbt: { txInputs: [], txOutputs: [] }, fee: 1 });
     await expect(
-      sdk.getEstimateSysTransactionFee(request)
+      sdk.getEstimateSysTransactionFee(request, ownedUtxoTestRead())
     ).rejects.toMatchObject({ code: 'INCOMPLETE_NATIVE_SWEEP' });
   });
 });

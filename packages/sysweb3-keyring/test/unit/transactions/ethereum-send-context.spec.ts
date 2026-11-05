@@ -3,6 +3,7 @@ import { INetworkType } from '@sidhujag/sysweb3-network';
 
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import { KeyringAccountType } from '../../../src/types';
+import { createTestSubmissionCapture } from '../../helpers/evm-submission';
 
 const PRIVATE_KEY =
   '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
@@ -31,7 +32,13 @@ describe('formatted EVM transaction host admission', () => {
     nonce: 0,
   });
   const send = (options: any = { assertCurrent: guard }) =>
-    (sdk.sendFormattedTransaction as any)(request(), true, options);
+    sdk.sendFormattedTransaction(
+      request(),
+      true,
+      options && typeof options === 'object' && !Array.isArray(options)
+        ? Object.assign(options, { mode: 'specialized' })
+        : options
+    );
 
   beforeEach(() => {
     const network = {
@@ -51,7 +58,9 @@ describe('formatted EVM transaction host admission', () => {
       () => ({ address: ADDRESS, decryptedPrivateKey: PRIVATE_KEY }),
       () => state,
       {} as any,
-      {} as any
+      {} as any,
+      undefined,
+      createTestSubmissionCapture()
     );
     provider = sdk.web3Provider as any;
     provider.sendTransaction.mockResolvedValue({ hash: HASH });
@@ -157,9 +166,9 @@ describe('formatted EVM transaction host admission', () => {
     provider.verifyConfiguredChainId.mockImplementationOnce(async () => {
       verified = true;
     });
-    const assertCurrent = jest.fn(() =>
-      verified ? Promise.resolve() : undefined
-    );
+    const assertCurrent = jest.fn(() => {
+      return verified ? Promise.resolve() : undefined;
+    });
     await expect(send({ assertCurrent })).rejects.toMatchObject({
       message: 'Transaction context guard must be synchronous',
       transactionNotBroadcast: true,

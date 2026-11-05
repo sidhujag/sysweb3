@@ -22,6 +22,9 @@ import {
 import { SyscoinHDSigner } from './signers';
 import { TrezorKeyring } from './trezor';
 
+import type { KeyringCore } from './keyring-core';
+import type { PreparedEvmTransaction } from './transactions/prepared-evm';
+
 export type AccessListish =
   | Array<{ address: string; storageKeys: string[] }>
   | Array<[string, string[]]>
@@ -59,42 +62,42 @@ export type EvmLocalAccount = {
 
 export interface IEvmSendOptions {
   /** Synchronous host admission, rechecked immediately before signing and broadcast. */
-  assertCurrent?: () => void;
+  assertCurrent: () => void;
+  mode: 'reviewed-native' | 'specialized';
 }
 
-export interface IEvmReplacementOptions {
-  /** Read-only preview; never requests credentials, a device signature or broadcast. */
-  previewOnly?: boolean;
-  /** Required for sending: maximum execution gas fee in decimal wei approved by the user. */
-  approvedMaximumFee?: string;
-  /** Select the locally controlled outer gas payer for a smart-account transaction. */
-  targetAccount?: { id: number; type: KeyringAccountType };
-  /** Host guard for the current account, network, session and pending original. */
-  assertCurrentContext?: () => void;
-  /** Synchronous original admission; Promise/thenable returns are rejected, never awaited. */
-  validateOriginal?: (transaction: TransactionResponse) => void;
-  beforeBroadcast?: () => void;
-}
+export type EvmFormattedSendArguments =
+  | [
+      approvedTransaction: PreparedEvmTransaction,
+      isLegacy: boolean | undefined,
+      options: IEvmSendOptions & { mode: 'reviewed-native' }
+    ]
+  | [
+      transaction: SimpleTransactionRequest,
+      isLegacy: boolean | undefined,
+      options: IEvmSendOptions & { mode: 'specialized' }
+    ];
 
-export interface IEvmCancellationOptions {
-  /** Select the locally controlled outer gas payer for a smart-account transaction. */
+export type EvmReplacementFeeApproval =
+  | { previewOnly: true; approvedMaximumFee?: never }
+  | { previewOnly?: false; approvedMaximumFee: string };
+
+type EvmOriginalAdmission<Original> = {
+  /** Select a distinct locally controlled gas payer for a smart account. */
   targetAccount?: { id: number; type: KeyringAccountType };
-  /** Read-only preview; never requests credentials, a device signature or broadcast. */
-  previewOnly?: boolean;
-  /** Required for sending: maximum execution gas fee in decimal wei approved by the user. */
-  approvedMaximumFee?: string;
-  /** Synchronous host guard for selection or session state outside the keyring. */
+  /** Synchronous host guard for the current account, network, session and pending original. */
   assertCurrentContext: () => void;
-  /**
-   * Required synchronous host admission for the reviewed pending original.
-   * Non-null values contain detached, authenticated signed fields. Null means
-   * the RPC did not find the original: admit it only when the supplied fallbackNonce
-   * belongs to trusted, still-current local submission data; otherwise throw.
-   * Invalid non-null RPC replies never become a null/fallback admission.
-   * Promise/thenable returns are rejected, never awaited.
-   */
-  validateOriginal: (transaction: TransactionResponse | null) => void;
-}
+  /** Receives authenticated signed fields. Null requires explicit cancellation fallback admission. */
+  validateOriginal: (transaction: Original) => void;
+};
+
+export type IEvmReplacementOptions = EvmReplacementFeeApproval &
+  EvmOriginalAdmission<TransactionResponse> & {
+    beforeBroadcast?: () => void;
+  };
+
+export type IEvmCancellationOptions = EvmReplacementFeeApproval &
+  EvmOriginalAdmission<TransactionResponse | null>;
 
 // Version type is now replaced by SignTypedDataVersion from @metamask/eth-sig-util
 
@@ -137,9 +140,7 @@ export interface IEthereumTransactions {
   importAccount: (mnemonicOrPrivKey: string) => EvmLocalAccount;
   parsePersonalMessage: (hexMsg: string) => string;
   sendFormattedTransaction: (
-    params: SimpleTransactionRequest,
-    isLegacy?: boolean,
-    options?: IEvmSendOptions
+    ...args: EvmFormattedSendArguments
   ) => Promise<TransactionResponse>;
   sendSignedErc1155Transaction: ({
     receiver,
@@ -166,8 +167,8 @@ export interface IEthereumTransactions {
 
   sendTransactionWithEditedFee: (
     txHash: string,
-    isLegacy?: boolean,
-    options?: IEvmReplacementOptions
+    isLegacy: boolean | undefined,
+    options: IEvmReplacementOptions
   ) => Promise<{
     maximumFee?: string;
     isSpeedUp: boolean;
@@ -216,6 +217,18 @@ export type SyscoinOwnedReadOptions = Readonly<{
   signal: AbortSignal;
 }>;
 
+/** Exact signed bytes presented to a wallet host before the only POST. */
+export type SyscoinSubmissionDescriptor = Readonly<{
+  rawTransaction: string;
+  txid: string;
+  url: string;
+}>;
+
+export type SyscoinOwnedSubmissionOptions = SyscoinOwnedReadOptions &
+  Readonly<{
+    prepare: (descriptor: SyscoinSubmissionDescriptor) => Promise<void>;
+  }>;
+
 export interface ISyscoinTransactions {
   getEstimateSysTransactionFee: (
     {
@@ -239,15 +252,18 @@ export interface ISyscoinTransactions {
       /** Coin-control exclusions supplied by a trusted wallet policy, not transaction outputs. */
       excludedOutpoints?: readonly { txid: string; vout: number }[];
     },
-    ownedRead?: SyscoinOwnedReadOptions
+    ownedRead: SyscoinOwnedReadOptions
   ) => Promise<ISyscoinTransactionFeeQuote>; // Returns UNSIGNED psbt - may throw ISyscoinTransactionError
   getRecommendedFee: (
     explorerUrl: string,
-    ownedRead?: SyscoinOwnedReadOptions
+    ownedRead: SyscoinOwnedReadOptions
   ) => Promise<number>;
   decodeRawTransaction: (psbtOrHex: any, isRawHex?: boolean) => any;
   // Sign PSBT separately
-  sendTransaction: (psbt: any) => Promise<ITxid>;
+  sendTransaction: (
+    rawTransaction: string,
+    authority: SyscoinOwnedSubmissionOptions
+  ) => Promise<ITxid>;
   signPSBT: (
     {
       psbt,
@@ -258,7 +274,7 @@ export interface ISyscoinTransactions {
       isTrezor?: boolean;
       psbt: any;
     },
-    ownedRead?: SyscoinOwnedReadOptions
+    ownedRead: SyscoinOwnedReadOptions
   ) => Promise<any>;
 }
 
@@ -295,7 +311,6 @@ export interface IKeyringManager {
     accountType: KeyringAccountType,
     pwd: string
   ) => Promise<string>;
-  setStorage: (client: any) => void;
   syscoinTransaction: ISyscoinTransactions;
   isSeedValid: (seedPhrase: string) => boolean;
   getSeed: (pwd: string) => Promise<string>;
@@ -357,8 +372,7 @@ export interface IKeyringManager {
   // NEW: Separated initialization methods
   initializeSession: (seedPhrase: string, password: string) => Promise<void>;
   createFirstAccount: (label?: string) => Promise<IKeyringAccountState>;
-  transferSessionTo: (targetKeyring: IKeyringManager) => void;
-  receiveSessionOwnership: (sessionPassword: any, sessionMnemonic: any) => void;
+  transferSessionTo: (targetKeyring: KeyringCore) => void;
   lockWallet: () => Promise<void>;
   // NEW: Store access for stateless keyring
   setVaultStateGetter: (getter: () => any) => void;

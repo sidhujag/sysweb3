@@ -33,11 +33,15 @@ export type CaptureEvmSubmission = (
   context: EvmSubmissionContext
 ) => EvmSubmissionLifecycle;
 
+declare const evmSubmissionBrand: unique symbol;
 export type EvmSubmissionBoundary = Readonly<{
+  [evmSubmissionBrand]: true;
   context: EvmSubmissionContext;
   assertCurrent: () => void;
-  persistSigned?: (record: EvmSignedSubmission) => Promise<void>;
+  persistSigned: (record: EvmSignedSubmission) => Promise<void>;
 }>;
+
+const capturedBoundaries = new WeakSet<EvmSubmissionBoundary>();
 
 function assertSynchronous(check: () => void): void {
   const result: unknown = check();
@@ -56,7 +60,7 @@ function assertSynchronous(check: () => void): void {
 export function captureEvmSubmission(
   input: EvmSubmissionContext,
   assertCurrent: () => void,
-  capture?: CaptureEvmSubmission
+  capture: CaptureEvmSubmission
 ): EvmSubmissionBoundary {
   const context: EvmSubmissionContext = Object.freeze({
     account: Object.freeze({ ...input.account }),
@@ -67,18 +71,16 @@ export function captureEvmSubmission(
       : {}),
   });
   assertSynchronous(assertCurrent);
-  if (capture !== undefined && typeof capture !== 'function') {
-    throw new TypeError('Invalid EVM submission lifecycle factory');
-  }
-  const lifecycle = capture?.(context);
+  if (typeof capture !== 'function')
+    throw new TypeError('A durable EVM submission lifecycle is required');
+  const lifecycle = capture(context);
   const hostGuard = lifecycle?.assertCurrent;
   const persistSigned = lifecycle?.persistSigned;
   if (
-    capture &&
-    (!lifecycle ||
-      typeof lifecycle !== 'object' ||
-      typeof hostGuard !== 'function' ||
-      typeof persistSigned !== 'function')
+    !lifecycle ||
+    typeof lifecycle !== 'object' ||
+    typeof hostGuard !== 'function' ||
+    typeof persistSigned !== 'function'
   ) {
     if (lifecycle && typeof (lifecycle as any).then === 'function') {
       void Promise.resolve(lifecycle).catch(() => undefined);
@@ -89,14 +91,25 @@ export function captureEvmSubmission(
   }
   const guard = () => {
     assertSynchronous(assertCurrent);
-    if (hostGuard) assertSynchronous(hostGuard);
+    assertSynchronous(hostGuard);
   };
   guard();
-  return Object.freeze({
+  const boundary = Object.freeze({
     context,
     assertCurrent: guard,
-    ...(persistSigned ? { persistSigned } : {}),
-  });
+    persistSigned,
+  }) as EvmSubmissionBoundary;
+  capturedBoundaries.add(boundary);
+  return boundary;
+}
+
+/** Refuse any new signature or dispatch without a captured durable port. */
+export function assertDurableEvmSubmission(
+  boundary: EvmSubmissionBoundary
+): void {
+  if (!capturedBoundaries.has(boundary))
+    throw new TypeError('A captured durable EVM submission is required');
+  boundary.assertCurrent();
 }
 
 const failures = new WeakMap<
@@ -159,76 +172,41 @@ export function assertSignedEvmTransactionMatches(
 export async function submitSignedEvmTransaction<T>(
   rawTransaction: string,
   broadcast: (rawTransaction: string) => Promise<T>,
-  boundary?: EvmSubmissionBoundary,
-  beforeBroadcast?: () => void,
-  expectedUnsignedTransaction?: string
+  boundary: EvmSubmissionBoundary,
+  beforeBroadcast: (() => void) | undefined,
+  expectedUnsignedTransaction: string
 ): Promise<T> {
   let dispatched = false;
   let hash: string | undefined;
   try {
-    // Public callers may supply a boundary object. Detach its data and function
-    // references before awaiting storage, just as captureEvmSubmission does.
-    const captured =
-      boundary &&
-      Object.freeze({
-        context: Object.freeze({
-          ...boundary.context,
-          account: Object.freeze({ ...boundary.context.account }),
-          network: Object.freeze({ ...boundary.context.network }),
-        }),
-        assertCurrent: boundary.assertCurrent,
-        persistSigned: boundary.persistSigned,
-      });
-    const guard = () => {
-      if (captured) assertSynchronous(captured.assertCurrent);
-    };
-    guard();
-    const verified =
-      expectedUnsignedTransaction === undefined
-        ? undefined
-        : assertSignedEvmTransactionMatches(
-            rawTransaction,
-            expectedUnsignedTransaction,
-            captured?.context.account.address
-          );
-    if (captured) {
-      if (typeof rawTransaction !== 'string')
-        throw new TypeError('Signed EVM bytes must be a string');
-      const tx = verified ?? Transaction.from(rawTransaction);
-      if (
-        !tx.isSigned() ||
-        tx.serialized !== rawTransaction ||
-        tx.from?.toLowerCase() !==
-          captured.context.account.address.toLowerCase() ||
-        tx.chainId !== BigInt(captured.context.network.chainId)
-      ) {
-        throw new Error(
-          'Signed EVM submission does not match captured context'
-        );
-      }
-      hash = tx.hash!;
-      const record: EvmSignedSubmission = Object.freeze({
-        context: captured.context,
-        rawTransaction,
-        hash,
-        from: tx.from!,
-        chainId: tx.chainId.toString(),
-        nonce: tx.nonce,
-        type: tx.type,
-      });
-      if (captured.persistSigned) {
-        const acknowledgement = captured.persistSigned(record);
-        if (!acknowledgement || typeof acknowledgement.then !== 'function') {
-          throw new TypeError(
-            'EVM signed persistence must return an acknowledgement Promise'
-          );
-        }
-        await acknowledgement;
-        guard();
-      }
-    }
+    const check = () => assertDurableEvmSubmission(boundary);
+    check();
+    const tx = assertSignedEvmTransactionMatches(
+      rawTransaction,
+      expectedUnsignedTransaction,
+      boundary.context.account.address
+    );
+    if (tx.chainId !== BigInt(boundary.context.network.chainId))
+      throw new Error('Signed EVM submission does not match captured context');
+    hash = tx.hash!;
+    const record: EvmSignedSubmission = Object.freeze({
+      context: boundary.context,
+      rawTransaction,
+      hash,
+      from: tx.from!,
+      chainId: tx.chainId.toString(),
+      nonce: tx.nonce,
+      type: tx.type,
+    });
+    const acknowledgement = boundary.persistSigned(record);
+    if (!acknowledgement || typeof acknowledgement.then !== 'function')
+      throw new TypeError(
+        'EVM signed persistence must return an acknowledgement Promise'
+      );
+    await acknowledgement;
+    check();
     if (beforeBroadcast) assertSynchronous(beforeBroadcast);
-    guard();
+    check();
     dispatched = true;
     return await broadcast(rawTransaction);
   } catch (cause) {

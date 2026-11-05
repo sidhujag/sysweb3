@@ -1,4 +1,7 @@
+jest.resetModules();
 jest.unmock('syscoinjs-lib');
+if ((global as any).window)
+  (global as any).window.location = { href: 'http://localhost/' };
 
 import { getNetworkConfig, INetworkType } from '@sidhujag/sysweb3-network';
 import { payments, Psbt, Transaction } from 'bitcoinjs-lib';
@@ -6,9 +9,11 @@ import { payments, Psbt, Transaction } from 'bitcoinjs-lib';
 import { LedgerKeyring } from '../../../src/ledger';
 import { PsbtV2 } from '../../../src/ledger/bitcoin_client';
 import { prepareLedgerPsbt } from '../../../src/ledger/prepare-psbt';
-import { SyscoinTransactions } from '../../../src/transactions/syscoin';
+import { createLedgerPsbtSigner } from '../../../src/transactions/hardware-psbt';
+import { SyscoinTransactionsCore } from '../../../src/transactions/syscoin-core';
 import { KeyringAccountType } from '../../../src/types';
 import { PsbtUtils } from '../../../src/utils/psbt';
+import { ownedUtxoTestRead } from '../../helpers/utxoAuthority';
 
 const config = getNetworkConfig(1, 'tSYS');
 const network = config.networks.testnet;
@@ -181,13 +186,12 @@ const fixture = (scriptType = 'p2wpkh', sameWallet = false) => {
     },
   };
   const getSigner = jest.fn();
-  const tx = new SyscoinTransactions(
+  const tx = new SyscoinTransactionsCore(
     getSigner,
     jest.fn(),
     () => state as any,
-    jest.fn(),
-    ledger,
-    {} as any
+    { ledger: createLedgerPsbtSigner(ledger) },
+    () => () => undefined
   );
   return {
     tx,
@@ -212,12 +216,10 @@ describe('Ledger finalized external inputs with real PSBT data', () => {
       const getRawTransaction = jest
         .fn()
         .mockRejectedValue(new Error('Blockbook unavailable'));
-      jest
-        .spyOn(test.tx, 'txUtilsFunctions')
-        .mockReturnValue({ getRawTransaction });
+      const owner = ownedUtxoTestRead(getRawTransaction);
 
       const signed = PsbtUtils.fromPali(
-        await test.tx.signPSBT({ psbt: PsbtUtils.toPali(test.psbt) }),
+        await test.tx.signPSBT({ psbt: PsbtUtils.toPali(test.psbt) }, owner),
         activeNetwork
       );
 
@@ -243,22 +245,62 @@ describe('Ledger finalized external inputs with real PSBT data', () => {
     }
   );
 
+  it('uses the selected owner for both Ledger prevout and device, and stops before the device on revocation', async () => {
+    const active = fixture();
+    const previous = Buffer.from(
+      active.psbt.data.inputs[0].nonWitnessUtxo!
+    ).toString('hex');
+    removeNonWitnessUtxo(active.psbt, 0);
+    const fetch = jest.fn(async () => Response.json({ hex: previous }));
+    const owner = ownedUtxoTestRead(fetch);
+    const signed = PsbtUtils.fromPali(
+      await active.tx.signPSBT({ psbt: PsbtUtils.toPali(active.psbt) }, owner),
+      activeNetwork
+    );
+    expect(signed.extractTransaction().ins).toHaveLength(2);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(active.signPsbt).toHaveBeenCalledWith(expect.any(Object), {
+      signal: owner.signal,
+    });
+
+    const stale = fixture();
+    removeNonWitnessUtxo(stale.psbt, 0);
+    const control = new AbortController();
+    let release!: (response: Response) => void;
+    const held = new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+    const staleFetch = jest.fn(() => held);
+    const pending = stale.tx.signPSBT(
+      { psbt: PsbtUtils.toPali(stale.psbt) },
+      {
+        ...ownedUtxoTestRead(staleFetch),
+        signal: control.signal,
+      }
+    );
+    expect(staleFetch).toHaveBeenCalledTimes(1);
+    control.abort();
+    release(Response.json({ hex: previous }));
+    await expect(pending).rejects.toThrow(/context changed/);
+    expect(stale.signPsbt).not.toHaveBeenCalled();
+  });
+
   it('still fetches a missing previous transaction for an unfinished input', async () => {
     const test = fixture();
     removeNonWitnessUtxo(test.psbt, 0);
     const getRawTransaction = jest
       .fn()
       .mockRejectedValue(new Error('Blockbook unavailable'));
-    jest
-      .spyOn(test.tx, 'txUtilsFunctions')
-      .mockReturnValue({ getRawTransaction });
+    const owner = ownedUtxoTestRead(getRawTransaction);
     await expect(
-      test.tx.signPSBT({ psbt: PsbtUtils.toPali(test.psbt) })
+      test.tx.signPSBT({ psbt: PsbtUtils.toPali(test.psbt) }, owner)
     ).rejects.toThrow('Failed to enrich 1 of 2 inputs with nonWitnessUtxo');
     expect(getRawTransaction).toHaveBeenCalledTimes(1);
     expect(getRawTransaction).toHaveBeenCalledWith(
-      activeNetwork.url,
-      Buffer.from(test.psbt.txInputs[0].hash).reverse().toString('hex')
+      `${activeNetwork.url}/api/v2/tx/${Buffer.from(test.psbt.txInputs[0].hash)
+        .reverse()
+        .toString('hex')}`,
+      { method: 'GET', signal: owner.signal }
     );
     expect(test.signPsbt).not.toHaveBeenCalled();
   });
@@ -270,16 +312,16 @@ describe('Ledger finalized external inputs with real PSBT data', () => {
     const getRawTransaction = jest
       .fn()
       .mockRejectedValue(new Error('Blockbook unavailable'));
-    jest
-      .spyOn(test.tx, 'txUtilsFunctions')
-      .mockReturnValue({ getRawTransaction });
+    const owner = ownedUtxoTestRead(getRawTransaction);
     await expect(
-      test.tx.signPSBT({ psbt: PsbtUtils.toPali(test.psbt) })
+      test.tx.signPSBT({ psbt: PsbtUtils.toPali(test.psbt) }, owner)
     ).rejects.toThrow('Failed to enrich 1 of 2 inputs with nonWitnessUtxo');
     expect(getRawTransaction).toHaveBeenCalledTimes(1);
     expect(getRawTransaction).toHaveBeenCalledWith(
-      activeNetwork.url,
-      Buffer.from(test.psbt.txInputs[1].hash).reverse().toString('hex')
+      `${activeNetwork.url}/api/v2/tx/${Buffer.from(test.psbt.txInputs[1].hash)
+        .reverse()
+        .toString('hex')}`,
+      { method: 'GET', signal: owner.signal }
     );
     expect(test.signPsbt).not.toHaveBeenCalled();
   });
@@ -289,7 +331,10 @@ describe('Ledger finalized external inputs with real PSBT data', () => {
     async (scriptType) => {
       const test = fixture(scriptType);
       const signed = PsbtUtils.fromPali(
-        await test.tx.signPSBT({ psbt: PsbtUtils.toPali(test.psbt) }),
+        await test.tx.signPSBT(
+          { psbt: PsbtUtils.toPali(test.psbt) },
+          ownedUtxoTestRead()
+        ),
         activeNetwork
       );
       expect(test.signPsbt).toHaveBeenCalledTimes(1);
@@ -314,7 +359,10 @@ describe('Ledger finalized external inputs with real PSBT data', () => {
   it('does not re-sign a finalized input from another account in the same wallet', async () => {
     const test = fixture('p2wpkh', true);
     const signed = PsbtUtils.fromPali(
-      await test.tx.signPSBT({ psbt: PsbtUtils.toPali(test.psbt) }),
+      await test.tx.signPSBT(
+        { psbt: PsbtUtils.toPali(test.psbt) },
+        ownedUtxoTestRead()
+      ),
       activeNetwork
     );
     expect(Buffer.from(signed.data.inputs[1].finalScriptWitness!)).toEqual(
@@ -343,14 +391,20 @@ describe('Ledger finalized external inputs with real PSBT data', () => {
       ],
     }));
     await expect(
-      test.tx.signPSBT({ psbt: PsbtUtils.toPali(test.psbt) })
+      test.tx.signPSBT(
+        { psbt: PsbtUtils.toPali(test.psbt) },
+        ownedUtxoTestRead()
+      )
     ).rejects.toThrow('PSBT input is outside the approved account');
   });
 
   it('keeps unfinished foreign inputs outside the supported hardware path', async () => {
     const test = fixture();
     await expect(
-      test.tx.signPSBT({ psbt: PsbtUtils.toPali(test.unsigned) })
+      test.tx.signPSBT(
+        { psbt: PsbtUtils.toPali(test.unsigned) },
+        ownedUtxoTestRead()
+      )
     ).rejects.toThrow('Missing bip32Derivation');
     // The scoped parser strips unsupported foreign hints. The host preparation
     // still refuses that unfinished input before producing any signature.

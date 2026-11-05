@@ -26,7 +26,11 @@ const deferred = () => {
 describe('production KDF compatibility through the real core adapter', () => {
   const data: Record<string, any> = {};
   let Keyring: any;
-  let db: any;
+  let createFixedBrowserStateStorage: any;
+  let createKeyringHost: any;
+  let HardwareWalletManager: any;
+  let createVaultPersistence: any;
+  let storage: any;
   let setEncryptedVault: any;
   let getDecryptedVault: any;
   let ring: any;
@@ -45,7 +49,12 @@ describe('production KDF compatibility through the real core adapter', () => {
     ).toString();
   };
   const createRing = () => {
-    const result = new Keyring();
+    const result = new Keyring(createKeyringHost(storage), {
+      captureEvmSubmission() {
+        throw new Error('EVM submission is outside this fixture');
+      },
+      hardwareManager: new HardwareWalletManager(),
+    });
     result.setVaultStateGetter(() => ({
       activeAccount: { id: 0, type: 'HDAccount' },
       activeNetwork: { kind: 'ethereum' },
@@ -71,12 +80,13 @@ describe('production KDF compatibility through the real core adapter', () => {
       jest.requireActual('@sidhujag/sysweb3-core')
     );
     jest.isolateModules(() => {
-      Keyring = require('../../../src').KeyringManager;
-      db = require('@sidhujag/sysweb3-core').sysweb3Di.getStateStorageDb();
       ({
-        setEncryptedVault,
-        getDecryptedVault,
-      } = require('../../../src/storage'));
+        KeyringManager: Keyring,
+        createKeyringHost,
+        HardwareWalletManager,
+      } = require('../../../src'));
+      ({ createFixedBrowserStateStorage } = require('@sidhujag/sysweb3-core'));
+      ({ createVaultPersistence } = require('../../../src/storage-core'));
     });
   });
   beforeEach(() => {
@@ -102,7 +112,9 @@ describe('production KDF compatibility through the real core adapter', () => {
       }),
     };
     nativeStorage = installNativeStorageTestClient(client);
-    db.setClient(client);
+    storage = createFixedBrowserStateStorage(client);
+    ({ setEncryptedVault, getDecryptedVault } =
+      createVaultPersistence(storage));
     ring = createRing();
     client.set.mockClear();
     delete data['sysweb3-utf8Error'];
@@ -112,7 +124,6 @@ describe('production KDF compatibility through the real core adapter', () => {
   afterEach(async () => {
     await ring.lockWallet();
     jest.restoreAllMocks();
-    db.setClient();
     nativeStorage.restore();
     if (originalCrypto)
       Object.defineProperty(globalThis, 'crypto', originalCrypto);
@@ -335,9 +346,8 @@ describe('production KDF compatibility through the real core adapter', () => {
       setItem: jest.fn(),
       removeItem: jest.fn(),
     };
-    db.setClient(sequential);
-    await expect(ring.initializeSession(mnemonic, password)).rejects.toThrow(
-      'Storage adapter does not support atomic creation'
+    expect(() => createFixedBrowserStateStorage(sequential)).toThrow(
+      'Fixed wallet storage requires native browser storage'
     );
     expect(sequential.setItem).not.toHaveBeenCalled();
   });

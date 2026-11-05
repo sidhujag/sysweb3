@@ -42,12 +42,6 @@
       "cjs/software.js": [
         "types/software.d.ts"
       ],
-      "cjs/keyring-core": [
-        "types/keyring-core.d.ts"
-      ],
-      "cjs/keyring-core.js": [
-        "types/keyring-core.d.ts"
-      ],
       "esm/ledger-host": [
         "types/ledger-host.d.ts"
       ],
