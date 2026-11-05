@@ -163,6 +163,31 @@ const multisigFixture = (type: string, sameWallet = false) => {
 };
 
 describe('PSBT approved-account boundary with the real HD signer', () => {
+  it('compares the reviewed transaction with browser Buffer equality', async () => {
+    const { tx, psbt } = multisigFixture('p2wsh');
+    const equals = Buffer.prototype.equals;
+    const strictEquals = jest
+      .spyOn(Buffer.prototype, 'equals')
+      .mockImplementation(function (this: Buffer, other) {
+        // The browser Buffer implementation requires a Buffer on both sides.
+        if (!Buffer.isBuffer(other))
+          throw new TypeError('Argument must be a Buffer');
+        return equals.call(this, other);
+      });
+    try {
+      const signed = PsbtUtils.fromPali(
+        await tx.signPSBT(
+          { psbt: PsbtUtils.toPali(psbt) },
+          ownedUtxoTestRead()
+        ),
+        network
+      );
+      expect(signed.data.inputs[0].partialSig).toHaveLength(1);
+    } finally {
+      strictEquals.mockRestore();
+    }
+  });
+
   it.each(['p2wsh', 'p2sh-p2wsh', 'p2sh'])(
     'signs only the approved key in standard %s multisig',
     async (type) => {

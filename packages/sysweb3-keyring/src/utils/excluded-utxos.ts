@@ -32,7 +32,8 @@ export const excludedOutpointIds = (
 /** Preserve the backend's asset metadata while removing only reserved outputs. */
 export const filterExcludedUtxos = (
   raw: any,
-  excluded: ReadonlySet<string>
+  excluded: ReadonlySet<string>,
+  onExcluded?: (row: any, outpoint: string) => void
 ) => {
   const rows = Array.isArray(raw) ? raw : raw?.utxos;
   if (!Array.isArray(rows)) throw invalid();
@@ -51,7 +52,10 @@ export const filterExcludedUtxos = (
           row.txId.toLowerCase() !== row.txid.toLowerCase()))
     )
       throw invalid();
-    return !excluded.has(`${txid.toLowerCase()}:${row.vout}`);
+    const outpoint = `${txid.toLowerCase()}:${row.vout}`;
+    if (!excluded.has(outpoint)) return true;
+    onExcluded?.(row, outpoint);
+    return false;
   });
   return Array.isArray(raw) ? { utxos } : { ...raw, utxos };
 };

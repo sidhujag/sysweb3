@@ -405,8 +405,20 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
       read.transport
     );
     read.assertCurrent();
+    const excludedNativeValues = new Map<string, unknown>();
     const rows = excluded.size
-      ? filterExcludedUtxos(raw, excluded).utxos
+      ? filterExcludedUtxos(raw, excluded, (row, outpoint) => {
+          const unambiguous =
+            !excludedNativeValues.has(outpoint) &&
+            row.assetInfo == null &&
+            (row.txId === undefined ||
+              row.txid === undefined ||
+              row.txId === row.txid);
+          excludedNativeValues.set(
+            outpoint,
+            unambiguous ? row.value : undefined
+          );
+        }).utxos
       : Array.isArray(raw)
       ? raw
       : raw?.utxos;
@@ -452,11 +464,30 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
       gross = gross.add(value);
       utxos.push({ ...row, value });
     }
-    if (gross.isZero())
-      throw sweepError(
+    if (gross.isZero()) {
+      const error = sweepError(
         'INSUFFICIENT_FUNDS',
         'No native UTXOs are available to sweep.'
       );
+      const excludedNativeOutpoints = [...excludedNativeValues].flatMap(
+        ([outpoint, value]) => {
+          if (typeof value === 'number')
+            return Number.isSafeInteger(value) && value > 0 ? [outpoint] : [];
+          if (
+            typeof value === 'string' &&
+            value.length <= 20 &&
+            !/[^0-9]/.test(value) &&
+            /[1-9]/.test(value) &&
+            (value.length < 20 || value <= '18446744073709551615')
+          )
+            return [outpoint];
+          return [];
+        }
+      );
+      if (excludedNativeOutpoints.length)
+        throw { ...error, excludedNativeOutpoints };
+      throw error;
+    }
 
     // The library sanitizes this snapshot once; its optional UTXO argument
     // prevents a second funding lookup between resolving MAX and building it.
@@ -1043,7 +1074,11 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
     }));
     const signedPsbt = await this.signPSBTWithMethod(psbtObj, read);
     read.assertCurrent();
-    if (!unsigned.equals(signedPsbt.data.globalMap.unsignedTx.toBuffer()))
+    if (
+      !unsigned.equals(
+        Buffer.from(signedPsbt.data.globalMap.unsignedTx.toBuffer())
+      )
+    )
       throw new Error('Signed PSBT differs from the prepared transaction');
     signedPsbt.data.inputs.forEach((input, index) => {
       if (input.finalScriptSig || input.finalScriptWitness) return;
