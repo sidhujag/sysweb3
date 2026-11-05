@@ -8,6 +8,7 @@ import { Transaction } from 'ethers/transaction';
 import { Wallet } from 'ethers/wallet';
 
 import { BigNumber, serializeTransaction } from '../../../src/ethers-v6';
+import { KeyringManager } from '../../../src/keyring-manager';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import {
   privateKeyToAccount,
@@ -18,8 +19,10 @@ import {
   createTestSubmissionCapture,
   testSubmissionBoundary,
 } from '../../helpers/evm-submission';
-import { createTestKeyringHost, testHardware } from '../../helpers/keyring-host';
-import { KeyringManager } from '../../../src/keyring-manager';
+import {
+  createTestKeyringHost,
+  testHardware,
+} from '../../helpers/keyring-host';
 
 // Keep the provider's real response normalization, which the shared setup
 // omits from its provider mock. All RPCs are supplied by each test.
@@ -204,6 +207,7 @@ describe('source SDK account-scoped replacement signing', () => {
     provider = {
       getTransaction: jest.fn().mockResolvedValue(transaction()),
       getNetwork: jest.fn().mockResolvedValue({ chainId: CHAIN }),
+      verifyConfiguredChainId: jest.fn().mockResolvedValue(undefined),
       getBalance: jest.fn().mockResolvedValue(BigNumber.from('1000000000')),
       getGasPrice: jest.fn().mockResolvedValue(BigNumber.from(1000)),
       getBlock: jest
@@ -1189,13 +1193,19 @@ describe('source SDK account-scoped replacement signing', () => {
       expect(parsed.from?.toLowerCase()).toBe(PAYER.toLowerCase());
       expect(parsed.to?.toLowerCase()).toBe(TARGET);
       if (target.originalType) expect(parsed.accessList).toEqual(ACCESS_LIST);
+      const authority = expect.objectContaining({
+        assertCurrent: expect.any(Function),
+        signal: expect.any(AbortSignal),
+      });
       if (target.type === KeyringAccountType.Ledger)
         expect(ledger.evm.signEVMTransaction).toHaveBeenCalledWith(
-          expect.objectContaining({ accountIndex: 4 })
+          expect.objectContaining({ accountIndex: 4 }),
+          authority
         );
       else
         expect(trezor.signEthTransaction).toHaveBeenCalledWith(
-          expect.objectContaining({ index: '5', slip44: 60 })
+          expect.objectContaining({ index: '5', slip44: 60 }),
+          authority
         );
       expect(beforeBroadcast).toHaveBeenCalledTimes(1);
     }

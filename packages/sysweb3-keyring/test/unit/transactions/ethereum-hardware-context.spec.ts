@@ -82,6 +82,7 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
         },
       };
       const makeProvider = () => ({
+        verifyConfiguredChainId: jest.fn().mockResolvedValue(undefined),
         getTransactionCount: jest.fn().mockResolvedValue(7),
         sendTransaction: jest.fn(async (raw: string) => ({
           hash: Transaction.from(raw).hash,

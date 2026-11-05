@@ -1,7 +1,14 @@
 import { BigNumber, JsonRpcProvider } from '../../src/ethers-v6';
+import { LedgerKeyring } from '../../src/ledger';
+import { KeyringAccountType } from '../../src/types';
+
+import type { LedgerHost } from '../../src/ledger/host-types';
+import type { EvmSignedSubmission } from '../../src/transactions/evm-submission';
 
 const { Network } = jest.requireActual('ethers/providers');
+const { Transaction } = jest.requireActual('ethers/transaction');
 const { FetchRequest } = jest.requireActual('ethers/utils');
+const { Wallet } = jest.requireActual('ethers/wallet');
 
 const { CustomJsonRpcProvider, RpcResponseIntegrityError } = jest.requireActual(
   '../../src/providers'
@@ -69,6 +76,172 @@ describe('JSON-RPC response correlation', () => {
   afterEach(() => {
     for (const provider of providers.splice(0)) provider.destroy();
     global.fetch = originalFetch;
+  });
+
+  it.each(['before-sign', 'after-persist', 'revoked', 'current'])(
+    'checks the RPC chain on both sides of real Ledger signing (%s)',
+    async (scenario) => {
+      const provider = providerFor();
+      const wallet = new Wallet(`0x${'11'.repeat(32)}`);
+      const chain = { ...network, kind: 'ethereum', slip44: 60 };
+      const ledgerType = KeyringAccountType.Ledger;
+      const state = {
+        activeAccountType: ledgerType,
+        activeAccountId: 0,
+        activeNetwork: chain,
+        accounts: { [ledgerType]: { 0: { address: wallet.address } } },
+      };
+      const events: string[] = [];
+      let stored: EvmSignedSubmission | undefined;
+      let live = true;
+      let chainReads = 0;
+      let chainEntered!: () => void;
+      let releaseChain!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        chainEntered = resolve;
+      });
+      const held = new Promise<void>((resolve) => {
+        releaseChain = resolve;
+      });
+      const sign = jest.fn(async ({ unsignedTxHex }, authority) => {
+        authority?.assertCurrent();
+        events.push('sign');
+        const tx = Transaction.from(`0x${unsignedTxHex}`);
+        const signature = wallet.signingKey.sign(tx.unsignedHash);
+        return {
+          r: signature.r.slice(2),
+          s: signature.s.slice(2),
+          v: signature.v.toString(16),
+        };
+      });
+      const host = {
+        getStatus: () => ({ connected: true }),
+        evm: { signTransaction: sign },
+      } as unknown as LedgerHost;
+      const sdk = new EthereumTransactions(
+        () => chain,
+        () => {
+          throw Error('Hardware send reached software key access');
+        },
+        () => state,
+        new LedgerKeyring(undefined, host),
+        undefined,
+        undefined,
+        () => ({
+          assertCurrent: () => undefined,
+          async persistSigned(record: EvmSignedSubmission) {
+            events.push('persist');
+            stored = record;
+          },
+        })
+      );
+      Object.defineProperty(sdk, 'web3Provider', { get: () => provider });
+      fetchMock.mockImplementation(async (_url, options) => {
+        const request = JSON.parse(options.body);
+        switch (request.method) {
+          case 'eth_chainId': {
+            chainReads++;
+            events.push('chain');
+            if (scenario === 'revoked' && chainReads === 2) {
+              chainEntered();
+              await held;
+            }
+            const wrong =
+              scenario === 'before-sign' ||
+              (scenario === 'after-persist' && chainReads === 2);
+            return response(resultFor(request, wrong ? '0x1' : '0x1644'));
+          }
+          case 'eth_blockNumber':
+            return response(resultFor(request, '0x1'));
+          case 'eth_sendRawTransaction':
+            events.push('post');
+            expect(request.params).toEqual([stored?.rawTransaction]);
+            return response(resultFor(request, stored?.hash));
+          default:
+            throw new Error(`Unexpected RPC ${request.method}`);
+        }
+      });
+      const sending = sdk.sendFormattedTransaction(
+        {
+          to: FROM,
+          nonce: 0,
+          gasLimit: '21000',
+          gasPrice: '1',
+          value: '1',
+        },
+        true,
+        {
+          mode: 'specialized',
+          assertCurrent() {
+            if (!live) throw new Error('Review closed');
+          },
+        }
+      );
+      if (scenario === 'before-sign') {
+        await expect(sending).rejects.toMatchObject({
+          transactionNotBroadcast: true,
+          message: expect.stringContaining('does not match'),
+        });
+        expect(sign).not.toHaveBeenCalled();
+        expect(stored).toBeUndefined();
+        expect(events).toEqual(['chain']);
+      } else if (scenario === 'current') {
+        const sent = await sending;
+        expect(sent.hash).toBe(stored?.hash);
+        expect(sign).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({
+            assertCurrent: expect.any(Function),
+            signal: expect.any(AbortSignal),
+          })
+        );
+        expect(events).toEqual(['chain', 'sign', 'persist', 'chain', 'post']);
+      } else {
+        if (scenario === 'revoked') {
+          await Promise.race([entered, sending]);
+          live = false;
+          releaseChain();
+        }
+        const error = await sending.catch((cause) => cause);
+        expect(error).toMatchObject({
+          transactionNotBroadcast: true,
+          signedTransactionHash: stored?.hash,
+          message: expect.stringContaining(
+            scenario === 'revoked' ? 'Review closed' : 'does not match'
+          ),
+        });
+        expect(stored?.rawTransaction).toMatch(/^0x/);
+        expect(events).toEqual(['chain', 'sign', 'persist', 'chain']);
+      }
+    }
+  );
+
+  it('does not borrow a live-chain verification started before hardware dispatch admission', async () => {
+    const provider = providerFor();
+    let respond!: () => void;
+    fetchMock.mockImplementationOnce(
+      (_url, options) =>
+        new Promise((resolve) => {
+          respond = () =>
+            resolve(response(resultFor(JSON.parse(options.body), '0x1644')));
+        })
+    );
+    fetchMock.mockImplementationOnce(async (_url, options) =>
+      response(resultFor(JSON.parse(options.body), '0x1'))
+    );
+    const earlier = provider.verifyConfiguredChainId();
+    try {
+      await expect(provider.verifyConfiguredChainId(true)).rejects.toThrow(
+        'does not match'
+      );
+    } finally {
+      respond();
+    }
+    await expect(earlier).resolves.toBeUndefined();
+    expect(requestsFrom(fetchMock).map(({ method }) => method)).toEqual([
+      'eth_chainId',
+      'eth_chainId',
+    ]);
   });
 
   it('keeps a healthy read on the original URL with one request', async () => {

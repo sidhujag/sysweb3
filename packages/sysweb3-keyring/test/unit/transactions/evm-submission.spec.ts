@@ -1,10 +1,13 @@
 import { Wallet, Transaction } from 'ethers';
+
 import {
   captureEvmSubmission,
   submitSignedEvmTransaction,
+  submitSignedHardwareEvmTransaction,
   evmSubmissionFailure,
   type EvmSignedSubmission,
 } from '../../../src/transactions/evm-submission';
+import { createTestSubmissionCapture } from '../../helpers/evm-submission';
 
 const wallet = new Wallet(`0x${'11'.repeat(32)}`);
 const context = () => ({
@@ -24,7 +27,6 @@ const deferred = () => {
   });
   return { promise, resolve };
 };
-import { createTestSubmissionCapture } from '../../helpers/evm-submission';
 
 const envelope = (type = 2, creation = false) => ({
   chainId: 7654321,
@@ -54,6 +56,47 @@ const capture = () =>
     () => undefined,
     createTestSubmissionCapture()
   );
+
+it.each(['Ledger', 'Trezor'])(
+  'requires the internal chain-verified dispatcher for a captured %s account',
+  async (type) => {
+    const persistSigned = jest.fn(async () => undefined);
+    const ctx = context();
+    const boundary = captureEvmSubmission(
+      { ...ctx, account: { ...ctx.account, type } },
+      () => undefined,
+      () => ({ assertCurrent: () => undefined, persistSigned })
+    );
+    const signed = await raw();
+    const broadcast = jest.fn(async () => undefined);
+    await expect(
+      submitSignedEvmTransaction(
+        signed,
+        broadcast,
+        boundary,
+        undefined,
+        expected()
+      )
+    ).rejects.toMatchObject({
+      transactionNotBroadcast: true,
+      message: 'EVM submission does not match the signing mode',
+    });
+    await expect(
+      Reflect.apply(submitSignedHardwareEvmTransaction, undefined, [
+        signed,
+        broadcast,
+        boundary,
+        undefined,
+        expected(),
+      ])
+    ).rejects.toMatchObject({
+      transactionNotBroadcast: true,
+      message: 'EVM submission does not match the signing mode',
+    });
+    expect(persistSigned).not.toHaveBeenCalled();
+    expect(broadcast).not.toHaveBeenCalled();
+  }
+);
 
 it.each([0, 1, 2])(
   'persists exact type%s bytes and captured immutable context before dispatch',

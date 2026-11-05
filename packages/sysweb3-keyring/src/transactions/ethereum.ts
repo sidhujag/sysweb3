@@ -74,9 +74,11 @@ import {
 import {
   captureEvmSubmission,
   submitSignedEvmTransaction,
+  submitSignedHardwareEvmTransaction,
   evmSubmissionFailure,
   copyEvmSubmissionFailure,
   type CaptureEvmSubmission,
+  type EvmSubmissionBoundary,
   type EvmSubmissionContext,
 } from './evm-submission';
 import {
@@ -445,6 +447,35 @@ export class EthereumTransactions<
       this.captureSubmissionLifecycle
     );
   };
+
+  private authorizeHardwareTransaction = async (
+    provider: CustomJsonRpcProvider,
+    assertCurrent: () => void,
+    signal = this.abortController.signal
+  ) => {
+    assertCurrent();
+    await provider.verifyConfiguredChainId();
+    assertCurrent();
+    return { assertCurrent, signal };
+  };
+
+  private submitSignedHardwareTransaction = <T>(
+    provider: CustomJsonRpcProvider,
+    raw: string,
+    broadcast: (raw: string) => Promise<T>,
+    submission: EvmSubmissionBoundary,
+    beforeBroadcast: (() => void) | undefined,
+    expectedUnsigned: string
+  ) =>
+    submitSignedHardwareEvmTransaction(
+      raw,
+      broadcast,
+      submission,
+      beforeBroadcast,
+      expectedUnsigned,
+      // A device confirmation or journal write can outlast the earlier check.
+      () => provider.verifyConfiguredChainId(true)
+    );
 
   // Getter that automatically ensures providers are initialized when accessed
   public get web3Provider(): CustomJsonRpcProvider {
@@ -1404,11 +1435,14 @@ export class EthereumTransactions<
         assertApprovedEnvelope(txFormattedForEthers);
         const rawTx = serializeTransaction(txFormattedForEthers);
         const signature =
-          await this.requireLedgerSigner().evm.signEVMTransaction({
-            rawTx: rawTx.replace('0x', ''),
-            accountIndex: activeAccountId,
-            expectedAddress: activeAccount.address,
-          });
+          await this.requireLedgerSigner().evm.signEVMTransaction(
+            {
+              rawTx: rawTx.replace('0x', ''),
+              accountIndex: activeAccountId,
+              expectedAddress: activeAccount.address,
+            },
+            await this.authorizeHardwareTransaction(provider, assertCurrent)
+          );
         assertCurrent();
 
         const formattedSignature = {
@@ -1424,13 +1458,15 @@ export class EthereumTransactions<
           );
           assertCurrent();
           assertHardwareTransactionSender(signedTx, activeAccount.address);
-          const transactionResponse = await submitSignedEvmTransaction(
-            signedTx,
-            (raw) => provider.sendTransaction(raw),
-            submission,
-            undefined,
-            rawTx
-          );
+          const transactionResponse =
+            await this.submitSignedHardwareTransaction(
+              provider,
+              signedTx,
+              (raw) => provider.sendTransaction(raw),
+              submission,
+              undefined,
+              rawTx
+            );
 
           return {
             isCanceled: true,
@@ -1497,12 +1533,15 @@ export class EthereumTransactions<
         assertTransactionGasLimit(txFormattedForTrezor);
         const expectedUnsignedTransaction =
           serializeTransaction(txFormattedForTrezor);
-        const signature = await this.requireTrezorSigner().signEthTransaction({
-          coin: trezorCoin,
-          tx: txFormattedForTrezor,
-          index: activeAccountId.toString(),
-          slip44: activeNetwork.slip44,
-        });
+        const signature = await this.requireTrezorSigner().signEthTransaction(
+          {
+            coin: trezorCoin,
+            tx: txFormattedForTrezor,
+            index: activeAccountId.toString(),
+            slip44: activeNetwork.slip44,
+          },
+          await this.authorizeHardwareTransaction(provider, assertCurrent)
+        );
         assertCurrent();
 
         if (signature.success) {
@@ -1512,13 +1551,15 @@ export class EthereumTransactions<
           );
           assertCurrent();
           assertHardwareTransactionSender(signedTx, activeAccount.address);
-          const transactionResponse = await submitSignedEvmTransaction(
-            signedTx,
-            (raw) => provider.sendTransaction(raw),
-            submission,
-            undefined,
-            expectedUnsignedTransaction
-          );
+          const transactionResponse =
+            await this.submitSignedHardwareTransaction(
+              provider,
+              signedTx,
+              (raw) => provider.sendTransaction(raw),
+              submission,
+              undefined,
+              expectedUnsignedTransaction
+            );
 
           return {
             isCanceled: true,
@@ -1903,7 +1944,8 @@ export class EthereumTransactions<
           rawTx: rawTx.replace('0x', ''),
           accountIndex: activeAccountId,
           expectedAddress: activeAccount.address,
-        }
+        },
+        await this.authorizeHardwareTransaction(provider, assertCurrent)
       );
       assertCurrent();
 
@@ -1920,7 +1962,8 @@ export class EthereumTransactions<
             formattedSignature
           );
           assertHardwareTransactionSender(signedTx, activeAccount.address);
-          const finalTx = await submitSignedEvmTransaction(
+          const finalTx = await this.submitSignedHardwareTransaction(
+            provider,
             signedTx,
             (raw) => provider.sendTransaction(raw),
             submission,
@@ -2024,12 +2067,15 @@ export class EthereumTransactions<
         ...txFormattedForTrezor,
         type: isLegacy ? 0 : 2,
       });
-      const signature = await this.requireTrezorSigner().signEthTransaction({
-        index: `${activeAccountId}`,
-        tx: txFormattedForTrezor as EthereumTransactionEIP1559,
-        coin: activeNetwork.currency,
-        slip44: activeNetwork.slip44,
-      });
+      const signature = await this.requireTrezorSigner().signEthTransaction(
+        {
+          index: `${activeAccountId}`,
+          tx: txFormattedForTrezor as EthereumTransactionEIP1559,
+          coin: activeNetwork.currency,
+          slip44: activeNetwork.slip44,
+        },
+        await this.authorizeHardwareTransaction(provider, assertCurrent)
+      );
       assertCurrent();
       if (signature.success) {
         try {
@@ -2051,7 +2097,8 @@ export class EthereumTransactions<
             trezorSignature(signature.payload)
           );
           assertHardwareTransactionSender(signedTx, activeAccount.address);
-          const finalTx = await submitSignedEvmTransaction(
+          const finalTx = await this.submitSignedHardwareTransaction(
+            provider,
             signedTx,
             (raw) => provider.sendTransaction(raw),
             submission,
@@ -2369,11 +2416,14 @@ export class EthereumTransactions<
         const rawTx = serializeTransaction(txFormattedForEthers);
         assertCurrent();
         const signature =
-          await this.requireLedgerSigner().evm.signEVMTransaction({
-            rawTx: rawTx.replace('0x', ''),
-            accountIndex: activeAccountId,
-            expectedAddress: activeAccount.address,
-          });
+          await this.requireLedgerSigner().evm.signEVMTransaction(
+            {
+              rawTx: rawTx.replace('0x', ''),
+              accountIndex: activeAccountId,
+              expectedAddress: activeAccount.address,
+            },
+            await this.authorizeHardwareTransaction(provider, assertCurrent)
+          );
         const formattedSignature = {
           r: `0x${signature.r}`,
           s: `0x${signature.s}`,
@@ -2386,13 +2436,15 @@ export class EthereumTransactions<
           );
           assertSignedSender(signedTx);
           assertHardwareTransactionSender(signedTx, activeAccount.address);
-          const transactionResponse = await submitSignedEvmTransaction(
-            signedTx,
-            (raw) => provider.sendTransaction(raw),
-            submission,
-            assertBeforeBroadcast,
-            rawTx
-          );
+          const transactionResponse =
+            await this.submitSignedHardwareTransaction(
+              provider,
+              signedTx,
+              (raw) => provider.sendTransaction(raw),
+              submission,
+              assertBeforeBroadcast,
+              rawTx
+            );
           return {
             isSpeedUp: true,
             transaction: transactionResponse,
@@ -2472,12 +2524,15 @@ export class EthereumTransactions<
         assertTransactionGasLimit(txFormattedForTrezor);
         const expectedUnsignedTransaction =
           serializeTransaction(txFormattedForTrezor);
-        const signature = await this.requireTrezorSigner().signEthTransaction({
-          coin: trezorCoin,
-          tx: txFormattedForTrezor,
-          index: activeAccountId.toString(),
-          slip44: activeNetwork.slip44,
-        });
+        const signature = await this.requireTrezorSigner().signEthTransaction(
+          {
+            coin: trezorCoin,
+            tx: txFormattedForTrezor,
+            index: activeAccountId.toString(),
+            slip44: activeNetwork.slip44,
+          },
+          await this.authorizeHardwareTransaction(provider, assertCurrent)
+        );
         if (signature.success) {
           const signedTx = serializeTransaction(
             txFormattedForTrezor,
@@ -2485,13 +2540,15 @@ export class EthereumTransactions<
           );
           assertSignedSender(signedTx);
           assertHardwareTransactionSender(signedTx, activeAccount.address);
-          const transactionResponse = await submitSignedEvmTransaction(
-            signedTx,
-            (raw) => provider.sendTransaction(raw),
-            submission,
-            assertBeforeBroadcast,
-            expectedUnsignedTransaction
-          );
+          const transactionResponse =
+            await this.submitSignedHardwareTransaction(
+              provider,
+              signedTx,
+              (raw) => provider.sendTransaction(raw),
+              submission,
+              assertBeforeBroadcast,
+              expectedUnsignedTransaction
+            );
           return {
             isSpeedUp: true,
             transaction: transactionResponse,
@@ -2757,7 +2814,11 @@ export class EthereumTransactions<
               accountIndex: activeAccountId,
               expectedAddress: activeAccount.address,
             },
-            { assertCurrent, signal }
+            await this.authorizeHardwareTransaction(
+              provider,
+              assertCurrent,
+              signal
+            )
           );
 
         assertCurrent();
@@ -2774,7 +2835,8 @@ export class EthereumTransactions<
             );
             assertCurrent();
             assertHardwareTransactionSender(signedTx, activeAccount.address);
-            const finalTx = await submitSignedEvmTransaction(
+            const finalTx = await this.submitSignedHardwareTransaction(
+              provider,
               signedTx,
               async (raw) => {
                 const response = await provider.sendTransaction(raw);
@@ -2856,7 +2918,11 @@ export class EthereumTransactions<
             coin: activeNetwork.currency,
             slip44: activeNetwork.slip44,
           },
-          { assertCurrent, signal }
+          await this.authorizeHardwareTransaction(
+            provider,
+            assertCurrent,
+            signal
+          )
         );
 
         assertCurrent();
@@ -2893,7 +2959,8 @@ export class EthereumTransactions<
             );
             assertCurrent();
             assertHardwareTransactionSender(signedTx, activeAccount.address);
-            const finalTx = await submitSignedEvmTransaction(
+            const finalTx = await this.submitSignedHardwareTransaction(
+              provider,
               signedTx,
               async (raw) => {
                 const response = await provider.sendTransaction(raw);
@@ -3087,7 +3154,11 @@ export class EthereumTransactions<
               accountIndex: activeAccountId,
               expectedAddress: activeAccount.address,
             },
-            { assertCurrent, signal }
+            await this.authorizeHardwareTransaction(
+              provider,
+              assertCurrent,
+              signal
+            )
           );
 
         assertCurrent();
@@ -3105,7 +3176,8 @@ export class EthereumTransactions<
             );
             assertCurrent();
             assertHardwareTransactionSender(signedTx, activeAccount.address);
-            const finalTx = await submitSignedEvmTransaction(
+            const finalTx = await this.submitSignedHardwareTransaction(
+              provider,
               signedTx,
               (raw) => provider.sendTransaction(raw),
               submission,
@@ -3187,7 +3259,11 @@ export class EthereumTransactions<
             coin: trezorCoin,
             slip44: activeNetwork.slip44,
           },
-          { assertCurrent, signal }
+          await this.authorizeHardwareTransaction(
+            provider,
+            assertCurrent,
+            signal
+          )
         );
 
         assertCurrent();
@@ -3224,7 +3300,8 @@ export class EthereumTransactions<
             );
             assertCurrent();
             assertHardwareTransactionSender(signedTx, activeAccount.address);
-            const finalTx = await submitSignedEvmTransaction(
+            const finalTx = await this.submitSignedHardwareTransaction(
+              provider,
               signedTx,
               (raw) => provider.sendTransaction(raw),
               submission,
@@ -3420,7 +3497,11 @@ export class EthereumTransactions<
               accountIndex: activeAccountId,
               expectedAddress: activeAccount.address,
             },
-            { assertCurrent, signal }
+            await this.authorizeHardwareTransaction(
+              provider,
+              assertCurrent,
+              signal
+            )
           );
 
         assertCurrent();
@@ -3438,7 +3519,8 @@ export class EthereumTransactions<
             );
             assertCurrent();
             assertHardwareTransactionSender(signedTx, activeAccount.address);
-            const finalTx = await submitSignedEvmTransaction(
+            const finalTx = await this.submitSignedHardwareTransaction(
+              provider,
               signedTx,
               (raw) => provider.sendTransaction(raw),
               submission,
@@ -3516,7 +3598,11 @@ export class EthereumTransactions<
             coin: activeNetwork.currency,
             slip44: activeNetwork.slip44,
           },
-          { assertCurrent, signal }
+          await this.authorizeHardwareTransaction(
+            provider,
+            assertCurrent,
+            signal
+          )
         );
 
         assertCurrent();
@@ -3553,7 +3639,8 @@ export class EthereumTransactions<
             );
             assertCurrent();
             assertHardwareTransactionSender(signedTx, activeAccount.address);
-            const finalTx = await submitSignedEvmTransaction(
+            const finalTx = await this.submitSignedHardwareTransaction(
+              provider,
               signedTx,
               (raw) => provider.sendTransaction(raw),
               submission,

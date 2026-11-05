@@ -255,6 +255,10 @@ function fixture(kind: KeyringAccountType, capture?: CaptureEvmSubmission) {
     network,
     provider,
     device,
+    deviceRequest:
+      kind === KeyringAccountType.Ledger
+        ? ledger.evm.signEVMTransaction
+        : trezor.signEthTransaction,
     keyAccess,
     submit,
     lock: () => {
@@ -291,6 +295,17 @@ for (const kind of kinds)
         }),
       ]);
       expect(f.provider.sendTransaction).not.toHaveBeenCalled();
+      const hardware =
+        kind === KeyringAccountType.Ledger ||
+        kind === KeyringAccountType.Trezor;
+      expect(f.provider.verifyConfiguredChainId.mock.calls).toEqual([[]]);
+      if (hardware) {
+        const authority = f.deviceRequest.mock.calls[0][1];
+        expect(authority.assertCurrent).toEqual(expect.any(Function));
+        expect(authority.signal).toBeInstanceOf(AbortSignal);
+        if (operation.startsWith('erc'))
+          expect(authority.signal).toBe(tokenApproval.signal);
+      }
       expect(saved.context.operation).toBe(operation);
       expect(saved.context.account.type).toBe(kind);
       expect(saved.context.account.address).toBe(wallet.address);
@@ -298,6 +313,9 @@ for (const kind of kinds)
       expect(Object.isFrozen(saved)).toBe(true);
       ack.resolve();
       await result;
+      expect(f.provider.verifyConfiguredChainId.mock.calls).toEqual(
+        hardware ? [[], [true]] : [[]]
+      );
       expect(capture).toHaveBeenCalledTimes(1);
       expect(f.provider.sendTransaction).toHaveBeenCalledTimes(1);
       expect(f.provider.sendTransaction).toHaveBeenCalledWith(
