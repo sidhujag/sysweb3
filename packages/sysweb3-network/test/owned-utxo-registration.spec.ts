@@ -7,8 +7,10 @@ import {
   getSysRpc,
   validateSysRpc,
 } from '../src';
+import { observeFirstUseUtxoRpc } from '../src/ownedUtxoRpc';
 
 import type { OwnedUtxoRpcVerification } from '../src';
+import type { OwnedUtxoRpcFirstUse } from '../src/ownedUtxoRpc';
 
 const url = 'https://blockbook.invalid/tenant/?access=public%2Bfixture';
 const statusUrl =
@@ -63,6 +65,362 @@ function verification(status: unknown, block: unknown = genesis(SYS_TEST)) {
   } satisfies OwnedUtxoRpcVerification;
   return { owner, controller, readJson };
 }
+
+function firstUse(status: unknown, block?: unknown) {
+  const { owner, controller, readJson } = verification(status, block);
+  const observation: OwnedUtxoRpcFirstUse = {
+    assertCurrent: owner.assertCurrent,
+    signal: owner.signal,
+    readJson,
+  };
+  return { observation, controller, readJson };
+}
+
+it('observes an exact backend token and canonical registration without an expected token', async () => {
+  const { observation, readJson } = firstUse(legacy);
+  const result = await observeFirstUseUtxoRpc(url, observation);
+  expect(result).toEqual({
+    registration: SYS_TEST,
+    currency: 'tsys',
+    observedBackendChain: 'test',
+  });
+  expect(Object.isFrozen(result)).toBe(true);
+  expect(Object.isFrozen(result.registration)).toBe(true);
+  expect(readJson.mock.calls).toEqual([
+    [statusUrl, observation.signal],
+    [genesisUrl, observation.signal],
+  ]);
+});
+
+it.each([
+  [BTC, BTG],
+  [BTG, BTC],
+  [
+    { chainId: 2, slip44: 2 },
+    { chainId: 8, slip44: 8 },
+  ],
+  [
+    { chainId: 8, slip44: 8 },
+    { chainId: 2, slip44: 2 },
+  ],
+])(
+  'uses reported coin identity as well as shared genesis for %j',
+  async (registration, other) => {
+    const coin = findUtxoCoinByRegistration(registration)!;
+    expect(genesis(registration)).toEqual(genesis(other));
+    const { observation, readJson } = firstUse(
+      {
+        blockbook: { network: coin.coinShortcut, coin: coin.coinLabel },
+        backend: { chain: 'Main_Fixture' },
+      },
+      genesis(registration)
+    );
+    await expect(observeFirstUseUtxoRpc(url, observation)).resolves.toEqual({
+      registration,
+      currency: coin.coinShortcut.toLowerCase(),
+      observedBackendChain: 'Main_Fixture',
+    });
+    readJson.mockClear();
+    await expect(
+      observeFirstUseUtxoRpc(url, { ...observation, registration: other })
+    ).rejects.toThrow(mismatch);
+    expect(readJson.mock.calls).toEqual([[statusUrl, observation.signal]]);
+  }
+);
+
+it('requires the exact optional tuple and rejects a contradictory modern name', async () => {
+  const { observation, readJson } = firstUse(modern);
+  await expect(
+    observeFirstUseUtxoRpc(url, {
+      ...observation,
+      registration: { chainId: SYS_TEST.chainId, slip44: 57 },
+    })
+  ).rejects.toThrow(invalid);
+  expect(readJson).not.toHaveBeenCalled();
+
+  readJson.mockResolvedValueOnce({
+    blockbook: { network: 'tSYS', coin: 'Bitcoin' },
+    backend: { chain: 'test' },
+  });
+  await expect(observeFirstUseUtxoRpc(url, observation)).rejects.toThrow(
+    mismatch
+  );
+  expect(readJson).toHaveBeenCalledTimes(1);
+
+  await expect(
+    observeFirstUseUtxoRpc(url, { ...observation, registration: SYS_TEST })
+  ).resolves.toMatchObject({ registration: SYS_TEST });
+});
+
+it('rejects an ambiguous legacy alias and genesis even with a selected tuple', async () => {
+  const coin = findUtxoCoinByRegistration(SYS_TEST)!;
+  coins.push({
+    ...coin,
+    chainId: 12345,
+    coinShortcut: 'OTHER',
+    shortcut: 'OTHER',
+    name: 'Other',
+  });
+  const { observation, readJson } = firstUse(legacy);
+  await expect(observeFirstUseUtxoRpc(url, observation)).rejects.toThrow(
+    mismatch
+  );
+  await expect(
+    observeFirstUseUtxoRpc(url, { ...observation, registration: SYS_TEST })
+  ).rejects.toThrow(mismatch);
+  expect(readJson).toHaveBeenCalledTimes(4);
+});
+
+it('rejects discovered coins with duplicate exact tuples or ambiguous custody tickers', async () => {
+  const coin = findUtxoCoinByRegistration(SYS_TEST)!;
+  const { observation, readJson } = firstUse(modern);
+  coins.push({
+    ...coin,
+    coinShortcut: 'OTHER',
+    shortcut: 'OTHER',
+    coinName: 'Other',
+    coinLabel: 'Other',
+    name: 'Other',
+  });
+  await expect(observeFirstUseUtxoRpc(url, observation)).rejects.toThrow(
+    invalid
+  );
+  coins.pop();
+  coins.push({
+    ...coin,
+    chainId: 12345,
+    coinShortcut: 'OTHER',
+    shortcut: 'OTHER',
+    coinName: 'tSYS',
+    name: 'Other',
+  });
+  await expect(observeFirstUseUtxoRpc(url, observation)).rejects.toThrow(
+    invalid
+  );
+  expect(readJson).toHaveBeenCalledTimes(4);
+});
+
+it('first use requires HTTPS and a bounded primitive reported token', async () => {
+  const { observation, readJson } = firstUse(modern);
+  for (const endpoint of [
+    url.replace('https:', 'http:'),
+    'https://username:secret@blockbook.invalid/',
+    'https://blockbook.invalid/#fragment',
+  ]) {
+    await expect(observeFirstUseUtxoRpc(endpoint, observation)).rejects.toThrow(
+      invalid
+    );
+  }
+  expect(readJson).not.toHaveBeenCalled();
+  for (const chain of [undefined, 1, '', 'test\n', 'test ', 'x'.repeat(33)]) {
+    readJson.mockResolvedValueOnce({ ...modern, backend: { chain } });
+    await expect(observeFirstUseUtxoRpc(url, observation)).rejects.toThrow(
+      invalid
+    );
+  }
+  expect(readJson.mock.calls.every(([route]) => route === statusUrl)).toBe(
+    true
+  );
+});
+
+it('refuses wrong genesis, and decimals cannot rescue or change a canonical match', async () => {
+  const wrong = firstUse(modern, genesis(BTC));
+  await expect(observeFirstUseUtxoRpc(url, wrong.observation)).rejects.toThrow(
+    mismatch
+  );
+  const decimals = firstUse({
+    ...modern,
+    blockbook: { ...modern.blockbook, decimals: 18 },
+  });
+  await expect(
+    observeFirstUseUtxoRpc(url, decimals.observation)
+  ).rejects.toThrow(mismatch);
+  expect(wrong.readJson).toHaveBeenCalledTimes(2);
+  expect(decimals.readJson).toHaveBeenCalledTimes(2);
+});
+
+it('rejects revoked first-use scope and never falls back after a refused owned read', async () => {
+  const before = firstUse(modern);
+  before.controller.abort();
+  await expect(observeFirstUseUtxoRpc(url, before.observation)).rejects.toThrow(
+    cancelled
+  );
+  expect(before.readJson).not.toHaveBeenCalled();
+
+  const status = firstUse(modern);
+  status.readJson.mockImplementationOnce(async () => {
+    status.controller.abort();
+    return modern;
+  });
+  await expect(observeFirstUseUtxoRpc(url, status.observation)).rejects.toThrow(
+    cancelled
+  );
+  expect(status.readJson).toHaveBeenCalledTimes(1);
+
+  const revoked = firstUse(modern);
+  let current = true;
+  revoked.readJson
+    .mockResolvedValueOnce(modern)
+    .mockImplementationOnce(async () => {
+      current = false;
+      return genesis(SYS_TEST);
+    });
+  await expect(
+    observeFirstUseUtxoRpc(url, {
+      ...revoked.observation,
+      assertCurrent() {
+        if (!current) throw new Error('draft replaced');
+      },
+    })
+  ).rejects.toThrow(cancelled);
+  expect(revoked.readJson).toHaveBeenCalledTimes(2);
+
+  const refused = firstUse(modern);
+  refused.readJson.mockRejectedValueOnce(new Error('redirect refused'));
+  await expect(
+    observeFirstUseUtxoRpc(url, refused.observation)
+  ).rejects.toThrow(/^UTXO registration read failed$/);
+  expect(refused.readJson).toHaveBeenCalledTimes(1);
+});
+
+it('does not let first use turn a conflicting trusted token into a match', async () => {
+  const endpoint = url.replace('https:', 'http:');
+  const { owner, readJson } = verification(modern);
+  readJson
+    .mockResolvedValueOnce(modern)
+    .mockResolvedValueOnce(genesis(SYS_TEST));
+  await expect(getSysRpc({ url: endpoint }, owner)).resolves.toMatchObject({
+    chain: 'test',
+  });
+  readJson.mockClear();
+  await expect(
+    getSysRpc({ url }, { ...owner, backendChain: 'main' })
+  ).rejects.toThrow(mismatch);
+  expect(readJson).toHaveBeenCalledTimes(1);
+});
+
+it('captures a chosen first-use identity and owned transport before the status await', async () => {
+  const { observation, readJson } = firstUse(modern);
+  const owner = { ...observation, registration: { ...SYS_TEST } };
+  const wrongRead = jest.fn();
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const entered = new Promise<void>((resolve) => {
+    readJson.mockImplementationOnce(async () => {
+      resolve();
+      await held;
+      return modern;
+    });
+  });
+  const pending = observeFirstUseUtxoRpc(url, owner);
+  await entered;
+  Object.assign(owner.registration, BTC);
+  owner.readJson = wrongRead;
+  release();
+  await expect(pending).resolves.toEqual({
+    registration: SYS_TEST,
+    currency: 'tsys',
+    observedBackendChain: 'test',
+  });
+  expect(wrongRead).not.toHaveBeenCalled();
+  expect(readJson.mock.calls).toEqual([
+    [statusUrl, observation.signal],
+    [genesisUrl, observation.signal],
+  ]);
+});
+
+it.each([
+  'chosen tuple collision',
+  'automatic custody ticker collision',
+  'legacy alias shares genesis',
+  'decimals change without provider decimals',
+] as const)(
+  'refuses catalogue drift while genesis is held: %s',
+  async (change) => {
+    const coin = findUtxoCoinByRegistration(SYS_TEST)!;
+    const originalDecimals = coin.decimals;
+    const status =
+      change === 'legacy alias shares genesis'
+        ? legacy
+        : {
+            ...modern,
+            blockbook: {
+              coin: modern.blockbook.coin,
+              network: modern.blockbook.network,
+            },
+          };
+    const block = genesis(SYS_TEST);
+    const { observation, readJson } = firstUse(status, block);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      readJson
+        .mockResolvedValueOnce(status)
+        .mockImplementationOnce(async () => {
+          resolve();
+          await held;
+          return block;
+        });
+    });
+    const owner =
+      change === 'chosen tuple collision'
+        ? { ...observation, registration: SYS_TEST }
+        : observation;
+    const pending = observeFirstUseUtxoRpc(url, owner);
+    await entered;
+    const competitor = {
+      ...coin,
+      name: 'Other',
+      coinName: 'Other',
+      coinLabel: 'Other',
+      coinShortcut: 'OTHER',
+      shortcut: 'OTHER',
+    };
+    if (change === 'chosen tuple collision') coins.push(competitor);
+    else if (change === 'automatic custody ticker collision') {
+      coins.unshift({ ...competitor, chainId: 12345, coinName: 'tSYS' });
+    } else if (change === 'legacy alias shares genesis') {
+      coins.push({
+        ...competitor,
+        chainId: 12345,
+        slip44: 12345,
+        coinName: 'Syscoin',
+      });
+    } else coin.decimals = 18;
+    release();
+    try {
+      await expect(pending).rejects.toThrow(
+        /Invalid UTXO registration|does not match/
+      );
+      expect(readJson.mock.calls).toEqual([
+        [statusUrl, owner.signal],
+        [genesisUrl, owner.signal],
+      ]);
+    } finally {
+      coin.decimals = originalDecimals;
+    }
+  }
+);
+
+it('checks the live catalogue after the final synchronous owner guard', async () => {
+  const coin = findUtxoCoinByRegistration(SYS_TEST)!;
+  const { observation, readJson } = firstUse(modern);
+  let checks = 0;
+  await expect(
+    observeFirstUseUtxoRpc(url, {
+      ...observation,
+      registration: SYS_TEST,
+      assertCurrent() {
+        if (++checks === 5) coins.push({ ...coin });
+      },
+    })
+  ).rejects.toThrow(invalid);
+  expect(readJson).toHaveBeenCalledTimes(2);
+});
 
 it.each([legacy, modern])(
   'preserves the selected testnet identity through the existing custody lookup',
