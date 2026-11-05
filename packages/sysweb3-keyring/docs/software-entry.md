@@ -1,35 +1,20 @@
 # Software keyring host boundary
 
 `@sidhujag/sysweb3-keyring/cjs/software` provides `SoftwareKeyring` and
-`createSoftwareKeyringHost`. It shares the existing account derivation, encrypted
-vault, private-record and transaction engines. It does not initialize Ledger,
-Trezor, browser transports, global storage or the hardware-manager singleton.
-The existing package root and `KeyringManager(sharedHardwareWalletManager?)`
-remain the browser compatibility entry, including `createInitialized`.
+`createKeyringHost`. It shares account derivation, encrypted storage,
+private-record and transaction logic with the browser entry. Its dependency
+graph excludes browser and hardware transports.
 
 ## Host storage and identity
 
-Create one opaque host with `createSoftwareKeyringHost(storage)`, then share that
-same handle among the authority's EVM and per-SLIP44 UTXO keyrings. The storage
-port requires asynchronous `get`, `set`, `deleteItem`, and atomic
-`createManyIfAbsent`. The factory binds the vault persistence to that storage and
-keeps both in a private WeakMap. A structurally similar or mixed-storage object
-is rejected before any storage operation. There is no default backend or
-fallback to browser storage. The software entry rejects `setStorage` even if the
-backend implements the legacy `setClient` method. The host must keep its original
-port bound to the same wallet; externally mutating that port is trusted host
-behavior outside the SDK boundary.
+Create one opaque host with `createKeyringHost(storage)` and share it across
+that wallet's EVM and UTXO keyrings. The storage port requires asynchronous
+`get`, `set`, `deleteItem` and atomic `createManyIfAbsent`. The factory binds
+the port and a session owner to the host. A forged handle or a rebindable
+storage client is rejected before any storage operation.
 
-A host is one wallet authority, not a global SDK setting. Different hosts have
-different session identities, even if the caller supplies the same storage
-object. Session transfers require the same authority identity, storage and bound
-persistence objects, and reject before modifying
-either session if their authority identities differ. Direct buffer injection
-through the legacy `receiveSessionOwnership` method is rejected by software
-instances; same-authority transfers use a private checked handoff. Trusted low-level consumers
-of `KeyringCore` supply an explicit authority identity, storage, and matching
-bound vault persistence; they must not share the identity between different
-wallets. The legacy wrapper uses one module-scoped identity and persistence.
+Transfers use a checked handoff between keyrings of the same host.
+Session authority is checked independently of optional device unlock.
 
 The in-process persistence mutex is shared by the host's keyrings. Independent
 hosts or processes do not share that mutex. The backend must implement a real
@@ -41,13 +26,13 @@ unchanged.
 ```ts
 import {
   SoftwareKeyring,
-  createSoftwareKeyringHost,
+  createKeyringHost,
 } from '@sidhujag/sysweb3-keyring/cjs/software';
 
-const host = createSoftwareKeyringHost(walletStorage);
-const keyring = new SoftwareKeyring(host);
+const host = createKeyringHost(walletStorage);
+const keyring = new SoftwareKeyring(host, { captureEvmSubmission: null });
 keyring.setVaultStateGetter(() => currentVaultState);
-// The outer authority owns authentication, lifecycle and state publication.
+// The host submits prepared signatures through the shared durable boundary.
 ```
 
 `SoftwareKeyring` has no device signers. Existing hardware account records may be
@@ -164,8 +149,7 @@ this API does not promise provable memory erasure.
 `test/unit/keyring-manager/software-entry.spec.ts` covers independent encrypted
 stores, restart and lock/unlock, stable injected UTXO ports, forged handles,
 cross-authority and same-authority transfers, and EVM operations with absent
-device capabilities. Existing legacy initialization, vault/KDF and hardware
-transaction tests exercise the compatibility wrapper.
+device capabilities. Vault/KDF and hardware tests also exercise the explicit browser host.
 
 After building, run `node test/software-entry-runtime.cjs` from the package
 folder. Pass an alternate absolute path to the unpacked `cjs/software.js` as its

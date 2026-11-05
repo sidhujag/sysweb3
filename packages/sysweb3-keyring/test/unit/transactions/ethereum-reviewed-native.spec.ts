@@ -56,7 +56,7 @@ function fixture(withPersistence = true) {
     () => () => undefined,
     withPersistence
       ? () => ({ assertCurrent: () => undefined, persistSigned })
-      : undefined
+      : null
   );
   Object.defineProperty(sdk, 'web3Provider', { get: () => provider });
   return { sdk, key, provider, stages, persistSigned };
