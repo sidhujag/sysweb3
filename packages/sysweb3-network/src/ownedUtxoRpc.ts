@@ -60,14 +60,13 @@ function isBackendChainToken(value: unknown): value is string {
 function captureReader(
   url: string,
   owner: OwnedUtxoRpcReader,
-  requireHttps: boolean
+  firstUse: boolean
 ) {
-  const scheme = requireHttps ? /^https:\/\//i : /^https?:\/\//i;
   if (
     !owner ||
     typeof url !== 'string' ||
     url.length > 2048 ||
-    !scheme.test(url) ||
+    !/^https?:\/\//i.test(url) ||
     /[\s\\?#]/.test(url)
   )
     throw new Error(INVALID);
@@ -77,7 +76,15 @@ function captureReader(
   } catch {
     throw new Error(INVALID);
   }
-  if (endpoint.username || endpoint.password) throw new Error(INVALID);
+  if (
+    endpoint.username ||
+    endpoint.password ||
+    (firstUse &&
+      endpoint.protocol === 'http:' &&
+      endpoint.hostname !== '127.0.0.1' &&
+      endpoint.hostname !== '[::1]')
+  )
+    throw new Error(INVALID);
   const { assertCurrent: guard, readJson, signal } = owner;
   if (
     !signal ||
@@ -313,6 +320,7 @@ export async function verifyOwnedUtxoRpc(
 
 /**
  * Read the canonical coin identity and the backend token reported on first use.
+ * Plain HTTP is limited to a literal local loopback endpoint.
  * The token is an observation from the selected HTTPS endpoint, not an
  * independently expected value. The caller owns any approval or pin.
  */

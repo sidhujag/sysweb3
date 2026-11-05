@@ -358,7 +358,7 @@ export const getSysRpc = async (
   );
 };
 
-/** Preview a previously unpinned HTTPS endpoint for explicit registration. */
+/** Preview an unpinned HTTPS or local loopback endpoint for registration. */
 export const observeSysRpc = async (
   input: SysRpcDraft,
   owner: OwnedUtxoRpcFirstUse
