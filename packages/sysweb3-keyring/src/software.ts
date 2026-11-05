@@ -15,7 +15,7 @@ import type {
 } from './transactions/prepared-evm';
 
 export class SoftwareKeyring extends KeyringCore<undefined, undefined> {
-  constructor(host: KeyringHost, options?: KeyringOptions) {
+  constructor(host: KeyringHost, options: KeyringOptions) {
     const { binding, publishControls } = prepareKeyringHost(host, options);
     super(binding, {
       ledgerSigner: undefined,
@@ -53,7 +53,7 @@ export class SoftwareKeyring extends KeyringCore<undefined, undefined> {
     seed: string,
     password: string,
     vaultStateGetter: () => any,
-    options?: KeyringOptions
+    options: KeyringOptions
   ): Promise<SoftwareKeyring> {
     const keyring = new SoftwareKeyring(host, options);
     keyring.setVaultStateGetter(vaultStateGetter);

@@ -31,9 +31,20 @@ test('rejects separate manager and host injection before opening either device a
   expect(manager.destroy).not.toHaveBeenCalled();
 });
 
+test('requires durable EVM admission before constructing a browser keyring', () => {
+  const ledgerHost = hostFixture();
+  expect(() =>
+    Reflect.construct(KeyringManager, [createTestKeyringHost(), { ledgerHost }])
+  ).toThrow('Browser keyring requires durable EVM submission');
+  expect(ledgerHost.connect).not.toHaveBeenCalled();
+});
+
 test('host-only injection binds the facade and its manager to the same host', async () => {
   const host = hostFixture();
   const keyring = new KeyringManager(createTestKeyringHost(), {
+    captureEvmSubmission: () => {
+      throw new Error('EVM submission is outside this fixture');
+    },
     ledgerHost: host,
   });
   try {
@@ -295,7 +306,14 @@ test.each(['signPsbt', 'signUtxoMessage'] as const)(
     });
     if (method === 'signPsbt') host.utxo.signPsbt = sign as any;
     else host.utxo.signMessage = sign as any;
-    const pending = ledger[method](request as any);
+    const signal = new AbortController().signal;
+    const pending =
+      method === 'signPsbt'
+        ? ledger.signPsbt(request as any, {
+            assertCurrent: () => undefined,
+            signal,
+          })
+        : ledger.signUtxoMessage(request as any);
     Object.assign(request, {
       currency: 'BTC',
       slip44: 0,
@@ -308,7 +326,9 @@ test.each(['signPsbt', 'signUtxoMessage'] as const)(
     });
     complete();
     await pending;
-    expect(sign).toHaveBeenCalledWith(expected);
+    if (method === 'signPsbt')
+      expect(sign).toHaveBeenCalledWith(expected, { signal });
+    else expect(sign).toHaveBeenCalledWith(expected);
     expect(Object.isFrozen(sign.mock.calls[0][0])).toBe(true);
   }
 );

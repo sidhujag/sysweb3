@@ -141,7 +141,7 @@ function fixture(kind: KeyringAccountType, capture?: CaptureEvmSubmission) {
     () => () => {
       if (!sessionCurrent) throw Error('session locked');
     },
-    capture
+    capture ?? null
   );
   const provider: any = {
     verifyConfiguredChainId: jest.fn(async () => undefined),

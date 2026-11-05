@@ -231,7 +231,9 @@ describe('software-only prepared signing authority', () => {
       },
     };
     state = fixtureState();
-    keyring = new SoftwareKeyring(createKeyringHost(storage));
+    keyring = new SoftwareKeyring(createKeyringHost(storage), {
+      captureEvmSubmission: null,
+    });
     keyring.setVaultStateGetter(() => state);
     state.accounts.HDAccount[0] = await keyring.initializeWalletSecurely(
       PHRASE,

@@ -56,6 +56,9 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
         createVaultPersistence(storage));
       createRing = () =>
         new KeyringManager(createKeyringHost(storage), {
+          captureEvmSubmission: () => {
+            throw new Error('EVM submission is outside this fixture');
+          },
           hardwareManager: new HardwareWalletManager(),
         });
       sourceCrypto = require('crypto-js');

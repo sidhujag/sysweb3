@@ -107,6 +107,9 @@ const offlineLedger = {
 function manager(host, receive = true, hardwareManager, ledgerHost) {
   let controls;
   const options = {
+    captureEvmSubmission() {
+      throw new Error('EVM submission is outside this fixture');
+    },
     ...(hardwareManager
       ? { hardwareManager }
       : { ledgerHost: ledgerHost ?? offlineLedger }),
@@ -243,7 +246,16 @@ test('compiled browser host rejects missing atomic storage and never falls back 
     /fixed wallet storage/
   );
   assert.throws(
-    () => new KeyringManager({}, { ledgerHost: offlineLedger }),
+    () =>
+      new KeyringManager(
+        {},
+        {
+          captureEvmSubmission: () => {
+            throw new Error('EVM submission is outside this fixture');
+          },
+          ledgerHost: offlineLedger,
+        }
+      ),
     /Invalid keyring host/
   );
   const owner = manager(createKeyringHost(f.storage, { deviceUnlock: f.port }));
@@ -289,7 +301,13 @@ test('compiled fixed browser host preserves the existing storage namespace witho
   const sibling = manager(host, false);
   try {
     assert.throws(
-      () => new KeyringManager(undefined, { ledgerHost: offlineLedger }),
+      () =>
+        new KeyringManager(undefined, {
+          captureEvmSubmission: () => {
+            throw new Error('EVM submission is outside this fixture');
+          },
+          ledgerHost: offlineLedger,
+        }),
       /Invalid keyring host/
     );
     assert.throws(() => manager(host), /unavailable in this host/);
@@ -352,6 +370,9 @@ for (const sharedManager of [true, false]) {
       assert.throws(
         () =>
           new KeyringManager(host, {
+            captureEvmSubmission: () => {
+              throw new Error('EVM submission is outside this fixture');
+            },
             ...(ledgerHost ? { ledgerHost } : { hardwareManager }),
             receiveDeviceUnlock(value) {
               abandoned = value;

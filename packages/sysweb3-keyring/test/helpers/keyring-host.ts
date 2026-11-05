@@ -1,6 +1,7 @@
 import { HardwareWalletManager } from '../../src/hardware-wallet-manager';
 import { createKeyringHost } from '../../src/keyring-host';
 import { KeyringManager } from '../../src/keyring-manager';
+import { createTestSubmissionCapture } from './evm-submission';
 
 import type { KeyringHost } from '../../src/keyring-host';
 import type { KeyringManagerOptions } from '../../src/keyring-manager';
@@ -19,6 +20,7 @@ export function createTestKeyringHost(storage = testStorage()) {
 
 export const testHardware = () => ({
   hardwareManager: new HardwareWalletManager(),
+  captureEvmSubmission: createTestSubmissionCapture(),
 });
 
 export function createTestKeyring(host = createTestKeyringHost()) {

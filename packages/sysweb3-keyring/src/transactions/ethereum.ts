@@ -263,7 +263,7 @@ export class EthereumTransactions<
   public ledgerSigner: TLedger;
   private getNetwork: () => INetwork;
   private captureSigningContext?: () => () => void;
-  private readonly captureSubmissionLifecycle?: CaptureEvmSubmission;
+  private readonly captureSubmissionLifecycle: CaptureEvmSubmission | null;
   private abortController: AbortController;
   private getDecryptedPrivateKey: (
     targetAccount?: IEvmReplacementOptions['targetAccount']
@@ -312,9 +312,16 @@ export class EthereumTransactions<
     },
     ledgerSigner: TLedger,
     trezorSigner: TTrezor,
-    captureSigningContext?: () => () => void,
-    captureSubmissionLifecycle?: CaptureEvmSubmission
+    captureSigningContext: (() => () => void) | undefined,
+    captureSubmissionLifecycle: CaptureEvmSubmission | null
   ) {
+    if (
+      captureSubmissionLifecycle !== null &&
+      typeof captureSubmissionLifecycle !== 'function'
+    )
+      throw new TypeError(
+        'Ethereum transactions require an explicit submission capability'
+      );
     this.getNetwork = getNetwork;
     this.getDecryptedPrivateKey = (targetAccount) => {
       this.assertHardwareSignerAvailable(targetAccount);

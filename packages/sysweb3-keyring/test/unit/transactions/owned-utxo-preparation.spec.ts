@@ -78,7 +78,7 @@ async function fixture() {
     },
   };
   const host = createKeyringHost(storage);
-  const ring = new SoftwareKeyring(host);
+  const ring = new SoftwareKeyring(host, { captureEvmSubmission: null });
   rings.push(ring);
   ring.setVaultStateGetter(() => state);
   const account = await ring.initializeWalletSecurely(
@@ -419,7 +419,7 @@ it.each(['lock', 'network', 'network ABA', 'response body lock'])(
 
 it('revokes a held fee after a real software session is transferred away and back', async () => {
   const { ring, state, account, host } = await fixture();
-  const sibling = new SoftwareKeyring(host);
+  const sibling = new SoftwareKeyring(host, { captureEvmSubmission: null });
   sibling.setVaultStateGetter(() => state);
   rings.push(sibling);
   const started = deferred();
@@ -604,7 +604,7 @@ it('rejects a failed owned missing-path read without ambient fallback or partial
 it('rejects a held owned missing-path signature after actual keyring ownership ABA', async () => {
   const { ring, state, account, host, quote, accountReply } =
     await missingPathPreparation();
-  const sibling = new SoftwareKeyring(host);
+  const sibling = new SoftwareKeyring(host, { captureEvmSubmission: null });
   rings.push(sibling);
   sibling.setVaultStateGetter(() => state);
   const started = deferred();

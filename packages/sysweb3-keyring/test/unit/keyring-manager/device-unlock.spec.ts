@@ -120,7 +120,10 @@ function fixture() {
   const open = (host = createHost()) => {
     const receive = jest.fn<void, [DeviceUnlockControls]>();
     const ring = attach(
-      new SoftwareKeyring(host, { receiveDeviceUnlock: receive })
+      new SoftwareKeyring(host, {
+        captureEvmSubmission: null,
+        receiveDeviceUnlock: receive,
+      })
     );
     expect(receive).toHaveBeenCalledTimes(1);
     return { ring, controls: receive.mock.calls[0][0] };
@@ -149,11 +152,15 @@ function fixture() {
 it('provides no addressable device capability to an unconfigured host', async () => {
   const f = fixture();
   const host = createKeyringHost(f.storage);
-  const ring = new SoftwareKeyring(host);
+  const ring = new SoftwareKeyring(host, { captureEvmSubmission: null });
   rings.push(ring);
   const receive = jest.fn();
   expect(
-    () => new SoftwareKeyring(host, { receiveDeviceUnlock: receive })
+    () =>
+      new SoftwareKeyring(host, {
+        captureEvmSubmission: null,
+        receiveDeviceUnlock: receive,
+      })
   ).toThrow('Device unlock is unavailable in this host');
   expect(receive).not.toHaveBeenCalled();
   for (const name of [
@@ -385,7 +392,9 @@ it('moves the host owner on transfer and retires the source device controls', as
   const host = f.createHost();
   const source = await f.create(password, host);
   await expect(source.controls.issue(password, current)).resolves.toBe(true);
-  const target = f.attach(new SoftwareKeyring(host));
+  const target = f.attach(
+    new SoftwareKeyring(host, { captureEvmSubmission: null })
+  );
   const fresh = f.open(host);
   const started = deferred<void>();
   const release = deferred<void>();
@@ -448,7 +457,9 @@ it('refuses a held device resume when a password unlock on a receiver-free sibli
   const resume = device.controls.resume(current);
   await started.promise;
 
-  const winner = f.attach(new SoftwareKeyring(host));
+  const winner = f.attach(
+    new SoftwareKeyring(host, { captureEvmSubmission: null })
+  );
   await expect(winner.unlock(password)).resolves.toEqual({ canLogin: true });
   release.resolve(credential);
   await expect(resume).rejects.toThrow(
@@ -467,7 +478,9 @@ it('keeps a device winner through a competing password unlock and loser cleanup'
   await expect(device.controls.issue(password, current)).resolves.toBe(true);
   await device.ring.lockWallet();
 
-  const contender = f.attach(new SoftwareKeyring(host));
+  const contender = f.attach(
+    new SoftwareKeyring(host, { captureEvmSubmission: null })
+  );
   const get = jest.mocked(f.storage.get).getMockImplementation()!;
   const started = deferred<void>();
   const release = deferred<void>();
@@ -604,7 +617,8 @@ it('keeps ordinary password refusal on the default host without a pair read', as
   await ring.lockWallet();
   const plain = f.attach(
     new SoftwareKeyring(
-      createKeyringHost({ ...f.storage, readDeviceUnlockVaultPair: undefined })
+      createKeyringHost({ ...f.storage, readDeviceUnlockVaultPair: undefined }),
+      { captureEvmSubmission: null }
     )
   );
   await expect(plain.unlock(newPassword)).resolves.toEqual({ canLogin: false });
@@ -796,7 +810,9 @@ it('revokes a held device resume when a sibling takes and releases ownership bet
   const resume = device.controls.resume(current);
   await started.promise;
 
-  const sibling = f.attach(new SoftwareKeyring(host));
+  const sibling = f.attach(
+    new SoftwareKeyring(host, { captureEvmSubmission: null })
+  );
   await expect(sibling.unlock(password)).resolves.toEqual({ canLogin: true });
   expect(sibling.isUnlocked()).toBe(true);
   await sibling.lockWallet();
@@ -812,7 +828,9 @@ it('keeps a held owner enrollment current through a nonowner lock and destroy', 
   const f = fixture();
   const host = f.createHost();
   const owner = await f.create(password, host);
-  const sibling = f.attach(new SoftwareKeyring(host));
+  const sibling = f.attach(
+    new SoftwareKeyring(host, { captureEvmSubmission: null })
+  );
 
   const started = deferred<void>();
   const release = deferred<void>();

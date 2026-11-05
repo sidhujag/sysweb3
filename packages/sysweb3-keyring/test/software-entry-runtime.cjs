@@ -79,8 +79,10 @@ const storage = () => {
   const first = storage();
   const second = storage();
   const firstHost = createKeyringHost(first);
-  const a = new SoftwareKeyring(firstHost);
-  const b = new SoftwareKeyring(createKeyringHost(second));
+  const a = new SoftwareKeyring(firstHost, { captureEvmSubmission: null });
+  const b = new SoftwareKeyring(createKeyringHost(second), {
+    captureEvmSubmission: null,
+  });
   const aState = makeState();
   const bState = makeState();
   a.setVaultStateGetter(() => aState);
@@ -176,7 +178,9 @@ const storage = () => {
     await assert.rejects(a.importLedgerAccount(), {
       code: 'HARDWARE_SIGNER_UNAVAILABLE',
     });
-    const restarted = new SoftwareKeyring(firstHost);
+    const restarted = new SoftwareKeyring(firstHost, {
+      captureEvmSubmission: null,
+    });
     restarted.setVaultStateGetter(() => aState);
     try {
       await assert.rejects(

@@ -71,8 +71,8 @@ it('binds independent software authorities to their own encrypted storage across
   const secondHost = createKeyringHost(second.storage);
   const firstState = vaultState();
   const secondState = vaultState();
-  const a = new SoftwareKeyring(firstHost);
-  const b = new SoftwareKeyring(secondHost);
+  const a = new SoftwareKeyring(firstHost, { captureEvmSubmission: null });
+  const b = new SoftwareKeyring(secondHost, { captureEvmSubmission: null });
   a.setVaultStateGetter(() => firstState);
   b.setVaultStateGetter(() => secondState);
   try {
@@ -103,7 +103,9 @@ it('binds independent software authorities to their own encrypted storage across
     expect(typeof a.syscoinTransaction.getRecommendedFee).toBe('function');
     expect(first.records.get('vault')).toBe(firstCiphertext);
     expect(second.records.get('vault')).toBe(secondCiphertext);
-    const restarted = new SoftwareKeyring(firstHost);
+    const restarted = new SoftwareKeyring(firstHost, {
+      captureEvmSubmission: null,
+    });
     restarted.setVaultStateGetter(() => firstState);
     try {
       await expect(restarted.unlock(password)).rejects.toThrow(
@@ -126,7 +128,9 @@ it('reuses the explicitly injected Syscoin signer ports after locking and unlock
   const { storage } = memoryStorage();
   const ledger = jest.fn();
   const state = vaultState();
-  const { binding } = prepareKeyringHost(createKeyringHost(storage));
+  const { binding } = prepareKeyringHost(createKeyringHost(storage), {
+    captureEvmSubmission: null,
+  });
   const keyring = new KeyringCore(binding, {
     ledgerSigner: undefined,
     trezorSigner: undefined,
@@ -189,7 +193,9 @@ describe.each(missingHardwareCases)(
           accounts: { [type]: { 0: { address, ...metadata } } } as any,
         }),
         undefined,
-        undefined
+        undefined,
+        undefined,
+        null
       );
     });
     const operations: Array<
@@ -252,7 +258,8 @@ it.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
     const state = vaultState();
     state.activeAccount.type = type;
     const keyring = new SoftwareKeyring(
-      createKeyringHost(memoryStorage().storage)
+      createKeyringHost(memoryStorage().storage),
+      { captureEvmSubmission: null }
     );
     keyring.setVaultStateGetter(() => state);
     await expect(
@@ -267,12 +274,17 @@ it('rejects forged or mixed software hosts before any storage work', () => {
   const second = memoryStorage();
   expect(
     () =>
-      new SoftwareKeyring({
-        storage: first.storage,
-        vaultPersistence: createVaultPersistence(second.storage),
-      } as any)
+      new SoftwareKeyring(
+        {
+          storage: first.storage,
+          vaultPersistence: createVaultPersistence(second.storage),
+        } as any,
+        { captureEvmSubmission: null }
+      )
   ).toThrow('Invalid keyring host');
-  expect(() => new SoftwareKeyring({} as any)).toThrow('Invalid keyring host');
+  expect(
+    () => new SoftwareKeyring({} as any, { captureEvmSubmission: null })
+  ).toThrow('Invalid keyring host');
   expect(first.storage.get).not.toHaveBeenCalled();
   expect(first.storage.set).not.toHaveBeenCalled();
   expect(second.storage.get).not.toHaveBeenCalled();
@@ -282,9 +294,11 @@ it('rejects forged or mixed software hosts before any storage work', () => {
 it('rejects cross-authority session transfer without changing either session, and allows same-host transfers', async () => {
   const firstHost = createKeyringHost(memoryStorage().storage);
   const secondHost = createKeyringHost(memoryStorage().storage);
-  const a = new SoftwareKeyring(firstHost);
-  const b = new SoftwareKeyring(secondHost);
-  const sibling = new SoftwareKeyring(firstHost);
+  const a = new SoftwareKeyring(firstHost, { captureEvmSubmission: null });
+  const b = new SoftwareKeyring(secondHost, { captureEvmSubmission: null });
+  const sibling = new SoftwareKeyring(firstHost, {
+    captureEvmSubmission: null,
+  });
   const aState = vaultState();
   const bState = vaultState();
   a.setVaultStateGetter(() => aState);
@@ -337,7 +351,7 @@ it('cannot rebind a software host through the legacy storage setter', async () =
   const host = createKeyringHost(first.storage);
   const replacement = memoryStorage();
   Object.assign(first.storage, replacement.storage);
-  const keyring = new SoftwareKeyring(host);
+  const keyring = new SoftwareKeyring(host, { captureEvmSubmission: null });
   const state = vaultState();
   keyring.setVaultStateGetter(() => state);
   try {
@@ -375,7 +389,9 @@ it('rejects raw dependency objects and reuse of a consumed internal host binding
   ).toThrow('Invalid keyring host binding');
   expect(first.storage.get).not.toHaveBeenCalled();
   expect(second.storage.get).not.toHaveBeenCalled();
-  const { binding } = prepareKeyringHost(createKeyringHost(first.storage));
+  const { binding } = prepareKeyringHost(createKeyringHost(first.storage), {
+    captureEvmSubmission: null,
+  });
   const keyring = new KeyringCore(binding, hardware);
   try {
     expect(() => new KeyringCore(binding, hardware)).toThrow(
@@ -384,4 +400,14 @@ it('rejects raw dependency objects and reuse of a consumed internal host binding
   } finally {
     await keyring.destroy();
   }
+});
+
+it('requires an explicit EVM submission mode for software-only instances', () => {
+  const host = createKeyringHost(memoryStorage().storage);
+  expect(() => Reflect.construct(SoftwareKeyring, [host])).toThrow(
+    'Keyring host requires an explicit EVM submission capability'
+  );
+  expect(
+    () => new SoftwareKeyring(host, { captureEvmSubmission: null })
+  ).not.toThrow();
 });

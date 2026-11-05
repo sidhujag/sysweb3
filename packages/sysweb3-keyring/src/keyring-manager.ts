@@ -10,6 +10,7 @@ import { TrezorKeyring } from './trezor';
 
 import type { KeyringHost, KeyringOptions } from './keyring-host';
 import type { LedgerHost } from './ledger/host-types';
+import type { CaptureEvmSubmission } from './transactions/evm-submission';
 import type { IKeyringManager } from './types';
 
 export type { ISysAccount } from './keyring-core';
@@ -20,8 +21,12 @@ export type {
   KeyringStoragePort,
 } from './keyring-core';
 
-export type KeyringManagerOptions = KeyringOptions &
-  (
+export type KeyringManagerOptions = Omit<
+  KeyringOptions,
+  'captureEvmSubmission'
+> & {
+  captureEvmSubmission: CaptureEvmSubmission;
+} & (
     | { ledgerHost: LedgerHost; hardwareManager?: never }
     | { ledgerHost?: never; hardwareManager: HardwareWalletManager }
   );
@@ -36,6 +41,8 @@ export class KeyringManager
     if ((!hardwareManager && !ledgerHost) || (hardwareManager && ledgerHost)) {
       throw new Error('Supply exactly one hardware manager or Ledger host');
     }
+    if (typeof options.captureEvmSubmission !== 'function')
+      throw new TypeError('Browser keyring requires durable EVM submission');
     const { binding, publishControls } = prepareKeyringHost(host, options);
     const manager = hardwareManager ?? new HardwareWalletManager(ledgerHost);
     const trezorSigner = new TrezorKeyring();

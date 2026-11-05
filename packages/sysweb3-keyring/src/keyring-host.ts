@@ -77,7 +77,7 @@ export function createKeyringHost(
 }
 
 export type KeyringOptions = {
-  captureEvmSubmission?: CaptureEvmSubmission;
+  captureEvmSubmission: CaptureEvmSubmission | null;
   receiveDeviceUnlock?(controls: DeviceUnlockControls): void;
 };
 
@@ -88,7 +88,7 @@ export interface KeyringHostBinding {
 
 type PreparedHost = Omit<BoundHost, 'deviceUnlockPort'> & {
   authority: KeyringHost;
-  captureEvmSubmission?: CaptureEvmSubmission;
+  captureEvmSubmission: CaptureEvmSubmission | null;
   deviceUnlock?: {
     port: DeviceUnlockPort;
     receive(controls: DeviceUnlockControls): void;
@@ -110,14 +110,18 @@ export function takeKeyringHostBinding(binding: KeyringHostBinding) {
   return prepared;
 }
 
-export function prepareKeyringHost(
-  host: KeyringHost,
-  options?: KeyringOptions
-) {
+export function prepareKeyringHost(host: KeyringHost, options: KeyringOptions) {
   const bound = hosts.get(host);
   if (!bound) throw new TypeError('Invalid keyring host');
   const { deviceUnlockPort, ...storage } = bound;
   const { captureEvmSubmission, receiveDeviceUnlock } = options ?? {};
+  if (
+    captureEvmSubmission !== null &&
+    typeof captureEvmSubmission !== 'function'
+  )
+    throw new TypeError(
+      'Keyring host requires an explicit EVM submission capability'
+    );
   const dependencies = { ...storage, authority: host, captureEvmSubmission };
   if (receiveDeviceUnlock === undefined)
     return { binding: bindHost(dependencies) };
