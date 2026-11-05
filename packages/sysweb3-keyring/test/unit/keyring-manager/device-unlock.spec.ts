@@ -225,6 +225,39 @@ it('authenticates issue, resumes cold from the same real pair and still requires
   expect(JSON.stringify([...f.records])).toBe(before);
 });
 
+for (const revocation of ['host guard', 'keyring lock'] as const) {
+  it(`reports a definitive password refusal for the same pair after ${revocation}`, async () => {
+    const f = fixture();
+    const { ring, controls } = await f.create();
+    const rereadStarted = deferred<void>();
+    const release = deferred<void>();
+    const readPair = f.readPair.getMockImplementation()!;
+    f.readPair
+      .mockImplementationOnce(readPair)
+      .mockImplementationOnce(async () => {
+        const pair = await readPair();
+        rereadStarted.resolve();
+        await release.promise;
+        return pair;
+      });
+    let active = true;
+    const issuing = controls.issue(newPassword, () => {
+      if (!active) throw new Error('Host owner retired');
+    });
+    try {
+      // With a wrong password, this second read is reached only after AEAD rejects.
+      await rereadStarted.promise;
+      if (revocation === 'host guard') active = false;
+      else await ring.lockWallet();
+    } finally {
+      release.resolve();
+    }
+    await expect(issuing).resolves.toBe(false);
+    expect(f.writeCredential).not.toHaveBeenCalled();
+    expect(ring.isUnlocked()).toBe(revocation === 'host guard');
+  });
+}
+
 it('rejects a replaced pair even if the old key is relabelled with the new fingerprint', async () => {
   const f = fixture();
   const { ring, controls } = await f.create();
