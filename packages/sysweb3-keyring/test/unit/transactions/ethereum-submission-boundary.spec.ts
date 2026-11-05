@@ -4,6 +4,7 @@ import { Transaction, Wallet } from 'ethers';
 import { BigNumber, serializeTransaction } from '../../../src/ethers-v6';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import { KeyringAccountType } from '../../../src/types';
+import { createTestSubmissionCapture } from '../../helpers/evm-submission';
 
 const specializedApproval = {
   mode: 'specialized' as const,
@@ -82,7 +83,9 @@ describe('formatted EVM transaction submission boundary', () => {
       () => ({ address: ADDRESS, decryptedPrivateKey: PRIVATE_KEY }),
       () => state,
       ledger,
-      trezor
+      trezor,
+      undefined,
+      createTestSubmissionCapture()
     );
     provider = transaction.web3Provider as any;
     provider.getFeeData = jest.fn().mockResolvedValue({

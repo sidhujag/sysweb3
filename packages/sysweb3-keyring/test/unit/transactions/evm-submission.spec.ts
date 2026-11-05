@@ -1,5 +1,4 @@
 import { Wallet, Transaction } from 'ethers';
-
 import {
   captureEvmSubmission,
   submitSignedEvmTransaction,
@@ -25,25 +24,36 @@ const deferred = () => {
   });
   return { promise, resolve };
 };
+import { createTestSubmissionCapture } from '../../helpers/evm-submission';
+
+const envelope = (type = 2, creation = false) => ({
+  chainId: 7654321,
+  nonce: 7,
+  ...(creation ? { data: '0x6000' } : { to: wallet.address }),
+  gasLimit: 42000,
+  value: 123,
+  type,
+  ...(type === 2
+    ? { maxFeePerGas: 3, maxPriorityFeePerGas: 1 }
+    : { gasPrice: 2 }),
+  ...(type
+    ? {
+        accessList: [
+          { address: wallet.address, storageKeys: [`0x${'22'.repeat(32)}`] },
+        ],
+      }
+    : {}),
+});
 const raw = (type = 2, creation = false) =>
-  wallet.signTransaction({
-    chainId: 7654321,
-    nonce: 7,
-    ...(creation ? { data: '0x6000' } : { to: wallet.address }),
-    gasLimit: 42000,
-    value: 123,
-    type,
-    ...(type === 2
-      ? { maxFeePerGas: 3, maxPriorityFeePerGas: 1 }
-      : { gasPrice: 2 }),
-    ...(type
-      ? {
-          accessList: [
-            { address: wallet.address, storageKeys: [`0x${'22'.repeat(32)}`] },
-          ],
-        }
-      : {}),
-  });
+  wallet.signTransaction(envelope(type, creation));
+const expected = (type = 2, creation = false) =>
+  Transaction.from(envelope(type, creation)).unsignedSerialized;
+const capture = () =>
+  captureEvmSubmission(
+    context(),
+    () => undefined,
+    createTestSubmissionCapture()
+  );
 
 it.each([0, 1, 2])(
   'persists exact type%s bytes and captured immutable context before dispatch',
@@ -69,7 +79,13 @@ it.each([0, 1, 2])(
     const broadcast = jest.fn(async (bytes: string) => ({
       hash: Transaction.from(bytes).hash,
     }));
-    const promise = submitSignedEvmTransaction(signed, broadcast, boundary);
+    const promise = submitSignedEvmTransaction(
+      signed,
+      broadcast,
+      boundary,
+      undefined,
+      expected(type, type === 2)
+    );
     await entered.promise;
     expect(broadcast).not.toHaveBeenCalled();
     expect(persisted.rawTransaction).toBe(signed);
@@ -113,9 +129,15 @@ it.each(['reject', 'lock', 'host-revision', 'before-broadcast'])(
       })
     );
     const broadcast = jest.fn(),
-      promise = submitSignedEvmTransaction(signed, broadcast, boundary, () => {
-        if (failure === 'before-broadcast') throw Error('expired');
-      });
+      promise = submitSignedEvmTransaction(
+        signed,
+        broadcast,
+        boundary,
+        () => {
+          if (failure === 'before-broadcast') throw Error('expired');
+        },
+        expected()
+      );
     const outcome = promise.catch((error) => error);
     await entered.promise;
     if (failure === 'lock') current = false;
@@ -156,7 +178,9 @@ it('derives uncertainty only from its local transport invocation, never from pro
           transactionNotBroadcast: true,
         });
       },
-      boundary
+      boundary,
+      undefined,
+      expected()
     ).catch((e) => e);
     expect(evmSubmissionFailure(error)).toMatchObject({
       transactionNotBroadcast: !dispatch,
@@ -186,7 +210,13 @@ it('refuses mismatched signed account/chain before persistence and dispatch', as
       })
     );
     await expect(
-      submitSignedEvmTransaction(signed, broadcast, boundary)
+      submitSignedEvmTransaction(
+        signed,
+        broadcast,
+        boundary,
+        undefined,
+        expected()
+      )
     ).rejects.toThrow('does not match');
   }
   expect(persistSigned).not.toHaveBeenCalled();
@@ -195,7 +225,11 @@ it('refuses mismatched signed account/chain before persistence and dispatch', as
 
 it('rejects async capture/guards rather than silently accepting deferred admission', () => {
   expect(() =>
-    captureEvmSubmission(context(), (async () => undefined) as any)
+    captureEvmSubmission(
+      context(),
+      (async () => undefined) as any,
+      createTestSubmissionCapture()
+    )
   ).toThrow('synchronously');
   expect(() =>
     captureEvmSubmission(
@@ -217,13 +251,15 @@ it('preserves provider error class and diagnostic fields while owning submission
   const signed = await raw(),
     providerError = new RpcError('rpc failed');
   Object.assign(providerError, { transactionNotBroadcast: true });
-  const boundary = captureEvmSubmission(context(), () => undefined);
+  const boundary = capture();
   const error = await submitSignedEvmTransaction(
     signed,
     async () => {
       throw providerError;
     },
-    boundary
+    boundary,
+    undefined,
+    expected()
   ).catch((e) => e);
   expect(error).toBe(providerError);
   expect(error).toBeInstanceOf(RpcError);
@@ -253,7 +289,9 @@ it('preserves frozen provider diagnostics without accepting its forged dispatch 
     async () => {
       throw providerError;
     },
-    captureEvmSubmission(context(), () => undefined)
+    capture(),
+    undefined,
+    expected()
   ).catch((e) => e);
   expect(error).toMatchObject({
     code: -32000,
@@ -266,33 +304,31 @@ it('preserves frozen provider diagnostics without accepting its forged dispatch 
   expect(evmSubmissionFailure(error).transactionNotBroadcast).toBe(false);
 });
 
-it('pins a public caller boundary against mutation during persistence', async () => {
-  const entered = deferred(),
-    ack = deferred();
-  let current = true,
-    saved!: EvmSignedSubmission;
-  const boundary = {
-    context: context(),
-    assertCurrent: () => {
-      if (!current) throw Error('revoked');
-    },
-    async persistSigned(record: EvmSignedSubmission) {
-      saved = record;
-      entered.resolve();
-      await ack.promise;
-    },
-  };
-  const broadcast = jest.fn(),
-    result = submitSignedEvmTransaction(await raw(), broadcast, boundary).catch(
-      (e) => e
-    );
-  await entered.promise;
-  boundary.assertCurrent = () => undefined;
-  boundary.context.network.chainId = 1;
-  current = false;
-  ack.resolve();
-  expect(await result).toMatchObject({ transactionNotBroadcast: true });
-  expect(saved.context.network.chainId).toBe(7654321);
+it('rejects an omitted lifecycle, forged boundary, or missing expected envelope', async () => {
+  expect(() =>
+    captureEvmSubmission(context(), () => undefined, undefined as never)
+  ).toThrow('durable EVM submission lifecycle is required');
+  const persistSigned = jest.fn(async () => undefined);
+  const lifecycle = () => ({ assertCurrent: () => undefined, persistSigned });
+  const boundary = captureEvmSubmission(context(), () => undefined, lifecycle);
+  const broadcast = jest.fn();
+  const bytes = await raw();
+  for (const [candidate, approved] of [
+    [undefined, expected()],
+    [{ ...boundary }, expected()],
+    [boundary, undefined],
+  ]) {
+    await expect(
+      submitSignedEvmTransaction(
+        bytes,
+        broadcast,
+        candidate as never,
+        undefined,
+        approved as never
+      )
+    ).rejects.toMatchObject({ transactionNotBroadcast: true });
+  }
+  expect(persistSigned).not.toHaveBeenCalled();
   expect(broadcast).not.toHaveBeenCalled();
 });
 
@@ -307,7 +343,13 @@ it('refuses a fire-and-forget persistence callback without dispatch', async () =
   );
   const broadcast = jest.fn();
   await expect(
-    submitSignedEvmTransaction(await raw(), broadcast, boundary)
+    submitSignedEvmTransaction(
+      await raw(),
+      broadcast,
+      boundary,
+      undefined,
+      expected()
+    )
   ).rejects.toMatchObject({
     transactionNotBroadcast: true,
     message: expect.stringContaining('acknowledgement Promise'),
@@ -326,7 +368,9 @@ it('preserves plain JSON-RPC error fields without accepting its dispatch claim',
         transactionNotBroadcast: true,
       };
     },
-    captureEvmSubmission(context(), () => undefined)
+    capture(),
+    undefined,
+    expected()
   ).catch((e) => e);
   expect(error).toMatchObject({
     message: 'rpc rejection',
@@ -338,19 +382,25 @@ it('preserves plain JSON-RPC error fields without accepting its dispatch claim',
 });
 
 it('does not retain a forged signed hash when rejection precedes signed-byte validation', async () => {
-  const boundary = {
-    context: context(),
-    assertCurrent() {
-      throw Object.assign(Error('expired'), {
-        signedTransactionHash: '0xforged',
-        transactionNotBroadcast: false,
-      });
+  let current = true;
+  const boundary = captureEvmSubmission(
+    context(),
+    () => {
+      if (!current)
+        throw Object.assign(Error('expired'), {
+          signedTransactionHash: '0xforged',
+          transactionNotBroadcast: false,
+        });
     },
-  };
+    createTestSubmissionCapture()
+  );
+  current = false;
   const error = await submitSignedEvmTransaction(
     await raw(),
     jest.fn(),
-    boundary
+    boundary,
+    undefined,
+    expected()
   ).catch((e) => e);
   expect(error.transactionNotBroadcast).toBe(true);
   expect(error.signedTransactionHash).toBeUndefined();

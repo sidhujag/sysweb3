@@ -28,6 +28,7 @@ import { BigNumber, normalizeTransactionRequest } from '../../../src/ethers-v6';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import { sendLocalEvmTransaction } from '../../../src/transactions/evm-local-signer';
 import { KeyringAccountType } from '../../../src/types';
+import { createTestSubmissionCapture } from '../../helpers/evm-submission';
 
 const specializedApproval = {
   mode: 'specialized' as const,
@@ -195,7 +196,9 @@ function fixture() {
         },
       } as any),
     {} as any,
-    {} as any
+    {} as any,
+    undefined,
+    createTestSubmissionCapture()
   );
   Object.defineProperty(sdk, 'web3Provider', { get: () => provider });
   return { sdk, provider, getKey };

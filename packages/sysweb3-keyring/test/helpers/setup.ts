@@ -7,7 +7,8 @@ import { INetworkType } from '@sidhujag/sysweb3-network';
 import { webcrypto } from 'crypto';
 import CryptoJS from 'crypto-js';
 
-import { createInitializedTestKeyring } from './keyring-host';
+import { createTestSubmissionCapture } from './evm-submission';
+import { createInitializedTestKeyring, testHardware } from './keyring-host';
 import { KeyringAccountType, KeyringManager } from '../../src';
 import { createVaultPersistence } from '../../src/storage-core';
 
@@ -772,7 +773,10 @@ export const createFreshTestKeyring = async (
       password,
       vaultStateGetter,
       host,
-      ledgerHost ? { ledgerHost } : undefined
+      {
+        ...(ledgerHost ? { ledgerHost } : testHardware()),
+        captureEvmSubmission: createTestSubmissionCapture(),
+      }
     );
   } finally {
     randomBytes.mockRestore();

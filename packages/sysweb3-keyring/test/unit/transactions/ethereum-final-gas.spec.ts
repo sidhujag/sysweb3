@@ -6,6 +6,7 @@ import { EvmGasLimitError } from '../../../src/evm-fees';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import { signTransaction } from '../../../src/transactions/evm-local-signer';
 import { KeyringAccountType } from '../../../src/types';
+import { createTestSubmissionCapture } from '../../helpers/evm-submission';
 
 const specializedApproval = {
   mode: 'specialized' as const,
@@ -65,7 +66,9 @@ function fixture(kind: KeyringAccountType, chainId = 1) {
     getKey,
     () => state,
     ledger,
-    trezor
+    trezor,
+    undefined,
+    createTestSubmissionCapture()
   );
   const provider = {
     verifyConfiguredChainId: jest.fn().mockResolvedValue(undefined),

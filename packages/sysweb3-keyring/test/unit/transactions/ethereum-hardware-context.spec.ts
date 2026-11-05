@@ -12,6 +12,7 @@ import { Wallet } from 'ethers/wallet';
 import { BigNumber, serializeTransaction } from '../../../src/ethers-v6';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import { KeyringAccountType } from '../../../src/types';
+import { createTestSubmissionCapture } from '../../helpers/evm-submission';
 
 const specializedApproval = {
   mode: 'specialized' as const,
@@ -134,7 +135,8 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
             if (sessionGeneration !== captured)
               throw new Error('Wallet signing context changed');
           };
-        }
+        },
+        createTestSubmissionCapture()
       );
       jest.spyOn(sdk, 'setWeb3Provider').mockImplementation((network: any) => {
         (sdk as any)._web3Provider =
@@ -1120,7 +1122,8 @@ describe('EVM cancellation signing context', () => {
         return () => {
           if (captured !== session) throw new Error('Session changed');
         };
-      }
+      },
+      createTestSubmissionCapture()
     );
     Object.defineProperty(sdk, 'web3Provider', {
       get: () => currentProvider,

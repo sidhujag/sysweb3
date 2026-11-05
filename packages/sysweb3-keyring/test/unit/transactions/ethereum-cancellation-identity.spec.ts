@@ -8,6 +8,7 @@ import { BigNumber } from '../../../src/ethers-v6';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import { sendLocalEvmTransaction } from '../../../src/transactions/evm-local-signer';
 import { KeyringAccountType } from '../../../src/types';
+import { createTestSubmissionCapture } from '../../helpers/evm-submission';
 
 jest.mock('../../../src/providers', () => ({
   ...jest.requireActual('../../../src/providers'),
@@ -106,7 +107,9 @@ describe('cancellation original identity admission', () => {
       getKey,
       () => state,
       { evm: { signEVMTransaction: deny } } as any,
-      { signEthTransaction: deny } as any
+      { signEthTransaction: deny } as any,
+      undefined,
+      createTestSubmissionCapture()
     );
     Object.defineProperty(sdk, 'web3Provider', { get: () => provider });
   });

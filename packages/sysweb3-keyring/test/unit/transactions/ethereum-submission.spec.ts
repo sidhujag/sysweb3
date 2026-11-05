@@ -94,7 +94,7 @@ const operations = [
   'erc721',
   'erc1155',
 ] as const;
-function fixture(kind: KeyringAccountType, capture: CaptureEvmSubmission) {
+function fixture(kind: KeyringAccountType, capture?: CaptureEvmSubmission) {
   const network = {
     kind: 'ethereum',
     chainId: 7654321,
@@ -128,9 +128,13 @@ function fixture(kind: KeyringAccountType, capture: CaptureEvmSubmission) {
       ),
     })),
   };
+  const keyAccess = jest.fn(() => ({
+    address: wallet.address,
+    decryptedPrivateKey: key,
+  }));
   const sdk = new EthereumTransactions(
     () => network,
-    () => ({ address: wallet.address, decryptedPrivateKey: key }),
+    keyAccess,
     () => state,
     ledger,
     trezor,
@@ -172,7 +176,8 @@ function fixture(kind: KeyringAccountType, capture: CaptureEvmSubmission) {
   const submit = async (
     operation: (typeof operations)[number],
     previewOnly = false,
-    saveTrezorTx?: () => void
+    saveTrezorTx?: () => void,
+    needsGasEstimate = false
   ) => {
     const originalTx = Transaction.from(await original);
     provider.getTransaction.mockResolvedValue({
@@ -200,7 +205,7 @@ function fixture(kind: KeyringAccountType, capture: CaptureEvmSubmission) {
           chainId: network.chainId,
           value: 123,
           nonce: 7,
-          gasLimit: 42000,
+          gasLimit: needsGasEstimate ? undefined : 42000,
           maxFeePerGas: 3,
           maxPriorityFeePerGas: 1,
         } as any,
@@ -234,6 +239,8 @@ function fixture(kind: KeyringAccountType, capture: CaptureEvmSubmission) {
     state,
     network,
     provider,
+    device,
+    keyAccess,
     submit,
     lock: () => {
       sessionCurrent = false;
@@ -368,6 +375,50 @@ it('keeps exact ERC20 amounts on the ERC20 capture and persistence route', async
   expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
   expect(provider.sendTransaction).toHaveBeenCalledWith(saved.rawTransaction);
 });
+
+it.each(operations)(
+  'refuses %s without durable authority before RPC or signer entry',
+  async (operation) => {
+    const f = fixture(KeyringAccountType.HDAccount);
+    await expect(f.submit(operation)).rejects.toThrow(
+      'durable EVM submission lifecycle is required'
+    );
+    for (const method of Object.values(f.provider))
+      expect(method).not.toHaveBeenCalled();
+    expect(f.keyAccess).not.toHaveBeenCalled();
+    expect(f.device).not.toHaveBeenCalled();
+  }
+);
+
+it.each([
+  KeyringAccountType.HDAccount,
+  KeyringAccountType.Ledger,
+  KeyringAccountType.Trezor,
+])(
+  'rechecks %s durable host authority after RPC and before key/device entry',
+  async (kind) => {
+    let current = true;
+    const persistSigned = jest.fn(async () => undefined);
+    const f = fixture(kind, () => ({
+      assertCurrent() {
+        if (!current) throw new Error('Durable authority revoked');
+      },
+      persistSigned,
+    }));
+    f.provider.estimateGas.mockImplementationOnce(async () => {
+      current = false;
+      return BigNumber.from(42000);
+    });
+    await expect(f.submit('send', false, undefined, true)).rejects.toThrow(
+      'Durable authority revoked'
+    );
+    expect(f.provider.estimateGas).toHaveBeenCalledTimes(1);
+    expect(f.keyAccess).not.toHaveBeenCalled();
+    expect(f.device).not.toHaveBeenCalled();
+    expect(persistSigned).not.toHaveBeenCalled();
+    expect(f.provider.sendTransaction).not.toHaveBeenCalled();
+  }
+);
 
 it.each(['cancel', 'speed-up'] as const)(
   'keeps %s preview read-only without a persistence capability',

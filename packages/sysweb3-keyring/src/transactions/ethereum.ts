@@ -415,8 +415,10 @@ export class EthereumTransactions<
     network: INetwork,
     assertCurrent: () => void,
     originalHash?: string
-  ) =>
-    captureEvmSubmission(
+  ) => {
+    if (!this.captureSubmissionLifecycle)
+      throw new TypeError('A durable EVM submission lifecycle is required');
+    return captureEvmSubmission(
       {
         operation,
         account: { address: account.address, type, id },
@@ -431,6 +433,7 @@ export class EthereumTransactions<
       assertCurrent,
       this.captureSubmissionLifecycle
     );
+  };
 
   // Getter that automatically ensures providers are initialized when accessed
   public get web3Provider(): CustomJsonRpcProvider {
@@ -1135,11 +1138,11 @@ export class EthereumTransactions<
         throw new Error('Wallet signing context changed');
       }
     };
-    const assertCurrent = () => {
+    const assertSigningCurrent = () => {
       assertHostContext();
       assertKeyringContext();
     };
-    assertCurrent();
+    assertSigningCurrent();
     const submission = previewOnly
       ? undefined
       : this.captureSubmission(
@@ -1148,9 +1151,10 @@ export class EthereumTransactions<
           activeAccountType,
           activeAccountId,
           activeNetwork,
-          assertCurrent,
+          assertSigningCurrent,
           txHash
         );
+    const assertCurrent = submission?.assertCurrent ?? assertSigningCurrent;
     const currentEip1559Fees = async () => {
       const feeData = await this.getFeeDataWithDynamicMaxPriorityFeePerGas(
         provider
@@ -1283,7 +1287,7 @@ export class EthereumTransactions<
 
     const maximumFee = BigNumber.from(feePlan.maximumFee);
     assertCurrent();
-    if (previewOnly)
+    if (!submission)
       return {
         isCanceled: false,
         error: false,
@@ -1622,7 +1626,7 @@ export class EthereumTransactions<
       provider,
       assertCurrent: assertKeyringCurrent,
     } = this.captureEvmSigningContext();
-    const assertCurrent = () => {
+    const assertSigningCurrent = () => {
       assertHostCurrent();
       assertKeyringCurrent();
     };
@@ -1630,15 +1634,15 @@ export class EthereumTransactions<
       assertCurrent();
       beforeBroadcast();
     };
-    assertCurrent();
     const submission = this.captureSubmission(
       'send',
       activeAccount,
       activeAccountType,
       activeAccountId,
       activeNetwork,
-      assertCurrent
+      assertSigningCurrent
     );
+    const assertCurrent = submission.assertCurrent;
 
     if (mode === 'reviewed-native') {
       const { transaction } = snapshotPreparedEvmRequest({
@@ -1657,7 +1661,6 @@ export class EthereumTransactions<
       });
       const minimum = this.gasOverrides.minGasLimit;
       if (
-        !submission.persistSigned ||
         transaction.data !== '0x' ||
         BigInt(transaction.value) === 0n ||
         BigInt(transaction.gasLimit) < 21000n ||
@@ -2096,7 +2099,7 @@ export class EthereumTransactions<
       throw new Error('Replacement fee approval required');
     }
     let signing: ReturnType<typeof this.captureEvmSigningContext> | undefined;
-    const assertCurrent = () => {
+    const assertSigningCurrent = () => {
       const result = assertCurrentContext?.() as unknown;
       assertSynchronousOriginalValidation(
         result,
@@ -2107,16 +2110,16 @@ export class EthereumTransactions<
       signing?.assertCurrent();
     };
     const assertBeforeBroadcast = () => {
-      assertCurrent();
+      assertSigningCurrent();
       beforeBroadcast?.();
-      assertCurrent();
+      assertSigningCurrent();
     };
     const assertSignedSender = (signedTx: string) => {
       if (Transaction.from(signedTx).from?.toLowerCase() !== expectedSender) {
         throw new Error('Replacement signature does not match account');
       }
     };
-    assertCurrent();
+    assertSigningCurrent();
     const state = this.getState();
     const activeAccountType =
       options.targetAccount?.type ?? state.activeAccountType;
@@ -2138,7 +2141,7 @@ export class EthereumTransactions<
     const expectedSender = activeAccount.address.toLowerCase();
     const requestedHash = txHash.toLowerCase();
     const provider = this.web3Provider;
-    assertCurrent();
+    assertSigningCurrent();
     const submission = previewOnly
       ? undefined
       : this.captureSubmission(
@@ -2147,9 +2150,10 @@ export class EthereumTransactions<
           activeAccountType,
           activeAccountId,
           activeNetwork,
-          assertCurrent,
+          assertSigningCurrent,
           txHash
         );
+    const assertCurrent = submission?.assertCurrent ?? assertSigningCurrent;
     const validateLookup = (transaction: TransactionResponse | null) => {
       assertCurrent();
       if (!transaction) return null;
@@ -2288,7 +2292,7 @@ export class EthereumTransactions<
             maxPriorityFeePerGas: newGasValues.maxPriorityFeePerGas,
           }),
     };
-    if (previewOnly)
+    if (!submission)
       return { isSpeedUp: false, maximumFee: maximumFee.toString() };
     if (maximumFee.gt(approvedMaximumFee!))
       throw new Error('Replacement fee exceeds approval');
@@ -2554,7 +2558,7 @@ export class EthereumTransactions<
       activeAccountId,
       activeNetwork,
       provider,
-      assertCurrent,
+      assertCurrent: assertSigningCurrent,
     } = this.captureEvmSigningContext();
     const activeAccountAddress = activeAccount.address;
     if (
@@ -2574,8 +2578,9 @@ export class EthereumTransactions<
       activeAccountType,
       activeAccountId,
       activeNetwork,
-      assertCurrent
+      assertSigningCurrent
     );
+    const assertCurrent = submission.assertCurrent;
     ({ gasPrice, isLegacy, maxFeePerGas, maxPriorityFeePerGas } =
       await this.resolveEvmFeeParams(
         {
@@ -2885,7 +2890,7 @@ export class EthereumTransactions<
       activeAccountId,
       activeNetwork,
       provider,
-      assertCurrent,
+      assertCurrent: assertSigningCurrent,
     } = this.captureEvmSigningContext();
     if ('tokenAmountUnits' in request)
       throw new Error('ERC20 amount is not allowed for NFT transfers');
@@ -2896,8 +2901,9 @@ export class EthereumTransactions<
       activeAccountType,
       activeAccountId,
       activeNetwork,
-      assertCurrent
+      assertSigningCurrent
     );
+    const assertCurrent = submission.assertCurrent;
     if (tokenId === undefined || tokenId === null) {
       throw new Error('ERC721 tokenId is required');
     }
@@ -3212,7 +3218,7 @@ export class EthereumTransactions<
       activeAccountId,
       activeNetwork,
       provider,
-      assertCurrent,
+      assertCurrent: assertSigningCurrent,
     } = this.captureEvmSigningContext();
     if ('tokenAmountUnits' in request)
       throw new Error('ERC20 amount is not allowed for NFT transfers');
@@ -3223,8 +3229,9 @@ export class EthereumTransactions<
       activeAccountType,
       activeAccountId,
       activeNetwork,
-      assertCurrent
+      assertSigningCurrent
     );
+    const assertCurrent = submission.assertCurrent;
     ({ gasPrice, isLegacy, maxFeePerGas, maxPriorityFeePerGas } =
       await this.resolveEvmFeeParams(
         {

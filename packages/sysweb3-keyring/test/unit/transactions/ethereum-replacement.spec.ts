@@ -14,7 +14,12 @@ import {
   sendLocalEvmTransaction,
 } from '../../../src/transactions/evm-local-signer';
 import { KeyringAccountType } from '../../../src/types';
-import { createTestKeyring } from '../../helpers/keyring-host';
+import {
+  createTestSubmissionCapture,
+  testSubmissionBoundary,
+} from '../../helpers/evm-submission';
+import { createTestKeyringHost, testHardware } from '../../helpers/keyring-host';
+import { KeyringManager } from '../../../src/keyring-manager';
 
 // Keep the provider's real response normalization, which the shared setup
 // omits from its provider mock. All RPCs are supplied by each test.
@@ -229,7 +234,9 @@ describe('source SDK account-scoped replacement signing', () => {
       getKey as any,
       (() => state) as any,
       ledger as any,
-      trezor as any
+      trezor as any,
+      undefined,
+      createTestSubmissionCapture()
     );
     Object.defineProperty(sdk, 'web3Provider', {
       configurable: true,
@@ -1392,7 +1399,10 @@ describe('source SDK account-scoped replacement signing', () => {
   );
 
   it('passes the exact account to the actual keyring credential getter without replacing the vault getter', async () => {
-    const manager: any = createTestKeyring();
+    const manager: any = new KeyringManager(createTestKeyringHost(), {
+      ...testHardware(),
+      captureEvmSubmission: createTestSubmissionCapture(),
+    });
     const vault = {
       activeNetwork: state.activeNetwork,
       activeAccount: smart,
@@ -1545,7 +1555,13 @@ describe('source SDK account-scoped replacement signing', () => {
         'mocked-private-key',
         transaction(),
         beforeBroadcast,
-        options().assertCurrentContext
+        options().assertCurrentContext,
+        undefined,
+        testSubmissionBoundary(
+          PAYER,
+          state.activeNetwork.chainId,
+          options().assertCurrentContext
+        )
       )
     ).rejects.toThrow('PALI_TRANSACTION_CONTEXT_CHANGED');
     expect(sign).not.toHaveBeenCalled();

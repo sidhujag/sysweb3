@@ -93,19 +93,19 @@ it.each([
   }
 );
 
-it('enforces the expected envelope even for a caller without a persistence lifecycle', async () => {
+it('requires a captured durable lifecycle even with valid approved bytes', async () => {
   const request = envelope(0),
-    raw = await wallet.signTransaction({ ...request, nonce: 7 });
+    raw = await wallet.signTransaction(request);
   const broadcast = jest.fn();
   await expect(
     submitSignedEvmTransaction(
       raw,
       broadcast,
-      undefined,
+      undefined as never,
       undefined,
       Transaction.from(request).unsignedSerialized
     )
-  ).rejects.toThrow('expected unsigned envelope');
+  ).rejects.toThrow('captured durable EVM submission is required');
   expect(broadcast).not.toHaveBeenCalled();
 });
 

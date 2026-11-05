@@ -21,6 +21,7 @@ import {
 import { assertEvmGasLimit, parseEvmFeeQuantity } from '../evm-fees';
 import { CustomJsonRpcProvider } from '../providers';
 import {
+  assertDurableEvmSubmission,
   submitSignedEvmTransaction,
   type EvmSubmissionBoundary,
 } from './evm-submission';
@@ -194,19 +195,25 @@ export const sendLocalEvmTransaction = async (
   provider: CustomJsonRpcProvider,
   privateKey: string,
   transaction: Deferrable<Record<string, any>>,
-  beforeBroadcast?: () => void,
-  beforeSign?: () => void,
+  beforeBroadcast: (() => void) | undefined,
+  beforeSign: (() => void) | undefined,
   /** Synchronous final-envelope check; throw to reject. Promise results are rejected. */
-  validateBeforeSign?: (transaction: TransactionRequest) => void,
-  submission?: EvmSubmissionBoundary
+  validateBeforeSign: ((transaction: TransactionRequest) => void) | undefined,
+  submission: EvmSubmissionBoundary
 ) => {
+  const check = () => assertDurableEvmSubmission(submission);
+  check();
   const account = privateKeyToAccount(privateKey);
+  if (!sameAddress(account.address, submission.context.account.address))
+    throw new Error('EVM private key does not match captured submission');
   const resolved = await resolveProperties(transaction);
+  check();
   if (resolved.from && !sameAddress(resolved.from, account.address)) {
     throw new Error('Transaction from does not match EVM private key');
   }
 
   await provider.verifyConfiguredChainId();
+  check();
 
   const tx = normalizeTransactionRequest(
     omit(resolved, ['from', 'ccipReadEnabled', 'customData'])
@@ -214,13 +221,17 @@ export const sendLocalEvmTransaction = async (
 
   if (!tx.chainId) {
     const network = await provider.getNetwork();
+    check();
     tx.chainId = Number(network.chainId);
   }
+  if (BigInt(tx.chainId) !== BigInt(submission.context.network.chainId))
+    throw new Error('EVM transaction chain does not match captured submission');
   if (tx.to && typeof tx.to === 'string') {
     try {
       tx.to = getAddress(tx.to);
     } catch {
       const resolvedTo = await provider.resolveName(tx.to);
+      check();
       if (!resolvedTo) {
         throw new Error(
           `Unable to resolve EVM transaction recipient: ${tx.to}`
@@ -231,12 +242,14 @@ export const sendLocalEvmTransaction = async (
   }
   if (tx.nonce === undefined || tx.nonce === null) {
     tx.nonce = await provider.getTransactionCount(account.address, 'pending');
+    check();
   }
   if (!tx.gasLimit) {
     tx.gasLimit = await provider.estimateGas({
       ...resolved,
       from: account.address,
     } as any);
+    check();
   }
   if ((tx.type === 0 || tx.type === 1) && tx.gasPrice == null) {
     tx.gasPrice = await provider.getGasPrice();
@@ -245,6 +258,7 @@ export const sendLocalEvmTransaction = async (
     (tx.maxFeePerGas == null || tx.maxPriorityFeePerGas == null)
   ) {
     const feeData = await provider.getFeeData();
+    check();
     if (feeData.maxFeePerGas != null && feeData.maxPriorityFeePerGas != null) {
       tx.maxFeePerGas = tx.maxFeePerGas ?? feeData.maxFeePerGas;
       tx.maxPriorityFeePerGas =
@@ -264,6 +278,7 @@ export const sendLocalEvmTransaction = async (
     tx.value = '0x0';
   }
 
+  check();
   beforeSign?.();
   const validation = validateBeforeSign?.(tx) as unknown;
   if (
@@ -277,6 +292,7 @@ export const sendLocalEvmTransaction = async (
   }
   const finalTransaction = normalizeGasLimitedTransaction(tx);
   const expectedUnsignedTransaction = serializeTransaction(finalTransaction);
+  check();
   const signedTx = signTransaction(finalTransaction, privateKey);
   return submitSignedEvmTransaction(
     signedTx,

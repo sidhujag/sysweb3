@@ -7,6 +7,7 @@ import { BigNumber, serializeTransaction } from '../../../src/ethers-v6';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import { TrezorKeyring } from '../../../src/trezor';
 import { KeyringAccountType } from '../../../src/types';
+import { createTestSubmissionCapture } from '../../helpers/evm-submission';
 
 const specializedApproval = {
   mode: 'specialized' as const,
@@ -108,7 +109,8 @@ beforeEach(() => {
     () => state,
     undefined,
     trezor,
-    () => () => undefined
+    () => () => undefined,
+    createTestSubmissionCapture()
   );
   jest.spyOn(sdk, 'setWeb3Provider').mockImplementation(() => {
     (sdk as any)._web3Provider = provider;
