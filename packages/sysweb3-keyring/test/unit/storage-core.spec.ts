@@ -65,10 +65,6 @@ describe('host-owned vault persistence', () => {
       throw new Error('Unexpected host dependency');
     };
     jest.doMock('@sidhujag/sysweb3-core', unexpectedImport);
-    jest.doMock(
-      '../../src/hardware-wallet-manager-singleton',
-      unexpectedImport
-    );
     try {
       jest.isolateModules(() => {
         expect(
@@ -77,7 +73,6 @@ describe('host-owned vault persistence', () => {
       });
     } finally {
       jest.dontMock('@sidhujag/sysweb3-core');
-      jest.dontMock('../../src/hardware-wallet-manager-singleton');
     }
   });
 
@@ -373,44 +368,4 @@ describe('host-owned vault persistence', () => {
       ).rejects.toBeInstanceOf(VaultAuthenticationError);
     }
   );
-
-  it('keeps legacy wrapper calls on one captured storage authority and the same error class', async () => {
-    jest.resetModules();
-    const first = createStorage();
-    const second = createStorage();
-    let selected = first.port;
-    const getStateStorageDb = jest.fn(() => selected);
-    jest.doMock('@sidhujag/sysweb3-core', () => ({
-      sysweb3Di: { getStateStorageDb },
-    }));
-    let legacy!: typeof import('../../src/storage');
-    let core!: typeof import('../../src/storage-core');
-    try {
-      jest.isolateModules(() => {
-        legacy = require('../../src/storage');
-        core = require('../../src/storage-core');
-      });
-      expect(legacy.VaultAuthenticationError).toBe(
-        core.VaultAuthenticationError
-      );
-      selected = second.port;
-      await legacy.setEncryptedVault(vault, key, { salt: 'legacy' });
-      await expect(
-        core.createVaultPersistence(first.port).getDecryptedVault(key)
-      ).resolves.toEqual(vault);
-      await core
-        .createVaultPersistence(first.port)
-        .setEncryptedVault({ owner: 'core' }, key);
-      await expect(legacy.getDecryptedVault(key)).resolves.toEqual({
-        owner: 'core',
-      });
-      await expect(legacy.getDecryptedVault(wrongKey)).rejects.toBeInstanceOf(
-        core.VaultAuthenticationError
-      );
-      expect(getStateStorageDb).toHaveBeenCalledTimes(1);
-      expect(second.records.size).toBe(0);
-    } finally {
-      jest.dontMock('@sidhujag/sysweb3-core');
-    }
-  });
 });

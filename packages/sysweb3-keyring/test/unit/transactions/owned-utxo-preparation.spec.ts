@@ -9,7 +9,7 @@ import {
   INetworkType,
   KeyringAccountType,
   SoftwareKeyring,
-  createSoftwareKeyringHost,
+  createKeyringHost,
 } from '../../../src/software';
 import { SyscoinTransactions } from '../../../src/transactions/syscoin';
 import { PsbtUtils } from '../../../src/utils/psbt';
@@ -74,7 +74,7 @@ async function fixture() {
       SmartAccount: {},
     },
   };
-  const host = createSoftwareKeyringHost(storage);
+  const host = createKeyringHost(storage);
   const ring = new SoftwareKeyring(host);
   rings.push(ring);
   ring.setVaultStateGetter(() => state);

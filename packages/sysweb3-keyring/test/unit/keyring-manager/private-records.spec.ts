@@ -7,7 +7,14 @@ import {
   IEncryptedPrivateRecord,
   MAX_PRIVATE_RECORD_BYTES,
 } from '../../../src/private-records';
+import {
+  createTestKeyring,
+  createTestKeyringHost,
+  testStorage,
+} from '../../helpers/keyring-host';
 
+const PUBLIC_PHRASE =
+  'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 const ROOT = 'synthetic root secret for private record tests';
 const DOMAIN = 'org.syscoin.pali.privacy.notes.v1';
 const RECORD_ID = '4fddac53-c01d-4c8e-8b86-5a37f5430cf1';
@@ -35,20 +42,35 @@ function installSession(
   root = ROOT,
   password = 'synthetic session wrapping key'
 ) {
-  manager.receiveSessionOwnership(
-    new TestBuffer(password) as any,
-    new TestBuffer(CryptoJS.AES.encrypt(root, password).toString()) as any
+  (manager as any).sessionPassword?.clear();
+  (manager as any).sessionMnemonic?.clear();
+  (manager as any).privateRecordSessionRevision++;
+  (manager as any).sessionPassword = new TestBuffer(password);
+  (manager as any).sessionMnemonic = new TestBuffer(
+    CryptoJS.AES.encrypt(root, password).toString()
   );
 }
 
-function fixture(root = ROOT, password?: string) {
+function fixture(
+  root = ROOT,
+  password?: string,
+  host = createTestKeyringHost()
+) {
   // The configured test storage is in memory; no initialize/unlock/storage API
   // is used to create these synthetic encrypted session buffers.
-  const manager = new KeyringManager(new HardwareWalletManager());
+  const manager = createTestKeyring(host);
   (manager as any).ledgerSigner = undefined;
   (manager as any).trezorSigner = undefined;
   installSession(manager, root, password);
   return manager;
+}
+
+async function transferFixture() {
+  const host = createTestKeyringHost();
+  const source = createTestKeyring(host);
+  await source.initializeSession(PUBLIC_PHRASE, 'public transfer password');
+  installSession(source);
+  return { source, target: fixture('another root', undefined, host) };
 }
 
 const seal = (manager: KeyringManager) =>
@@ -204,7 +226,7 @@ describe('private record custody', () => {
 
   it('never reads or writes wallet storage while sealing or opening a record', async () => {
     const manager = fixture();
-    const storage = (manager as any).storage;
+    const storage = testStorage();
     const getSeed = jest.spyOn(manager, 'getSeed');
     jest.clearAllMocks();
     const envelope = await seal(manager);
@@ -428,8 +450,7 @@ describe('private record async session lifetime', () => {
   it.each(['replace', 'transfer', 'transfer-back'] as const)(
     'rejects a pending result after %s',
     async (change) => {
-      const source = fixture();
-      const target = fixture('another root');
+      const { source, target } = await transferFixture();
       const pause = pauseCrypto('encrypt');
       const pending = seal(source);
       await pause.started;
@@ -444,8 +465,7 @@ describe('private record async session lifetime', () => {
   );
 
   it('keeps record identity and ciphertext valid after a completed session transfer', async () => {
-    const source = fixture();
-    const target = fixture('another root');
+    const { source, target } = await transferFixture();
     const profile = await source.getPrivateRecordProfileId();
     const envelope = await seal(source);
     source.transferSessionTo(target);

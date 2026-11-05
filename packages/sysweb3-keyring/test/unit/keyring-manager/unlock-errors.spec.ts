@@ -11,16 +11,23 @@ const mnemonic =
 describe('KeyringManager unlock error classification with real WebCrypto', () => {
   const values = new Map<string, any>();
   const storage = {
-    async get(name: string) {
-      return values.get(name);
-    },
-    async set(name: string, value: any) {
+    get: jest.fn(async (name: string) => values.get(name)),
+    set: jest.fn(async (name: string, value: any) => {
       values.set(name, value);
+    }),
+    async deleteItem(name: string) {
+      values.delete(name);
+    },
+    async createManyIfAbsent(items: Record<string, unknown>) {
+      if (Object.keys(items).some((name) => values.has(name))) return false;
+      for (const [name, value] of Object.entries(items))
+        values.set(name, value);
+      return true;
     },
   };
-  let Keyring: typeof KeyringManager;
-  let getDecryptedVault: typeof import('../../../src/storage').getDecryptedVault;
-  let setEncryptedVault: typeof import('../../../src/storage').setEncryptedVault;
+  let createRing: () => KeyringManager;
+  let getDecryptedVault: import('../../../src/storage-core').VaultPersistence['getDecryptedVault'];
+  let setEncryptedVault: import('../../../src/storage-core').VaultPersistence['setEncryptedVault'];
   let sourceCrypto: typeof CryptoJS;
   let keyring: KeyringManager;
   let internals: any;
@@ -28,8 +35,7 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
   let locationDescriptor: PropertyDescriptor | undefined;
 
   beforeAll(() => {
-    // The shared test setup creates a new storage wrapper per call. Use one
-    // explicit client here so failures exercise both the manager and storage.
+    // Use one explicit test store to exercise the real manager and AEAD.
     jest.resetModules();
     locationDescriptor = Object.getOwnPropertyDescriptor(
       globalThis,
@@ -39,15 +45,19 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
       configurable: true,
       value: { href: 'https://wallet.test/' },
     });
-    jest.doMock('@sidhujag/sysweb3-core', () => ({
-      sysweb3Di: { getStateStorageDb: () => storage },
-    }));
     jest.isolateModules(() => {
-      Keyring = require('../../../src').KeyringManager;
-      ({
-        getDecryptedVault,
-        setEncryptedVault,
-      } = require('../../../src/storage'));
+      const {
+        KeyringManager,
+        createKeyringHost,
+        HardwareWalletManager,
+      } = require('../../../src');
+      const { createVaultPersistence } = require('../../../src/storage-core');
+      ({ getDecryptedVault, setEncryptedVault } =
+        createVaultPersistence(storage));
+      createRing = () =>
+        new KeyringManager(createKeyringHost(storage), {
+          hardwareManager: new HardwareWalletManager(),
+        });
       sourceCrypto = require('crypto-js');
     });
   });
@@ -62,6 +72,12 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
 
   beforeEach(async () => {
     values.clear();
+    storage.get
+      .mockReset()
+      .mockImplementation(async (name) => values.get(name));
+    storage.set.mockReset().mockImplementation(async (name, value) => {
+      values.set(name, value);
+    });
     cryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
     Object.defineProperty(globalThis, 'crypto', {
       configurable: true,
@@ -72,7 +88,7 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
 
     await storage.set('vault-keys', { salt: '33'.repeat(16) });
     await setEncryptedVault({ mnemonic }, key);
-    keyring = new Keyring();
+    keyring = createRing();
     internals = keyring as any;
     // Keep the KDF deterministic and fast; vault encryption and authentication
     // use Node's real WebCrypto rather than the global test crypto mock.
@@ -176,7 +192,7 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
 
   it('cleans up if the vault read after authentication fails', async () => {
     const error = new Error('vault read interrupted after authentication');
-    const originalGet = storage.get;
+    const originalGet = storage.get.getMockImplementation()!;
     let vaultReads = 0;
     jest.spyOn(storage, 'get').mockImplementation(async (name) => {
       if (name === 'vault' && ++vaultReads === 2) throw error;
@@ -207,7 +223,7 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
   });
 
   it('propagates a later authentication failure after the password was accepted', async () => {
-    const originalGet = storage.get;
+    const originalGet = storage.get.getMockImplementation()!;
     const envelope = JSON.parse(await storage.get('vault'));
     envelope.ct = '00'.repeat(envelope.ct.length / 2);
     let vaultReads = 0;
@@ -346,7 +362,7 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
         });
       }
       const error = new Error('migration storage write unavailable');
-      const originalSet = storage.set;
+      const originalSet = storage.set.getMockImplementation()!;
       let failMetadataWrite = true;
       jest.spyOn(storage, 'set').mockImplementation(async (name, value) => {
         if (name === 'vault-keys' && failMetadataWrite) {
@@ -437,7 +453,7 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
       ).toString();
       await storage.set('vault-keys', vaultKeys);
       await storage.set('vault', originalVault);
-      const writes = jest.spyOn(storage, 'set');
+      const writes = storage.set.mockClear();
 
       await expect(keyring.unlock('correct')).rejects.toThrow(
         'Existing vault preserved'

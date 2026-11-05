@@ -7,8 +7,9 @@ import { INetworkType } from '@sidhujag/sysweb3-network';
 import { webcrypto } from 'crypto';
 import CryptoJS from 'crypto-js';
 
+import { createInitializedTestKeyring } from './keyring-host';
 import { KeyringAccountType, KeyringManager } from '../../src';
-import { getDecryptedVault, setEncryptedVault } from '../../src/storage';
+import { createVaultPersistence } from '../../src/storage-core';
 
 const getTestIters = (envKey: string, fallback: number) => {
   const parsed = Number.parseInt(process?.env?.[envKey] || '', 10);
@@ -420,6 +421,8 @@ afterEach(() => {
 global.setupTestVault = async (password = 'Asdqwe123!') => {
   const { sysweb3Di } = jest.requireMock('@sidhujag/sysweb3-core');
   const storage = sysweb3Di.getStateStorageDb();
+  const { getDecryptedVault, setEncryptedVault } =
+    createVaultPersistence(storage);
 
   // Match keyring-manager.ts defaults under NODE_ENV=test
   const encIters = getTestIters('SYSWEB3_PBKDF2_ENC_ITERS', 1_000);
@@ -745,7 +748,8 @@ export const createFreshTestKeyring = async (
   seed: string,
   password: string,
   vaultStateGetter: () => any,
-  ledgerHost?: import('../../src/ledger/host-types').LedgerHost
+  ledgerHost?: import('../../src/ledger/host-types').LedgerHost,
+  host?: import('../../src/keyring-host').KeyringHost
 ): Promise<KeyringManager> => {
   const { sysweb3Di } = jest.requireMock('@sidhujag/sysweb3-core');
   const storage = sysweb3Di.getStateStorageDb();
@@ -757,22 +761,18 @@ export const createFreshTestKeyring = async (
   const originalRandomBytes = crypto.randomBytes;
   const randomBytes = jest
     .spyOn(crypto, 'randomBytes')
-    .mockImplementation((size: number) =>
-      size === 16
-        ? Buffer.from('0123456789abcdef0123456789abcdef', 'hex')
-        : originalRandomBytes(size)
-    );
+    .mockImplementation((size: number) => {
+      if (size === 16)
+        return Buffer.from('0123456789abcdef0123456789abcdef', 'hex');
+      return originalRandomBytes(size);
+    });
   try {
-    if (ledgerHost) {
-      const keyring = new KeyringManager(undefined, ledgerHost);
-      keyring.setVaultStateGetter(vaultStateGetter);
-      await keyring.initializeWalletSecurely(seed, password);
-      return keyring;
-    }
-    return await KeyringManager.createInitialized(
+    return await createInitializedTestKeyring(
       seed,
       password,
-      vaultStateGetter
+      vaultStateGetter,
+      host,
+      ledgerHost ? { ledgerHost } : undefined
     );
   } finally {
     randomBytes.mockRestore();

@@ -54,7 +54,7 @@ const storage = () => {
 (async () => {
   const {
     SoftwareKeyring,
-    createSoftwareKeyringHost,
+    createKeyringHost,
     KeyringAccountType,
     INetworkType,
   } = require(entry);
@@ -78,9 +78,9 @@ const storage = () => {
   });
   const first = storage();
   const second = storage();
-  const firstHost = createSoftwareKeyringHost(first);
+  const firstHost = createKeyringHost(first);
   const a = new SoftwareKeyring(firstHost);
-  const b = new SoftwareKeyring(createSoftwareKeyringHost(second));
+  const b = new SoftwareKeyring(createKeyringHost(second));
   const aState = makeState();
   const bState = makeState();
   a.setVaultStateGetter(() => aState);
@@ -179,6 +179,11 @@ const storage = () => {
     const restarted = new SoftwareKeyring(firstHost);
     restarted.setVaultStateGetter(() => aState);
     try {
+      await assert.rejects(
+        restarted.unlock(password),
+        /owned by another keyring/
+      );
+      await a.lockWallet();
       assert.equal((await restarted.unlock(password)).canLogin, true);
     } finally {
       await restarted.destroy();

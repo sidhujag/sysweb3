@@ -4,6 +4,7 @@ import { hashMessage, Transaction, Wallet } from 'ethers';
 import { HardwareWalletManager } from '../../../src/hardware-wallet-manager';
 import { KeyringManager } from '../../../src/keyring-manager';
 import { LedgerKeyring } from '../../../src/ledger';
+import { createTestKeyringHost } from '../../helpers/keyring-host';
 
 import type { LedgerHost } from '../../../src/ledger/host-types';
 
@@ -18,9 +19,13 @@ const hostFixture = (): LedgerHost => ({
 test('rejects separate manager and host injection before opening either device authority', () => {
   const host = hostFixture();
   const manager = { destroy: jest.fn() } as unknown as HardwareWalletManager;
-  expect(() => new KeyringManager(manager, host)).toThrow(
-    'Supply a shared hardware manager or a Ledger host, not both'
-  );
+  expect(
+    () =>
+      new KeyringManager(createTestKeyringHost(), {
+        hardwareManager: manager,
+        ledgerHost: host,
+      } as any)
+  ).toThrow('Supply exactly one hardware manager or Ledger host');
   expect(host.connect).not.toHaveBeenCalled();
   expect(host.disconnect).not.toHaveBeenCalled();
   expect(manager.destroy).not.toHaveBeenCalled();
@@ -28,7 +33,9 @@ test('rejects separate manager and host injection before opening either device a
 
 test('host-only injection binds the facade and its manager to the same host', async () => {
   const host = hostFixture();
-  const keyring = new KeyringManager(undefined, host);
+  const keyring = new KeyringManager(createTestKeyringHost(), {
+    ledgerHost: host,
+  });
   try {
     await expect(
       keyring.ledgerSigner.ensureConnection()

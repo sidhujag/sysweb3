@@ -2,6 +2,7 @@ import { INetworkType } from '@sidhujag/sysweb3-network';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
+import { createTestKeyring } from '../../helpers/keyring-host';
 import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
 
 describe('KeyringManager - Security', () => {
@@ -240,7 +241,7 @@ describe('KeyringManager - Security', () => {
   describe('Vault Security', () => {
     it('should protect vault with proper encryption', async () => {
       // Vault should require password to decrypt
-      keyringManager = new KeyringManager();
+      keyringManager = createTestKeyring();
 
       // Set up mock vault state getter for initializeWalletSecurely
       currentVaultState = createMockVaultState({
@@ -428,7 +429,7 @@ describe('KeyringManager - Security', () => {
 
     it('should clear sensitive data on errors', async () => {
       // If initialization fails, no sensitive data should remain
-      keyringManager = new KeyringManager();
+      keyringManager = createTestKeyring();
 
       // Set up mock vault state getter for initializeWalletSecurely
       currentVaultState = createMockVaultState({

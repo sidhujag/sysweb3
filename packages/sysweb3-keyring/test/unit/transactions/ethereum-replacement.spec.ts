@@ -8,13 +8,13 @@ import { Transaction } from 'ethers/transaction';
 import { Wallet } from 'ethers/wallet';
 
 import { BigNumber, serializeTransaction } from '../../../src/ethers-v6';
-import { KeyringManager } from '../../../src/keyring-manager';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import {
   privateKeyToAccount,
   sendLocalEvmTransaction,
 } from '../../../src/transactions/evm-local-signer';
 import { KeyringAccountType } from '../../../src/types';
+import { createTestKeyring } from '../../helpers/keyring-host';
 
 // Keep the provider's real response normalization, which the shared setup
 // omits from its provider mock. All RPCs are supplied by each test.
@@ -35,9 +35,6 @@ jest.mock('crypto-js', () => ({
 jest.mock('syscoinjs-lib', () => ({
   utils: { bitcoinjs: {} },
   networks: { bitcoin: {}, syscoin: {} },
-}));
-jest.mock('../../../src/hardware-wallet-manager-singleton', () => ({
-  HardwareWalletManagerSingleton: { getInstance: () => ({}) },
 }));
 jest.mock('../../../src/ledger', () => ({
   LedgerKeyring: jest.fn(),
@@ -1395,7 +1392,7 @@ describe('source SDK account-scoped replacement signing', () => {
   );
 
   it('passes the exact account to the actual keyring credential getter without replacing the vault getter', async () => {
-    const manager: any = new KeyringManager();
+    const manager: any = createTestKeyring();
     const vault = {
       activeNetwork: state.activeNetwork,
       activeAccount: smart,

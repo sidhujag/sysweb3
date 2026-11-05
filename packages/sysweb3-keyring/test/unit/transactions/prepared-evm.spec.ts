@@ -6,7 +6,7 @@ import { HDNodeWallet, Wallet } from 'ethers/wallet';
 import { EvmGasLimitError } from '../../../src/evm-fees';
 import {
   SoftwareKeyring,
-  createSoftwareKeyringHost,
+  createKeyringHost,
   INetworkType,
   KeyringAccountType,
 } from '../../../src/software';
@@ -231,7 +231,7 @@ describe('software-only prepared signing authority', () => {
       },
     };
     state = fixtureState();
-    keyring = new SoftwareKeyring(createSoftwareKeyringHost(storage));
+    keyring = new SoftwareKeyring(createKeyringHost(storage));
     keyring.setVaultStateGetter(() => state);
     state.accounts.HDAccount[0] = await keyring.initializeWalletSecurely(
       PHRASE,

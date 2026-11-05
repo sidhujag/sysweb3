@@ -32,6 +32,7 @@ import {
   initialActiveLedgerAccountState,
   initialActiveTrezorAccountState,
 } from './initial-state';
+import { takeKeyringHostBinding } from './keyring-host';
 import {
   decryptPrivateRecordBytes,
   encryptPrivateRecordBytes,
@@ -79,6 +80,7 @@ import {
 } from './utils/psbt-account-scope';
 import { deriveDescriptorAddress } from './utils/watch-descriptor';
 
+import type { KeyringHostBinding, SessionOwner } from './keyring-host';
 import type { LedgerKeyring } from './ledger';
 import type {
   EncryptedEvmHdRuntimeAccount,
@@ -86,7 +88,6 @@ import type {
   EvmHdRuntimeAccountRequest,
 } from './software-hd-account';
 import type { VaultPersistence, VaultStoragePort } from './storage-core';
-import type { CaptureEvmSubmission } from './transactions/evm-submission';
 import type {
   PreparedEvmSigningOptions,
   PreparedSoftwareEvmSigningRequest,
@@ -98,8 +99,6 @@ import type { TrezorKeyring } from './trezor';
 export interface KeyringStoragePort extends VaultStoragePort {
   get(key: string): Promise<any>;
   deleteItem(key: string): Promise<void>;
-  /** Legacy adapter capability; fixed native hosts can omit it. */
-  setClient?(client: any): void;
   /** Atomically read this authority's current encrypted vault and salt. */
   readDeviceUnlockVaultPair?(): Promise<DeviceUnlockVaultPair | null>;
 }
@@ -189,29 +188,13 @@ export type KeyringTrezorSigner = Pick<
   | 'verifyUtxoAddress'
 >;
 
-type SessionOwner = { current?: symbol; epoch: number };
-
-export interface KeyringCoreDependencies<
+interface KeyringHardware<
   TLedger extends KeyringLedgerSigner | undefined,
   TTrezor extends KeyringTrezorSigner | undefined
 > {
-  /** Immutable identity shared only by keyrings in the same wallet authority. */
-  authority: object;
-  storage: KeyringStoragePort;
-  /** Must be bound to this authority's storage and shared across its keyrings. */
-  vaultPersistence: VaultPersistence;
   ledgerSigner: TLedger;
   trezorSigner: TTrezor;
-  /** Trusted host adapters; absent device capabilities fail closed. */
   syscoinHardwareSigners?: ISyscoinHardwareSigners;
-  /** Trusted host lifecycle, captured before each locally signed EVM submission. */
-  captureEvmSubmission?: CaptureEvmSubmission;
-  /** Shared only by software keyrings of the same opted-in host. */
-  sessionOwner?: SessionOwner;
-  deviceUnlock?: {
-    port: DeviceUnlockPort;
-    receive(controls: DeviceUnlockControls): void;
-  };
 }
 
 export interface ISysAccount {
@@ -361,38 +344,27 @@ export class KeyringCore<
   private sessionMnemonic: SecureBuffer | null = null; // can be a mnemonic or a zprv, can be changed to a zprv when using an imported wallet
   private privateRecordSessionRevision = 0;
   #deviceUnlockRetired = false;
-  readonly #sessionOwnership?: {
+  readonly #sessionOwnership: {
     tracker: SessionOwner;
     token: symbol;
     destroyed?: true;
   };
 
-  constructor(dependencies: KeyringCoreDependencies<TLedger, TTrezor>) {
-    if (
-      !dependencies ||
-      typeof dependencies.authority !== 'object' ||
-      dependencies.authority === null
-    ) {
-      throw new TypeError('Keyring core requires an explicit wallet authority');
-    }
-    if (
-      typeof dependencies.vaultPersistence?.getDecryptedVault !== 'function' ||
-      typeof dependencies.vaultPersistence?.setEncryptedVault !== 'function'
-    ) {
-      throw new TypeError('Keyring core requires bound vault persistence');
-    }
+  constructor(
+    binding: KeyringHostBinding,
+    hardware: KeyringHardware<TLedger, TTrezor>
+  ) {
+    const dependencies = takeKeyringHostBinding(binding);
     this.authority = dependencies.authority;
-    if (dependencies.sessionOwner) {
-      this.#sessionOwnership = {
-        tracker: dependencies.sessionOwner,
-        token: Symbol(),
-      };
-    }
+    this.#sessionOwnership = {
+      tracker: dependencies.sessionOwner,
+      token: Symbol(),
+    };
     this.storage = dependencies.storage;
     this.vaultPersistence = dependencies.vaultPersistence;
-    this.ledgerSigner = dependencies.ledgerSigner;
-    this.trezorSigner = dependencies.trezorSigner;
-    this.syscoinHardwareSigners = { ...dependencies.syscoinHardwareSigners };
+    this.ledgerSigner = hardware.ledgerSigner;
+    this.trezorSigner = hardware.trezorSigner;
+    this.syscoinHardwareSigners = { ...hardware.syscoinHardwareSigners };
     this.writeUtf8Diagnostic(false);
     this.utf8Error = false;
     this.initialTrezorAccountState = initialActiveTrezorAccountState;
@@ -408,8 +380,6 @@ export class KeyringCore<
       dependencies.captureEvmSubmission
     );
     if (dependencies.deviceUnlock) {
-      if (!this.#sessionOwnership)
-        throw new TypeError('Device unlock requires a session owner');
       const { port, receive } = dependencies.deviceUnlock;
       const readVaultPair = this.storage.readDeviceUnlockVaultPair;
       if (typeof readVaultPair !== 'function')
@@ -468,7 +438,7 @@ export class KeyringCore<
         ) {
           throw new Error('Device unlock session changed');
         }
-        assertOwnership?.();
+        assertOwnership();
       };
       let key: Uint8Array | undefined;
       try {
@@ -594,13 +564,6 @@ export class KeyringCore<
 
   // ===================================== PUBLIC METHODS - KEYRING MANAGER FOR HD - SYS ALL ===================================== //
 
-  public setStorage = (client: any) => {
-    if (!this.storage.setClient) {
-      throw new Error('Storage replacement is unavailable in this host');
-    }
-    this.storage.setClient(client);
-  };
-
   public validateAccountType = (account: IKeyringAccountState) => {
     return account.isImported === true
       ? KeyringAccountType.Imported
@@ -623,7 +586,7 @@ export class KeyringCore<
     }
 
     const ownership = this.#sessionOwnership;
-    if (ownership && ownership.tracker.current === ownership.token) {
+    if (ownership.tracker.current === ownership.token) {
       ownership.tracker.current = undefined;
       ownership.tracker.epoch++;
     }
@@ -654,9 +617,7 @@ export class KeyringCore<
   };
 
   // Direct secure transfer of session data to another keyring
-  public transferSessionTo = (
-    targetKeyring: Pick<KeyringCore, 'receiveSessionOwnership'>
-  ): void => {
+  public transferSessionTo = (targetKeyring: KeyringCore): void => {
     if (!this.isUnlocked()) {
       throw new Error('Source keyring must be unlocked to transfer session');
     }
@@ -693,7 +654,7 @@ export class KeyringCore<
       source.authority !== this.authority ||
       source.storage !== this.storage ||
       source.vaultPersistence !== this.vaultPersistence ||
-      source.#sessionOwnership?.tracker !== this.#sessionOwnership?.tracker
+      source.#sessionOwnership.tracker !== this.#sessionOwnership.tracker
     ) {
       throw new Error(
         'Cannot transfer session between different wallet authorities'
@@ -705,19 +666,12 @@ export class KeyringCore<
     this.#replaceSessionBuffers(
       source.sessionPassword,
       source.sessionMnemonic,
-      source.#sessionOwnership?.token
+      source.#sessionOwnership.token
     );
   }
 
-  // Legacy trusted-host API. SoftwareKeyring disables direct buffer injection.
-  public receiveSessionOwnership = (
-    sessionPassword: SecureBuffer,
-    sessionMnemonic: SecureBuffer
-  ): void => this.#replaceSessionBuffers(sessionPassword, sessionMnemonic);
-
   #assertSessionOwner(sourceToken?: symbol): void {
     const ownership = this.#sessionOwnership;
-    if (!ownership) return;
     if (ownership.destroyed) throw new Error('Wallet keyring was destroyed');
 
     const owner = ownership.tracker.current;
@@ -732,7 +686,6 @@ export class KeyringCore<
 
   #captureSessionGuard(message = 'Wallet unlock session changed') {
     const ownership = this.#sessionOwnership;
-    if (!ownership) return undefined;
     const revision = this.privateRecordSessionRevision;
     const epoch = ownership.tracker.epoch;
     return () => {
@@ -763,10 +716,8 @@ export class KeyringCore<
     this.sessionPassword = sessionPassword;
     this.sessionMnemonic = sessionMnemonic;
     const ownership = this.#sessionOwnership;
-    if (ownership) {
-      ownership.tracker.current = ownership.token;
-      ownership.tracker.epoch++;
-    }
+    ownership.tracker.current = ownership.token;
+    ownership.tracker.epoch++;
   }
 
   public addNewAccount = async (
@@ -839,11 +790,11 @@ export class KeyringCore<
     let assertCurrent = this.#captureSessionGuard();
     let authenticated = false;
     try {
-      assertCurrent?.();
+      assertCurrent();
       const vaultKeys = await this.storage.get('vault-keys');
-      assertCurrent?.();
 
       if (!vaultKeys) {
+        assertCurrent();
         throw new Error(
           'Vault keys not found. Reload the wallet and try again.'
         );
@@ -851,12 +802,13 @@ export class KeyringCore<
       // v4: Validate password by deriving the session key once and decrypting the vault with it.
       // This avoids an extra KDF pass just for a stored verifier.
       const { salt } = vaultKeys;
-      const readVaultPair = assertCurrent
-        ? this.storage.readDeviceUnlockVaultPair
-        : undefined;
+      const readVaultPair = this.storage.readDeviceUnlockVaultPair;
       const accountingSalt = readVaultPair
         ? currentVaultSalt(vaultKeys)
         : undefined;
+      // Permit only an authenticated negative verdict for the same atomic
+      // pair after cancellation. Legacy migration and positive results stay guarded.
+      if (accountingSalt === undefined) assertCurrent();
 
       // Derive session encryption key (in-memory only) used to encrypt/decrypt xprv fields
       // IMPORTANT: This MUST NOT be the same value as the stored verifier above.
@@ -864,7 +816,7 @@ export class KeyringCore<
         password,
         accountingSalt === undefined ? vaultKeys : { salt: accountingSalt }
       );
-      assertCurrent?.();
+      if (accountingSalt === undefined) assertCurrent();
       // Handle migration from old vault format with currentSessionSalt
       if (vaultKeys.currentSessionSalt) {
         console.log(
@@ -885,7 +837,7 @@ export class KeyringCore<
           sessionPasswordKey,
           password
         );
-        assertCurrent?.();
+        assertCurrent();
         authenticated = true;
 
         const isValidSecret = (value: unknown): value is string => {
@@ -935,16 +887,16 @@ export class KeyringCore<
           undefined,
           assertCurrent
         );
-        assertCurrent?.();
+        assertCurrent();
         console.log('[KeyringManager] Vault mnemonic format normalized');
 
         // Remove currentSessionSalt from vault-keys (v4 keeps only the salt on disk)
         const migratedVaultKeys = {
           salt: vaultKeys.salt,
         };
-        assertCurrent?.();
+        assertCurrent();
         await this.storage.set('vault-keys', migratedVaultKeys);
-        assertCurrent?.();
+        assertCurrent();
         console.log('[KeyringManager] Old vault format migration completed');
       }
 
@@ -980,7 +932,7 @@ export class KeyringCore<
           // available for the host counter even if its owner just retired.
           return { canLogin: false };
         }
-        assertCurrent?.();
+        assertCurrent();
         // Only the historical CBC fallback used the 20k key without metadata.
         // Never try it for GCM, malformed records, or platform/storage failures.
         const rawVault =
@@ -989,16 +941,16 @@ export class KeyringCore<
           !vaultKeys.currentSessionSalt
             ? await this.storage.get('vault')
             : undefined;
-        assertCurrent?.();
+        assertCurrent();
         if (typeof rawVault !== 'string' || rawVault.trim().startsWith('{')) {
           throw error;
         }
         const legacyKey = await this.deriveLegacySessionKey(password, salt);
-        assertCurrent?.();
+        assertCurrent();
         decryptedVault = await this.vaultPersistence.getDecryptedVault(
           legacyKey
         );
-        assertCurrent?.();
+        assertCurrent();
         authenticated = true;
         sessionPasswordKey = legacyKey;
         // Keep the historical account wrapping key. Persist its profile before
@@ -1007,16 +959,16 @@ export class KeyringCore<
           ...vaultKeys,
           keyDerivation: LEGACY_ENCRYPTION_KDF,
         };
-        assertCurrent?.();
+        assertCurrent();
         await this.storage.set('vault-keys', migratedVaultKeys);
-        assertCurrent?.();
+        assertCurrent();
         legacyProfile = true;
       }
-      assertCurrent?.();
+      assertCurrent();
       authenticated = true;
       if (legacyProfile && this.hasWebCrypto()) {
         const storedVault = await this.storage.get('vault');
-        assertCurrent?.();
+        assertCurrent();
         if (
           typeof storedVault === 'string' &&
           !storedVault.trim().startsWith('{')
@@ -1029,7 +981,7 @@ export class KeyringCore<
             undefined,
             assertCurrent
           );
-          assertCurrent?.();
+          assertCurrent();
         }
       }
 
@@ -1039,19 +991,17 @@ export class KeyringCore<
           sessionPasswordKey,
           assertCurrent
         );
-        if (assertCurrent) {
-          assertCurrent();
-          console.log('[KeyringManager] Session data recreated from vault');
-        }
+        assertCurrent();
+        console.log('[KeyringManager] Session data recreated from vault');
       }
 
-      assertCurrent?.();
+      assertCurrent();
       const result = this.#finishUnlock();
-      assertCurrent?.();
+      assertCurrent();
       return result;
     } catch (error) {
       // A superseded attempt must not report authentication or clear its winner.
-      assertCurrent?.();
+      assertCurrent();
       if (!authenticated && error instanceof VaultAuthenticationError) {
         return { canLogin: false };
       }
@@ -2323,7 +2273,7 @@ export class KeyringCore<
   };
 
   private capturePsbtSigningContext = (
-    bindSessionRevision = false
+    bindSessionRevision = true
   ): (() => void) => {
     const session = this.sessionPassword;
     const revision = this.privateRecordSessionRevision;
@@ -3233,15 +3183,15 @@ export class KeyringCore<
 
   async #recreateSessionFromVault(
     saltedHashPassword: string,
-    assertCurrent?: () => void
-  ): Promise<(() => void) | undefined> {
+    assertCurrent: () => void
+  ): Promise<() => void> {
     try {
       // v4 vault is encrypted with the derived session password key (PBKDF2 output)
       // `saltedHashPassword` is the derived session password key passed by caller.
       const { mnemonic } = await this.vaultPersistence.getDecryptedVault(
         saltedHashPassword
       );
-      assertCurrent?.();
+      assertCurrent();
 
       if (!mnemonic) {
         throw new Error('Mnemonic not found in vault');
@@ -3249,9 +3199,7 @@ export class KeyringCore<
 
       this.#installVaultSession(mnemonic, saltedHashPassword, assertCurrent);
       // Capture the installed revision before returning to the async caller.
-      if (assertCurrent) return this.#captureSessionGuard();
-      console.log('[KeyringManager] Session data recreated from vault');
-      return undefined;
+      return this.#captureSessionGuard();
     } catch (error) {
       console.error('ERROR recreateSessionFromVault', { error });
       throw error;
@@ -3648,10 +3596,13 @@ export class KeyringCore<
       throw new Error('Invalid Seed');
     }
 
+    const assertCurrent = this.#captureSessionGuard();
+    assertCurrent();
     const [vault, vaultKeys] = await Promise.all([
       this.storage.get('vault'),
       this.storage.get('vault-keys'),
     ]);
+    assertCurrent();
     const hasVault = vault !== undefined && vault !== null;
     const hasVaultKeys = vaultKeys !== undefined && vaultKeys !== null;
     const livePassword = this.sessionPassword;
@@ -3674,6 +3625,7 @@ export class KeyringCore<
         password,
         vaultKeys
       );
+      assertCurrent();
       if (
         livePassword === this.sessionPassword &&
         liveMnemonic === this.sessionMnemonic &&
@@ -3696,6 +3648,7 @@ export class KeyringCore<
           const storedVault = await this.vaultPersistence.getDecryptedVault(
             sessionPasswordSaltedHash
           );
+          assertCurrent();
           if (
             livePassword === this.sessionPassword &&
             liveMnemonic === this.sessionMnemonic &&
@@ -3736,10 +3689,16 @@ export class KeyringCore<
       },
       // v4 vault is encrypted with the derived session password key (PBKDF2 output)
       sessionPasswordSaltedHash,
-      { salt }
+      { salt },
+      assertCurrent
     );
 
-    await this.#recreateSessionFromVault(sessionPasswordSaltedHash);
+    assertCurrent();
+    const assertInstalled = await this.#recreateSessionFromVault(
+      sessionPasswordSaltedHash,
+      assertCurrent
+    );
+    assertInstalled();
   };
 
   // NEW: Create first account without signer setup
@@ -3913,7 +3872,7 @@ export class KeyringCore<
    */
   public async destroy(): Promise<void> {
     this.#deviceUnlockRetired = true;
-    if (this.#sessionOwnership) this.#sessionOwnership.destroyed = true;
+    this.#sessionOwnership.destroyed = true;
     await this.lockWallet();
 
     // Clear any remaining references

@@ -2,11 +2,11 @@ import { getNetworkConfig, INetworkType } from '@sidhujag/sysweb3-network';
 import { Psbt, Transaction, payments } from 'bitcoinjs-lib';
 import CryptoJS from 'crypto-js';
 
-import { KeyringManager } from '../../../src/keyring-manager';
 import { SyscoinTransactions } from '../../../src/transactions/syscoin';
 import { KeyringAccountType } from '../../../src/types';
 import { PsbtUtils } from '../../../src/utils/psbt';
 import { assertPsbtAccountScope } from '../../../src/utils/psbt-account-scope';
+import { createTestKeyring } from '../../helpers/keyring-host';
 
 jest.mock('../../../src/utils/blockbook-cache', () => ({
   fetchBackendAccountCached: jest.fn().mockResolvedValue({ tokens: [] }),
@@ -451,7 +451,7 @@ describe('PSBT approved-account boundary with the real HD signer', () => {
 
   it('bounds the actual keyring signer root as well as its sign method', async () => {
     const { hd, state, account, makePsbt, paths } = fixture();
-    const keyring: any = new KeyringManager();
+    const keyring: any = createTestKeyring();
     keyring.sessionPassword = { isCleared: () => false };
     keyring.setVaultStateGetter(() => ({
       activeAccount: { id: 0, type: KeyringAccountType.HDAccount },
@@ -547,7 +547,7 @@ describe('PSBT approved-account boundary with the real HD signer', () => {
     expect(() => assertPsbtAccountScope(makePsbt([0, 1]), scope)).toThrow(
       /approved account/
     );
-    const keyring: any = new KeyringManager();
+    const keyring: any = createTestKeyring();
     const password = 'disposable-public-test-password';
     keyring.sessionPassword = { isCleared: () => false };
     keyring.setVaultStateGetter(() => ({

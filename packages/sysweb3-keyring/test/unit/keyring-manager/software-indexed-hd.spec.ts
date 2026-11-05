@@ -1,6 +1,6 @@
 import {
   SoftwareKeyring,
-  createSoftwareKeyringHost,
+  createKeyringHost,
   INetworkType,
   KeyringAccountType,
 } from '../../../src/software';
@@ -45,7 +45,7 @@ async function fixture() {
       SmartAccount: {},
     },
   };
-  const keyring = new SoftwareKeyring(createSoftwareKeyringHost(storage));
+  const keyring = new SoftwareKeyring(createKeyringHost(storage));
   keyring.setVaultStateGetter(() => state);
   await keyring.initializeSession(phrase, password);
   jest.mocked(storage.get).mockClear();

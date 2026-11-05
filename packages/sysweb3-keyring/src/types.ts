@@ -22,6 +22,8 @@ import {
 import { SyscoinHDSigner } from './signers';
 import { TrezorKeyring } from './trezor';
 
+import type { KeyringCore } from './keyring-core';
+
 export type AccessListish =
   | Array<{ address: string; storageKeys: string[] }>
   | Array<[string, string[]]>
@@ -295,7 +297,6 @@ export interface IKeyringManager {
     accountType: KeyringAccountType,
     pwd: string
   ) => Promise<string>;
-  setStorage: (client: any) => void;
   syscoinTransaction: ISyscoinTransactions;
   isSeedValid: (seedPhrase: string) => boolean;
   getSeed: (pwd: string) => Promise<string>;
@@ -357,8 +358,7 @@ export interface IKeyringManager {
   // NEW: Separated initialization methods
   initializeSession: (seedPhrase: string, password: string) => Promise<void>;
   createFirstAccount: (label?: string) => Promise<IKeyringAccountState>;
-  transferSessionTo: (targetKeyring: IKeyringManager) => void;
-  receiveSessionOwnership: (sessionPassword: any, sessionMnemonic: any) => void;
+  transferSessionTo: (targetKeyring: KeyringCore) => void;
   lockWallet: () => Promise<void>;
   // NEW: Store access for stateless keyring
   setVaultStateGetter: (getter: () => any) => void;

@@ -2,6 +2,10 @@ import { INetworkType, INetwork } from '@sidhujag/sysweb3-network';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
+import {
+  createTestKeyring,
+  createTestKeyringHost,
+} from '../../helpers/keyring-host';
 import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
 
 describe('KeyringManager - State Management', () => {
@@ -23,7 +27,7 @@ describe('KeyringManager - State Management', () => {
 
   describe('Initial State', () => {
     it('should initialize with default state when no options provided', () => {
-      keyringManager = new KeyringManager();
+      keyringManager = createTestKeyring();
 
       // Set up vault state getter for stateless keyring
       keyringManager.setVaultStateGetter(mockVaultStateGetter);
@@ -36,7 +40,7 @@ describe('KeyringManager - State Management', () => {
     });
 
     it('should access vault state through getter', () => {
-      keyringManager = new KeyringManager();
+      keyringManager = createTestKeyring();
       keyringManager.setVaultStateGetter(mockVaultStateGetter);
 
       // Access network through getNetwork (which calls vault getter)
@@ -53,7 +57,7 @@ describe('KeyringManager - State Management', () => {
         activeNetwork: mockVaultState.networks.syscoin[57], // UTXO network
       };
 
-      keyringManager = new KeyringManager();
+      keyringManager = createTestKeyring();
       keyringManager.setVaultStateGetter(mockVaultStateGetter);
 
       const network = keyringManager.getNetwork();
@@ -109,7 +113,7 @@ describe('KeyringManager - State Management', () => {
     });
 
     it('should require vault state getter to be set', () => {
-      keyringManager = new KeyringManager();
+      keyringManager = createTestKeyring();
 
       // Should throw error when trying to access vault without getter
       expect(() => keyringManager.getNetwork()).toThrow(
@@ -209,10 +213,13 @@ describe('KeyringManager - State Management', () => {
     });
 
     it('should share session data between keyrings', async () => {
+      const host = createTestKeyringHost();
       const keyring1 = await createFreshTestKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
-        mockVaultStateGetter
+        mockVaultStateGetter,
+        undefined,
+        host
       );
 
       // Create new keyring for Syscoin
@@ -222,7 +229,7 @@ describe('KeyringManager - State Management', () => {
       };
       const utxoVaultGetter = jest.fn(() => utxoVaultState);
 
-      const keyring2 = new KeyringManager();
+      const keyring2 = createTestKeyring(host);
       keyring2.setVaultStateGetter(utxoVaultGetter);
 
       // Transfer session from keyring1 to keyring2
@@ -337,7 +344,7 @@ describe('KeyringManager - State Management', () => {
 
   describe('Vault State Integration', () => {
     it('should read all state from vault getter, not internal storage', () => {
-      keyringManager = new KeyringManager();
+      keyringManager = createTestKeyring();
       keyringManager.setVaultStateGetter(mockVaultStateGetter);
 
       // Every state access should call the vault getter
@@ -354,7 +361,7 @@ describe('KeyringManager - State Management', () => {
     });
 
     it('should work with dynamic vault state changes', () => {
-      keyringManager = new KeyringManager();
+      keyringManager = createTestKeyring();
       keyringManager.setVaultStateGetter(mockVaultStateGetter);
 
       // Initially get Ethereum network
