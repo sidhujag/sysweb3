@@ -8,8 +8,8 @@ import { ownedUtxoTestRead } from '../../helpers/utxoAuthority';
 
 import type { ISyscoinHardwareSigners } from '../../../src/transactions/syscoin-core';
 
-jest.mock('../../../src/utils/blockbook-cache', () => ({
-  fetchBackendAccountCached: jest.fn().mockResolvedValue({ tokens: [] }),
+jest.mock('../../../src/utils/owned-blockbook-account', () => ({
+  fetchOwnedBlockbookAccount: jest.fn().mockResolvedValue({ tokens: [] }),
 }));
 
 const network = {

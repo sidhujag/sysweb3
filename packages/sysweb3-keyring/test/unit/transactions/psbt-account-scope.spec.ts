@@ -10,8 +10,8 @@ import { assertPsbtAccountScope } from '../../../src/utils/psbt-account-scope';
 import { createTestKeyring } from '../../helpers/keyring-host';
 import { ownedUtxoTestRead } from '../../helpers/utxoAuthority';
 
-jest.mock('../../../src/utils/blockbook-cache', () => ({
-  fetchBackendAccountCached: jest.fn().mockResolvedValue({ tokens: [] }),
+jest.mock('../../../src/utils/owned-blockbook-account', () => ({
+  fetchOwnedBlockbookAccount: jest.fn().mockResolvedValue({ tokens: [] }),
 }));
 
 const network = {

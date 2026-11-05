@@ -5,6 +5,7 @@ import * as wif from 'wif';
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
 import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
+import { ownedUtxoTestRead } from '../../helpers/utxoAuthority';
 
 // Helper to generate deterministic WIFs from a fixed private key for given network
 const generateWif = (network: any): string => {
@@ -82,13 +83,16 @@ describe('WIF Import - KeyringManager', () => {
       };
 
       // Single-address getters behavior
-      const changeAddr = await keyringManager.getChangeAddress(imported.id);
+      const changeAddr = await keyringManager.getChangeAddress(
+        imported.id,
+        ownedUtxoTestRead()
+      );
       expect(changeAddr).toBe(imported.address);
       await expect(
-        keyringManager.getPubkey(imported.id, false)
+        keyringManager.getPubkey(imported.id, false, ownedUtxoTestRead())
       ).rejects.toThrow(/not available|Public key/);
       await expect(
-        keyringManager.getBip32Path(imported.id, false)
+        keyringManager.getBip32Path(imported.id, false, ownedUtxoTestRead())
       ).rejects.toThrow(/not available|BIP32/);
     });
   });

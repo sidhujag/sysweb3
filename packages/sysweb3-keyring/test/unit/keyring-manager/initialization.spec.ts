@@ -1,4 +1,5 @@
 import { INetworkType } from '@sidhujag/sysweb3-network';
+import * as syscoinjs from 'syscoinjs-lib';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import {
@@ -12,6 +13,9 @@ import {
   createTestKeyringHost,
 } from '../../helpers/keyring-host';
 import { setupMocks } from '../../helpers/setup';
+
+const deviceZpub =
+  'zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNfE3EfH1r1ADqtfSdVCToUG868RvUUkgDKf31mGDtKsAYz2oz2AGutZYs';
 
 describe('KeyringManager Initialization', () => {
   let keyringManager: KeyringManager;
@@ -499,20 +503,21 @@ describe('KeyringManager Initialization', () => {
 
       // Mock Trezor import
       keyringManager.trezorSigner.getAccountInfo = jest.fn().mockResolvedValue({
-        descriptor: 'xpub_trezor_test',
+        descriptor: deviceZpub,
         balance: 100000000,
       });
       keyringManager.trezorSigner.getPublicKey = jest.fn().mockResolvedValue({
         publicKey: '0x04...',
       });
-      keyringManager.getAddress = jest
-        .fn()
-        .mockResolvedValue('sys1q_trezor_test');
+      const accountRead = jest.mocked(syscoinjs.utils.fetchBackendAccount);
+      accountRead.mockClear();
 
       // Import and activate Trezor account
       const trezorAccount = await keyringManager.importTrezorAccount(
         'Test Trezor'
       );
+      expect(trezorAccount.address).toMatch(/^sys1/);
+      expect(accountRead).not.toHaveBeenCalled();
 
       // Update vault state with Trezor account
       currentVaultState.accounts[KeyringAccountType.Trezor][trezorAccount.id] =
@@ -550,7 +555,7 @@ describe('KeyringManager Initialization', () => {
       newKeyringManager.trezorSigner.getAccountInfo = jest
         .fn()
         .mockResolvedValue({
-          descriptor: 'xpub_trezor_test',
+          descriptor: deviceZpub,
           balance: 100000000,
         });
 
@@ -587,15 +592,13 @@ describe('KeyringManager Initialization', () => {
 
       // Mock Ledger import
       keyringManager.ledgerSigner.utxo = {
-        getXpub: jest
-          .fn()
-          .mockResolvedValue(
-            'zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNfE3EfH1r1ADqtfSdVCToUG868RvUUkgDKf31mGDtKsAYz2oz2AGutZYs'
-          ),
+        getXpub: jest.fn().mockResolvedValue(deviceZpub),
         getUtxoAddress: jest.fn().mockResolvedValue('sys1q_ledger_test'),
         verifyUtxoAddress: jest.fn().mockResolvedValue('sys1q_ledger_test'),
       };
 
+      const accountRead = jest.mocked(syscoinjs.utils.fetchBackendAccount);
+      accountRead.mockClear();
       const ledgerAccount = await keyringManager.importLedgerAccount(
         'Test Ledger'
       );
@@ -603,6 +606,8 @@ describe('KeyringManager Initialization', () => {
       if (!ledgerAccount) {
         throw new Error('Ledger account creation failed');
       }
+      expect(ledgerAccount.address).toMatch(/^sys1/);
+      expect(accountRead).not.toHaveBeenCalled();
 
       // Update vault state with Ledger account
       currentVaultState.accounts[KeyringAccountType.Ledger][ledgerAccount.id] =
@@ -734,15 +739,12 @@ describe('KeyringManager Initialization', () => {
 
       // Import Trezor
       keyringManager.trezorSigner.getAccountInfo = jest.fn().mockResolvedValue({
-        descriptor: 'xpub_trezor_missing',
+        descriptor: deviceZpub,
         balance: 100000000,
       });
       keyringManager.trezorSigner.getPublicKey = jest.fn().mockResolvedValue({
         publicKey: '0x04...',
       });
-      keyringManager.getAddress = jest
-        .fn()
-        .mockResolvedValue('sys1q_trezor_missing');
 
       const trezorAccount = await keyringManager.importTrezorAccount(
         'Missing Trezor'

@@ -13,13 +13,13 @@ import {
   type SyscoinOwnedReadOptions,
   type SyscoinOwnedSubmissionOptions,
 } from '../types';
-import { fetchBackendAccountCached } from '../utils/blockbook-cache';
 import {
   ExcludedOutpoint,
   excludedOutpointIds,
   filterExcludedUtxos,
   assertNoExcludedInputs,
 } from '../utils/excluded-utxos';
+import { fetchOwnedBlockbookAccount } from '../utils/owned-blockbook-account';
 import { PsbtUtils } from '../utils/psbt';
 import {
   assertPsbtAccountScope,
@@ -167,13 +167,67 @@ export type SyscoinUtxoReadContext = Readonly<{
   assertCurrent: () => void;
   network: Readonly<INetwork>;
   transport: BlockbookRead;
+  xpub: string;
 }>;
 
 type OwnedPreparation = Readonly<{
   account: Readonly<{ address: string; xpub: string }>;
+  accountId: number;
   accountType: KeyringAccountType;
   read: SyscoinUtxoReadContext;
 }>;
+type GetUtxoReadState = () => {
+  accounts: Partial<Record<KeyringAccountType, accountType>>;
+  activeAccountId: number;
+  activeAccountType: KeyringAccountType;
+  activeNetwork: INetwork;
+};
+
+/** Bind both transaction preparation and address reads to the active wallet. */
+export function captureOwnedSyscoinRead(
+  options: SyscoinOwnedReadOptions,
+  getState: GetUtxoReadState,
+  captureSigningContext: (bindSessionRevision: boolean) => () => void
+): OwnedPreparation {
+  if (!options) throw new Error('Missing owned UTXO read');
+  const assertSession = captureSigningContext(true);
+  const { activeNetwork, activeAccountId, activeAccountType, accounts } =
+    getState();
+  if (activeNetwork.kind !== INetworkType.Syscoin)
+    throw new Error('Switch to UTXO chain');
+  const selected = accounts[activeAccountType]?.[activeAccountId];
+  if (!selected) throw new Error('Active account not found');
+  const account = Object.freeze({
+    address: selected.address,
+    xpub: selected.xpub,
+  });
+  const network = Object.freeze({ ...activeNetwork });
+  const read = captureBlockbookRead(options, () => {
+    assertSession();
+    const current = getState();
+    const selected =
+      current.accounts[current.activeAccountType]?.[current.activeAccountId];
+    if (
+      current.activeAccountId !== activeAccountId ||
+      current.activeAccountType !== activeAccountType ||
+      selected?.address !== account.address ||
+      selected?.xpub !== account.xpub ||
+      current.activeNetwork.kind !== network.kind ||
+      current.activeNetwork.chainId !== network.chainId ||
+      current.activeNetwork.slip44 !== network.slip44 ||
+      current.activeNetwork.currency !== network.currency ||
+      current.activeNetwork.url !== network.url
+    )
+      throw new Error('Wallet UTXO preparation context changed');
+  });
+  return {
+    account,
+    accountId: activeAccountId,
+    accountType: activeAccountType,
+    read: Object.freeze({ ...read, network, xpub: account.xpub }),
+  };
+}
+
 type GetUtxoAddress = (
   xpub: string,
   isChangeAddress: boolean
@@ -299,42 +353,11 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
   };
 
   private captureOwnedRead(options: SyscoinOwnedReadOptions): OwnedPreparation {
-    if (!options) throw new Error('Missing owned UTXO read');
-    const assertSession = this.captureSigningContext(true);
-    const { activeNetwork, activeAccountId, activeAccountType, accounts } =
-      this.getState();
-    if (activeNetwork.kind !== INetworkType.Syscoin)
-      throw new Error('Switch to UTXO chain');
-    const selected = accounts[activeAccountType]?.[activeAccountId];
-    if (!selected) throw new Error('Active account not found');
-    const account = Object.freeze({
-      address: selected.address,
-      xpub: selected.xpub,
-    });
-    const network = Object.freeze({ ...activeNetwork });
-    const read = captureBlockbookRead(options, () => {
-      assertSession();
-      const current = this.getState();
-      const selected =
-        current.accounts[current.activeAccountType]?.[current.activeAccountId];
-      if (
-        current.activeAccountId !== activeAccountId ||
-        current.activeAccountType !== activeAccountType ||
-        selected?.address !== account.address ||
-        selected?.xpub !== account.xpub ||
-        current.activeNetwork.kind !== network.kind ||
-        current.activeNetwork.chainId !== network.chainId ||
-        current.activeNetwork.slip44 !== network.slip44 ||
-        current.activeNetwork.currency !== network.currency ||
-        current.activeNetwork.url !== network.url
-      )
-        throw new Error('Wallet UTXO preparation context changed');
-    });
-    return {
-      account,
-      accountType: activeAccountType,
-      read: Object.freeze({ ...read, network }),
-    };
+    return captureOwnedSyscoinRead(
+      options,
+      this.getState,
+      this.captureSigningContext
+    );
   }
 
   public getRecommendedFee = async (
@@ -780,12 +803,10 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
         typeof (psbt as any).addUnknownKeyValToInput === 'function'
       ) {
         // Fetch address->path mapping from Blockbook xpub endpoint
-        // (in-flight deduplicated with the keyring's getAddress lookups)
         const blockbookUrl = activeNetwork.url;
-        const res: any = await fetchBackendAccountCached(
+        const res: any = await fetchOwnedBlockbookAccount(
           blockbookUrl,
           accountXpub,
-          'tokens=used&details=tokens',
           transport
         );
         assertCurrent();

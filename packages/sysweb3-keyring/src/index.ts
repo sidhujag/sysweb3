@@ -20,7 +20,6 @@ export * from './utils/derivation-paths';
 export * from './network-utils';
 export * from './hardware-wallet-manager';
 export { PsbtUtils } from './utils/psbt';
-export { invalidateBlockbookAccountCache } from './utils/blockbook-cache';
 export {
   deriveDescriptorAddress,
   descriptorChecksum,

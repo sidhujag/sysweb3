@@ -5,6 +5,7 @@ import { privateKeyToAccount } from '../../../src/transactions/evm-local-signer'
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
 import { createTestKeyring } from '../../helpers/keyring-host';
 import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
+import { ownedUtxoTestRead } from '../../helpers/utxoAuthority';
 
 describe('KeyringManager - Key Derivation', () => {
   let keyringManager: KeyringManager;
@@ -732,7 +733,8 @@ describe('KeyringManager - Key Derivation', () => {
         const account = keyringManager.getActiveAccount().activeAccount;
         const pubkey = await keyringManager.getCurrentAddressPubkey(
           account.xpub,
-          false // receiving address
+          false,
+          ownedUtxoTestRead() // receiving address
         );
 
         // Verify the public key is a valid hex string
@@ -744,7 +746,12 @@ describe('KeyringManager - Key Derivation', () => {
           expect.any(String), // blockbook URL
           account.xpub,
           'tokens=used&details=tokens',
-          true
+          true,
+          undefined,
+          expect.objectContaining({
+            fetch: expect.any(Function),
+            signal: expect.any(AbortSignal),
+          })
         );
       });
 
@@ -771,7 +778,8 @@ describe('KeyringManager - Key Derivation', () => {
         const account = keyringManager.getActiveAccount().activeAccount;
         const pubkey = await keyringManager.getCurrentAddressPubkey(
           account.xpub,
-          true // change address
+          true,
+          ownedUtxoTestRead() // change address
         );
 
         // Verify the public key is a valid hex string
@@ -800,13 +808,15 @@ describe('KeyringManager - Key Derivation', () => {
         // Get public key for receiving address - should use index 6 (5 + 1)
         const receivingPubkey = await keyringManager.getCurrentAddressPubkey(
           account.xpub,
-          false
+          false,
+          ownedUtxoTestRead()
         );
 
         // Get public key for change address - should use index 4 (3 + 1)
         const changePubkey = await keyringManager.getCurrentAddressPubkey(
           account.xpub,
-          true
+          true,
+          ownedUtxoTestRead()
         );
 
         // They should be different
@@ -832,7 +842,8 @@ describe('KeyringManager - Key Derivation', () => {
         const account = keyringManager.getActiveAccount().activeAccount;
         const path = await keyringManager.getCurrentAddressBip32Path(
           account.xpub,
-          false // receiving address
+          false,
+          ownedUtxoTestRead() // receiving address
         );
 
         // Should return path for index 3 (2 + 1)
@@ -854,7 +865,8 @@ describe('KeyringManager - Key Derivation', () => {
         const account = keyringManager.getActiveAccount().activeAccount;
         const path = await keyringManager.getCurrentAddressBip32Path(
           account.xpub,
-          true // change address
+          true,
+          ownedUtxoTestRead() // change address
         );
 
         // Should return path for index 5 (4 + 1)
@@ -871,7 +883,7 @@ describe('KeyringManager - Key Derivation', () => {
           label: 'Account 2',
           address: newAccount.address,
           xpub: newAccount.xpub,
-          xprv: '',
+          xprv: newAccount.xprv,
           isImported: false,
           isTrezorWallet: false,
           isLedgerWallet: false,
@@ -891,7 +903,8 @@ describe('KeyringManager - Key Derivation', () => {
 
         const path = await keyringManager.getCurrentAddressBip32Path(
           newAccount.xpub,
-          false
+          false,
+          ownedUtxoTestRead()
         );
 
         // Should use account ID 1
@@ -910,11 +923,13 @@ describe('KeyringManager - Key Derivation', () => {
         // Should use index 0 for both
         const receivingPath = await keyringManager.getCurrentAddressBip32Path(
           account.xpub,
-          false
+          false,
+          ownedUtxoTestRead()
         );
         const changePath = await keyringManager.getCurrentAddressBip32Path(
           account.xpub,
-          true
+          true,
+          ownedUtxoTestRead()
         );
 
         expect(receivingPath).toBe("m/84'/57'/0'/0/0");
@@ -959,7 +974,8 @@ describe('KeyringManager - Key Derivation', () => {
         const account = btcKeyring.getActiveAccount().activeAccount;
         const path = await btcKeyring.getCurrentAddressBip32Path(
           account.xpub,
-          false
+          false,
+          ownedUtxoTestRead()
         );
 
         // Should use Bitcoin's slip44 (0)
@@ -983,10 +999,15 @@ describe('KeyringManager - Key Derivation', () => {
         const account = keyringManager.getActiveAccount().activeAccount;
 
         // Get address and public key
-        const address = await keyringManager.getAddress(account.xpub, false);
+        const address = await keyringManager.getAddress(
+          account.xpub,
+          false,
+          ownedUtxoTestRead()
+        );
         const pubkey = await keyringManager.getCurrentAddressPubkey(
           account.xpub,
-          false
+          false,
+          ownedUtxoTestRead()
         );
 
         // Both should be valid and non-empty
@@ -1047,11 +1068,13 @@ describe('KeyringManager - Key Derivation', () => {
       // 1. Test getCurrentAddressPubkey
       const receivingPubkey = await keyringManager.getCurrentAddressPubkey(
         xpub,
-        false
+        false,
+        ownedUtxoTestRead()
       );
       const changePubkey = await keyringManager.getCurrentAddressPubkey(
         xpub,
-        true
+        true,
+        ownedUtxoTestRead()
       );
       expect(receivingPubkey).toMatch(/^[0-9a-fA-F]{66}$/);
       expect(changePubkey).toMatch(/^[0-9a-fA-F]{66}$/);
@@ -1060,24 +1083,37 @@ describe('KeyringManager - Key Derivation', () => {
       // 2. Test getBip32Path
       const receivingPath = await keyringManager.getCurrentAddressBip32Path(
         xpub,
-        false
+        false,
+        ownedUtxoTestRead()
       );
       const changePath = await keyringManager.getCurrentAddressBip32Path(
         xpub,
-        true
+        true,
+        ownedUtxoTestRead()
       );
       expect(receivingPath).toBe("m/84'/57'/0'/0/3"); // index 2 + 1
       expect(changePath).toBe("m/84'/57'/0'/1/2"); // index 1 + 1
 
       // 3. Test getAddress (used by getChangeAddress)
-      const receivingAddress = await keyringManager.getAddress(xpub, false);
-      const changeAddress = await keyringManager.getAddress(xpub, true);
+      const receivingAddress = await keyringManager.getAddress(
+        xpub,
+        false,
+        ownedUtxoTestRead()
+      );
+      const changeAddress = await keyringManager.getAddress(
+        xpub,
+        true,
+        ownedUtxoTestRead()
+      );
       expect(receivingAddress).toMatch(/^(sys1|tsys1)/);
       expect(changeAddress).toMatch(/^(sys1|tsys1)/);
       expect(receivingAddress).not.toBe(changeAddress);
 
       // 4. Test getChangeAddress (calls getAddress internally)
-      const changeAddr = await keyringManager.getChangeAddress(0);
+      const changeAddr = await keyringManager.getChangeAddress(
+        0,
+        ownedUtxoTestRead()
+      );
       expect(changeAddr).toMatch(/^(sys1|tsys1)/);
 
       // All these methods work with just xpub, making them hardware wallet compatible
