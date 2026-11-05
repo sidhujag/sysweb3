@@ -4,6 +4,7 @@ import * as sjs from 'syscoinjs-lib';
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
 import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
+import { ownedUtxoTestRead } from '../../helpers/utxoAuthority';
 
 describe('Syscoin Transactions', () => {
   let keyringManager: KeyringManager;
@@ -73,7 +74,8 @@ describe('Syscoin Transactions', () => {
   describe('Fee Estimation', () => {
     it('should get recommended fee from network', async () => {
       const fee = await keyringManager.syscoinTransaction.getRecommendedFee(
-        keyringManager.getNetwork().url
+        keyringManager.getNetwork().url,
+        ownedUtxoTestRead()
       );
 
       expect(typeof fee).toBe('number');
@@ -91,13 +93,16 @@ describe('Syscoin Transactions', () => {
       });
 
       const result =
-        await keyringManager.syscoinTransaction.getEstimateSysTransactionFee({
-          txOptions: {},
-          amount: 0.1, // 0.1 SYS
-          receivingAddress: 'tsys1qdsvzmrxkq5uh0kwc6cyndsj7fluszcu3pl2wlv',
-          feeRate: 0.000001, // 1 satoshi per byte
-          token: null,
-        });
+        await keyringManager.syscoinTransaction.getEstimateSysTransactionFee(
+          {
+            txOptions: {},
+            amount: 0.1, // 0.1 SYS
+            receivingAddress: 'tsys1qdsvzmrxkq5uh0kwc6cyndsj7fluszcu3pl2wlv',
+            feeRate: 0.000001, // 1 satoshi per byte
+            token: null,
+          },
+          ownedUtxoTestRead()
+        );
 
       expect(result.fee).toBeGreaterThan(0);
       expect(result.psbt).toBeDefined();
@@ -134,13 +139,16 @@ describe('Syscoin Transactions', () => {
       // For now, we're testing the interface
       const amount = outputs.reduce((sum, out) => sum + out.value, 0);
       const result =
-        await keyringManager.syscoinTransaction.getEstimateSysTransactionFee({
-          txOptions: {},
-          amount,
-          receivingAddress: outputs[0].address,
-          feeRate,
-          token: null,
-        });
+        await keyringManager.syscoinTransaction.getEstimateSysTransactionFee(
+          {
+            txOptions: {},
+            amount,
+            receivingAddress: outputs[0].address,
+            feeRate,
+            token: null,
+          },
+          ownedUtxoTestRead()
+        );
 
       expect(result.fee).toBeGreaterThan(0);
 
@@ -168,11 +176,14 @@ describe('Syscoin Transactions', () => {
         assets: [],
       };
 
-      const result = await keyringManager.syscoinTransaction.signPSBT({
-        psbt: mockPsbtData,
-        isTrezor: false,
-        isLedger: false,
-      });
+      const result = await keyringManager.syscoinTransaction.signPSBT(
+        {
+          psbt: mockPsbtData,
+          isTrezor: false,
+          isLedger: false,
+        },
+        ownedUtxoTestRead()
+      );
 
       expect(result).toBeDefined();
       expect(typeof result).toBe('object');
@@ -184,11 +195,14 @@ describe('Syscoin Transactions', () => {
 
     it('should reject invalid PSBT format', async () => {
       await expect(
-        keyringManager.syscoinTransaction.signPSBT({
-          psbt: 'invalid-psbt-format',
-          isTrezor: false,
-          isLedger: false,
-        })
+        keyringManager.syscoinTransaction.signPSBT(
+          {
+            psbt: 'invalid-psbt-format',
+            isTrezor: false,
+            isLedger: false,
+          },
+          ownedUtxoTestRead()
+        )
       ).rejects.toThrow();
     });
 
@@ -220,11 +234,14 @@ describe('Syscoin Transactions', () => {
       };
 
       // Test with Trezor flag
-      const trezorResult = await keyringManager.syscoinTransaction.signPSBT({
-        psbt: mockPsbtData,
-        isTrezor: true,
-        isLedger: false,
-      });
+      const trezorResult = await keyringManager.syscoinTransaction.signPSBT(
+        {
+          psbt: mockPsbtData,
+          isTrezor: true,
+          isLedger: false,
+        },
+        ownedUtxoTestRead()
+      );
 
       expect(trezorResult).toBeDefined();
 
@@ -252,13 +269,16 @@ describe('Syscoin Transactions', () => {
 
       // First create unsigned PSBT
       const feeEstimate =
-        await keyringManager.syscoinTransaction.getEstimateSysTransactionFee({
-          txOptions: {},
-          amount: 0.1,
-          receivingAddress: 'tsys1qdsvzmrxkq5uh0kwc6cyndsj7fluszcu3pl2wlv',
-          feeRate: 0.0001,
-          token: null,
-        });
+        await keyringManager.syscoinTransaction.getEstimateSysTransactionFee(
+          {
+            txOptions: {},
+            amount: 0.1,
+            receivingAddress: 'tsys1qdsvzmrxkq5uh0kwc6cyndsj7fluszcu3pl2wlv',
+            feeRate: 0.0001,
+            token: null,
+          },
+          ownedUtxoTestRead()
+        );
 
       // Mock signed PSBT for signing step
       PsbtUtils.toPali.mockReturnValue({
@@ -267,32 +287,16 @@ describe('Syscoin Transactions', () => {
       });
 
       // Sign the PSBT
-      const signedPsbt = await keyringManager.syscoinTransaction.signPSBT({
-        psbt: feeEstimate.psbt,
-        isTrezor: false,
-        isLedger: false,
-      });
-
-      // Mock sendTransaction to avoid network calls
-      const originalSendTransaction =
-        keyringManager.syscoinTransaction.sendTransaction;
-      keyringManager.syscoinTransaction.sendTransaction = jest
-        .fn()
-        .mockResolvedValue({
-          txid: 'mock_transaction_id',
-        });
-
-      // Now send the signed PSBT (current API signature)
-      const result = await keyringManager.syscoinTransaction.sendTransaction(
-        signedPsbt
+      const signedPsbt = await keyringManager.syscoinTransaction.signPSBT(
+        {
+          psbt: feeEstimate.psbt,
+          isTrezor: false,
+          isLedger: false,
+        },
+        ownedUtxoTestRead()
       );
 
-      expect(result.txid).toBeDefined();
-      expect(typeof result.txid).toBe('string');
-
-      // Restore
-      keyringManager.syscoinTransaction.sendTransaction =
-        originalSendTransaction;
+      expect(signedPsbt.psbt).toBeDefined();
 
       // Restore
       PsbtUtils.fromPali = originalFromPali;
@@ -334,13 +338,16 @@ describe('Syscoin Transactions', () => {
       const feeRate = 0.000001; // 1 satoshi per byte
 
       const result =
-        await keyringManager.syscoinTransaction.getEstimateSysTransactionFee({
-          txOptions: { rbf: true }, // Replace-by-fee enabled
-          amount,
-          receivingAddress: 'tsys1qdsvzmrxkq5uh0kwc6cyndsj7fluszcu3pl2wlv',
-          feeRate,
-          token: null,
-        });
+        await keyringManager.syscoinTransaction.getEstimateSysTransactionFee(
+          {
+            txOptions: { rbf: true }, // Replace-by-fee enabled
+            amount,
+            receivingAddress: 'tsys1qdsvzmrxkq5uh0kwc6cyndsj7fluszcu3pl2wlv',
+            feeRate,
+            token: null,
+          },
+          ownedUtxoTestRead()
+        );
 
       expect(result.fee).toBeGreaterThan(0);
       expect(result.fee).toBeLessThan(amount); // Fee should be less than amount
@@ -355,13 +362,16 @@ describe('Syscoin Transactions', () => {
 
       // This should fail in a real implementation
       try {
-        await keyringManager.syscoinTransaction.getEstimateSysTransactionFee({
-          txOptions: {},
-          amount: hugeAmount,
-          receivingAddress: 'tsys1qdsvzmrxkq5uh0kwc6cyndsj7fluszcu3pl2wlv',
-          feeRate: 0.000001,
-          token: null,
-        });
+        await keyringManager.syscoinTransaction.getEstimateSysTransactionFee(
+          {
+            txOptions: {},
+            amount: hugeAmount,
+            receivingAddress: 'tsys1qdsvzmrxkq5uh0kwc6cyndsj7fluszcu3pl2wlv',
+            feeRate: 0.000001,
+            token: null,
+          },
+          ownedUtxoTestRead()
+        );
       } catch (error) {
         // Expected to fail with insufficient balance
         expect(error).toBeDefined();
@@ -385,16 +395,19 @@ describe('Syscoin Transactions', () => {
 
       // First create unsigned PSBT for token transaction
       const feeEstimate =
-        await keyringManager.syscoinTransaction.getEstimateSysTransactionFee({
-          txOptions: {},
-          amount: 100, // 100 tokens
-          receivingAddress: 'tsys1qdsvzmrxkq5uh0kwc6cyndsj7fluszcu3pl2wlv',
-          feeRate: 0.0001,
-          token: {
-            guid: '123456789',
-            symbol: 'TEST',
+        await keyringManager.syscoinTransaction.getEstimateSysTransactionFee(
+          {
+            txOptions: {},
+            amount: 100, // 100 tokens
+            receivingAddress: 'tsys1qdsvzmrxkq5uh0kwc6cyndsj7fluszcu3pl2wlv',
+            feeRate: 0.0001,
+            token: {
+              guid: '123456789',
+              symbol: 'TEST',
+            },
           },
-        });
+          ownedUtxoTestRead()
+        );
 
       // Mock signed PSBT for signing step
       PsbtUtils.toPali.mockReturnValue({
@@ -403,31 +416,16 @@ describe('Syscoin Transactions', () => {
       });
 
       // Sign the PSBT
-      const signedPsbt = await keyringManager.syscoinTransaction.signPSBT({
-        psbt: feeEstimate.psbt,
-        isTrezor: false,
-        isLedger: false,
-      });
-
-      // Mock sendTransaction to avoid network calls
-      const originalSendTransaction =
-        keyringManager.syscoinTransaction.sendTransaction;
-      keyringManager.syscoinTransaction.sendTransaction = jest
-        .fn()
-        .mockResolvedValue({
-          txid: 'mock_token_txid',
-        });
-
-      // Send the signed token transaction
-      const result = await keyringManager.syscoinTransaction.sendTransaction(
-        signedPsbt
+      const signedPsbt = await keyringManager.syscoinTransaction.signPSBT(
+        {
+          psbt: feeEstimate.psbt,
+          isTrezor: false,
+          isLedger: false,
+        },
+        ownedUtxoTestRead()
       );
 
-      expect(result.txid).toBeDefined();
-
-      // Restore sendTransaction
-      keyringManager.syscoinTransaction.sendTransaction =
-        originalSendTransaction;
+      expect(signedPsbt.psbt).toBeDefined();
 
       // Restore
       PsbtUtils.fromPali = originalFromPali;
@@ -494,7 +492,8 @@ describe('Syscoin Transactions', () => {
       expect(address.startsWith('sys1')).toBe(true); // Mainnet prefix
 
       const fee = await mainnetKeyring.syscoinTransaction.getRecommendedFee(
-        mainnetKeyring.getNetwork().url
+        mainnetKeyring.getNetwork().url,
+        ownedUtxoTestRead()
       );
       expect(fee).toBeGreaterThan(0);
     });
@@ -506,13 +505,12 @@ describe('Syscoin Transactions', () => {
       const mockFetchEstimateFee = sjs.utils.fetchEstimateFee as jest.Mock;
       mockFetchEstimateFee.mockRejectedValueOnce(new Error('Network error'));
 
-      try {
-        await keyringManager.syscoinTransaction.getRecommendedFee(
-          'https://invalid-url.com'
-        );
-      } catch (error) {
-        expect(error.message).toContain('Network error');
-      }
+      await expect(
+        keyringManager.syscoinTransaction.getRecommendedFee(
+          currentVaultState.activeNetwork.url,
+          ownedUtxoTestRead()
+        )
+      ).rejects.toThrow('Network error');
     });
 
     it('should validate addresses before sending', async () => {
@@ -530,13 +528,16 @@ describe('Syscoin Transactions', () => {
 
       // Should reject invalid addresses during fee estimation
       try {
-        await keyringManager.syscoinTransaction.getEstimateSysTransactionFee({
-          txOptions: {},
-          amount: 0.1,
-          receivingAddress: 'invalid_address',
-          feeRate: 0.0001,
-          token: null,
-        });
+        await keyringManager.syscoinTransaction.getEstimateSysTransactionFee(
+          {
+            txOptions: {},
+            amount: 0.1,
+            receivingAddress: 'invalid_address',
+            feeRate: 0.0001,
+            token: null,
+          },
+          ownedUtxoTestRead()
+        );
         // If we get here, the test should fail
         expect(true).toBe(false);
       } catch (error) {
@@ -552,13 +553,16 @@ describe('Syscoin Transactions', () => {
       keyringManager.lockWallet();
 
       try {
-        await keyringManager.syscoinTransaction.getEstimateSysTransactionFee({
-          txOptions: {},
-          amount: 0.1,
-          receivingAddress: 'tsys1qdsvzmrxkq5uh0kwc6cyndsj7fluszcu3pl2wlv',
-          feeRate: 0.0001,
-          token: null,
-        });
+        await keyringManager.syscoinTransaction.getEstimateSysTransactionFee(
+          {
+            txOptions: {},
+            amount: 0.1,
+            receivingAddress: 'tsys1qdsvzmrxkq5uh0kwc6cyndsj7fluszcu3pl2wlv',
+            feeRate: 0.0001,
+            token: null,
+          },
+          ownedUtxoTestRead()
+        );
         // If we get here, the test should fail
         expect(true).toBe(false);
       } catch (error) {

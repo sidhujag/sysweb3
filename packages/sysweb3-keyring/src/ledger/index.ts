@@ -15,7 +15,12 @@ import {
 import { ledgerCancelledError, ledgerHostError } from './host-types';
 
 import type { HardwareWalletManager } from '../hardware-wallet-manager';
-import type { LedgerHost, LedgerTypedData, LedgerUtxoHost } from './host-types';
+import type {
+  LedgerHost,
+  LedgerOperationOptions,
+  LedgerTypedData,
+  LedgerUtxoHost,
+} from './host-types';
 import type { IEvmMethods, IUTXOMethods } from './types';
 
 const invalidRequest = () =>
@@ -261,13 +266,16 @@ export class LedgerKeyring {
   }
 
   private async run<T>(
-    operation: (host: LedgerHost, assertCurrent: () => void) => Promise<T>
+    operation: (host: LedgerHost, assertCurrent: () => void) => Promise<T>,
+    options?: LedgerOperationOptions
   ): Promise<T> {
     const generation = this.generation;
     const host = this.requireHost();
     // A visible platform host owns discovery, permission and device selection.
-    if (!host.getStatus().connected)
-      await host.connect({ useGrantedDevices: true });
+    if (!host.getStatus().connected) {
+      const request = { useGrantedDevices: true };
+      await (options ? host.connect(request, options) : host.connect(request));
+    }
     const assertCurrent = () => {
       if (generation !== this.generation) throw ledgerCancelledError();
     };
@@ -315,8 +323,13 @@ export class LedgerKeyring {
   };
 
   public signPsbt = (
-    request: Parameters<LedgerUtxoHost['signPsbt']>[0]
+    request: Parameters<LedgerUtxoHost['signPsbt']>[0],
+    {
+      assertCurrent,
+      signal,
+    }: Readonly<{ assertCurrent: () => void; signal: AbortSignal }>
   ): ReturnType<LedgerUtxoHost['signPsbt']> => {
+    assertCurrent();
     const approved = Object.freeze({
       currency: request.currency,
       slip44: request.slip44,
@@ -324,7 +337,15 @@ export class LedgerKeyring {
       accountXpub: request.accountXpub,
       psbtBase64: request.psbtBase64,
     });
-    return this.run((host) => host.utxo.signPsbt(approved));
+    return this.run(
+      async (host) => {
+        assertCurrent();
+        const result = await host.utxo.signPsbt(approved, { signal });
+        assertCurrent();
+        return result;
+      },
+      { signal }
+    );
   };
 
   public getStatus() {

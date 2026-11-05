@@ -2,11 +2,13 @@ import { getNetworkConfig, INetworkType } from '@sidhujag/sysweb3-network';
 import { Psbt, Transaction, payments } from 'bitcoinjs-lib';
 import CryptoJS from 'crypto-js';
 
-import { SyscoinTransactions } from '../../../src/transactions/syscoin';
+import { createTrezorPsbtSigner } from '../../../src/transactions/hardware-psbt';
+import { SyscoinTransactionsCore } from '../../../src/transactions/syscoin-core';
 import { KeyringAccountType } from '../../../src/types';
 import { PsbtUtils } from '../../../src/utils/psbt';
 import { assertPsbtAccountScope } from '../../../src/utils/psbt-account-scope';
 import { createTestKeyring } from '../../helpers/keyring-host';
+import { ownedUtxoTestRead } from '../../helpers/utxoAuthority';
 
 jest.mock('../../../src/utils/blockbook-cache', () => ({
   fetchBackendAccountCached: jest.fn().mockResolvedValue({ tokens: [] }),
@@ -91,13 +93,12 @@ const fixture = () => {
     });
     return psbt;
   };
-  const tx = new SyscoinTransactions(
+  const tx = new SyscoinTransactionsCore(
     () => ({ hd, main: {} }),
     () => ({ main: {} }),
     () => state,
-    jest.fn(),
-    {} as any,
-    {} as any
+    {},
+    () => () => undefined
   );
   return { tx, hd, state, account, makePsbt, root, children, paths };
 };
@@ -167,7 +168,10 @@ describe('PSBT approved-account boundary with the real HD signer', () => {
     async (type) => {
       const { tx, psbt, children } = multisigFixture(type);
       const signed = PsbtUtils.fromPali(
-        await tx.signPSBT({ psbt: PsbtUtils.toPali(psbt) }),
+        await tx.signPSBT(
+          { psbt: PsbtUtils.toPali(psbt) },
+          ownedUtxoTestRead()
+        ),
         network
       );
       expect(signed.data.inputs[0].partialSig).toHaveLength(1);
@@ -186,7 +190,7 @@ describe('PSBT approved-account boundary with the real HD signer', () => {
   it('never signs another account of the same wallet in a shared multisig input', async () => {
     const { tx, psbt, children, paths } = multisigFixture('p2wsh', true);
     const signed = PsbtUtils.fromPali(
-      await tx.signPSBT({ psbt: PsbtUtils.toPali(psbt) }),
+      await tx.signPSBT({ psbt: PsbtUtils.toPali(psbt) }, ownedUtxoTestRead()),
       network
     );
     expect(signed.data.inputs[0].partialSig).toHaveLength(1);
@@ -203,7 +207,10 @@ describe('PSBT approved-account boundary with the real HD signer', () => {
     async (type) => {
       const { tx, psbt, cosignerRoot } = multisigFixture(type);
       const signed = PsbtUtils.fromPali(
-        await tx.signPSBT({ psbt: PsbtUtils.toPali(psbt) }),
+        await tx.signPSBT(
+          { psbt: PsbtUtils.toPali(psbt) },
+          ownedUtxoTestRead()
+        ),
         network
       );
       signed.signInputHD(0, cosignerRoot);
@@ -224,7 +231,10 @@ describe('PSBT approved-account boundary with the real HD signer', () => {
         psbt.data.inputs[0].partialSig![0].signature
       );
       const signed = PsbtUtils.fromPali(
-        await tx.signPSBT({ psbt: PsbtUtils.toPali(psbt) }),
+        await tx.signPSBT(
+          { psbt: PsbtUtils.toPali(psbt) },
+          ownedUtxoTestRead()
+        ),
         network
       );
       const input = signed.data.inputs[0];
@@ -243,9 +253,9 @@ describe('PSBT approved-account boundary with the real HD signer', () => {
       pubkeys: [cosigner.publicKey],
       network: bitcoinNetwork,
     }).output;
-    await expect(tx.signPSBT({ psbt: PsbtUtils.toPali(psbt) })).rejects.toThrow(
-      /approved account/
-    );
+    await expect(
+      tx.signPSBT({ psbt: PsbtUtils.toPali(psbt) }, ownedUtxoTestRead())
+    ).rejects.toThrow(/approved account/);
   });
 
   it('leaves a distinct multisig input with no approved-account key unsigned', async () => {
@@ -277,7 +287,7 @@ describe('PSBT approved-account boundary with the real HD signer', () => {
       ],
     });
     const signed = PsbtUtils.fromPali(
-      await tx.signPSBT({ psbt: PsbtUtils.toPali(psbt) }),
+      await tx.signPSBT({ psbt: PsbtUtils.toPali(psbt) }, ownedUtxoTestRead()),
       network
     );
     expect(signed.data.inputs[0].partialSig).toHaveLength(1);
@@ -293,11 +303,14 @@ describe('PSBT approved-account boundary with the real HD signer', () => {
     const { tx, hd, makePsbt } = fixture();
     const sign = jest.spyOn(hd, 'sign');
     await expect(
-      tx.signPSBT({
-        psbt: PsbtUtils.toPali(
-          makePsbt(indices as number[], forged as boolean)
-        ),
-      })
+      tx.signPSBT(
+        {
+          psbt: PsbtUtils.toPali(
+            makePsbt(indices as number[], forged as boolean)
+          ),
+        },
+        ownedUtxoTestRead()
+      )
     ).rejects.toThrow(/approved account/);
     expect(sign).not.toHaveBeenCalled();
   });
@@ -380,7 +393,10 @@ describe('PSBT approved-account boundary with the real HD signer', () => {
         return originalSign(input);
       });
       const signed = PsbtUtils.fromPali(
-        await tx.signPSBT({ psbt: PsbtUtils.toPali(joint) }),
+        await tx.signPSBT(
+          { psbt: PsbtUtils.toPali(joint) },
+          ownedUtxoTestRead()
+        ),
         network
       );
       expect(foreignHints).toEqual({
@@ -423,7 +439,10 @@ describe('PSBT approved-account boundary with the real HD signer', () => {
 
   it('still signs the approved account with the actual signer', async () => {
     const { tx, makePsbt } = fixture();
-    const signed = await tx.signPSBT({ psbt: PsbtUtils.toPali(makePsbt([0])) });
+    const signed = await tx.signPSBT(
+      { psbt: PsbtUtils.toPali(makePsbt([0])) },
+      ownedUtxoTestRead()
+    );
     expect(
       PsbtUtils.fromPali(signed, network).data.inputs[0].finalScriptWitness
     ).toBeDefined();
@@ -495,21 +514,26 @@ describe('PSBT approved-account boundary with the real HD signer', () => {
       signUtxoTransaction: jest.fn(async (_request, psbt) => psbt),
     };
     const getSigner = jest.fn();
-    const tx = new SyscoinTransactions(
+    const tx = new SyscoinTransactionsCore(
       getSigner,
       () => ({ main: {} }),
       () => state,
-      jest.fn(),
-      {} as any,
-      trezor as any
+      { trezor: createTrezorPsbtSigner(trezor as any) },
+      () => () => undefined
     );
     await expect(
-      tx.signPSBT({ psbt: PsbtUtils.toPali(makePsbt([0])), isTrezor: false })
+      tx.signPSBT(
+        { psbt: PsbtUtils.toPali(makePsbt([0])), isTrezor: false },
+        ownedUtxoTestRead()
+      )
     ).resolves.toBeDefined();
     expect(trezor.signUtxoTransaction).toHaveBeenCalledTimes(1);
     expect(getSigner).not.toHaveBeenCalled();
     await expect(
-      tx.signPSBT({ psbt: PsbtUtils.toPali(makePsbt([1])), isTrezor: true })
+      tx.signPSBT(
+        { psbt: PsbtUtils.toPali(makePsbt([1])), isTrezor: true },
+        ownedUtxoTestRead()
+      )
     ).rejects.toThrow(/approved account/);
     expect(trezor.signUtxoTransaction).toHaveBeenCalledTimes(1);
   });
@@ -614,7 +638,7 @@ describe('PSBT approved-account boundary with the real HD signer', () => {
       value: Buffer.from("m/84'/1'/1'/0/0"),
     });
     const signed = PsbtUtils.fromPali(
-      await tx.signPSBT({ psbt: PsbtUtils.toPali(psbt) }),
+      await tx.signPSBT({ psbt: PsbtUtils.toPali(psbt) }, ownedUtxoTestRead()),
       network
     );
     expect(Buffer.from(signed.data.inputs[1].finalScriptWitness)).toEqual(
@@ -644,9 +668,9 @@ describe('PSBT approved-account boundary with the real HD signer', () => {
     const psbt = makePsbt([1]);
     delete psbt.data.inputs[0].bip32Derivation;
     const sign = jest.spyOn(hd, 'sign');
-    await expect(tx.signPSBT({ psbt: PsbtUtils.toPali(psbt) })).rejects.toThrow(
-      /approved account/
-    );
+    await expect(
+      tx.signPSBT({ psbt: PsbtUtils.toPali(psbt) }, ownedUtxoTestRead())
+    ).rejects.toThrow(/approved account/);
     expect(sign).not.toHaveBeenCalled();
   });
 
@@ -658,7 +682,7 @@ describe('PSBT approved-account boundary with the real HD signer', () => {
     psbt.data.inputs[1].nonWitnessUtxo = wrong.toBuffer();
     const sign = jest.spyOn(hd, 'sign');
     await expect(
-      tx.signPSBT({ psbt: PsbtUtils.toPali(psbt) })
+      tx.signPSBT({ psbt: PsbtUtils.toPali(psbt) }, ownedUtxoTestRead())
     ).rejects.toThrow();
     expect(sign).not.toHaveBeenCalled();
   });

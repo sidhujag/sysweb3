@@ -74,7 +74,12 @@ export type {
   DeviceUnlockVaultPair,
   KeyringStoragePort,
 } from './keyring-core';
-export type { IKeyringAccountState, SyscoinOwnedReadOptions } from './types';
+export type {
+  IKeyringAccountState,
+  SyscoinOwnedReadOptions,
+  SyscoinOwnedSubmissionOptions,
+  SyscoinSubmissionDescriptor,
+} from './types';
 
 export type {
   PreparedEvmTransaction,

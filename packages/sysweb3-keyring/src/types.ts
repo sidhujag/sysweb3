@@ -230,6 +230,18 @@ export type SyscoinOwnedReadOptions = Readonly<{
   signal: AbortSignal;
 }>;
 
+/** Exact signed bytes presented to a wallet host before the only POST. */
+export type SyscoinSubmissionDescriptor = Readonly<{
+  rawTransaction: string;
+  txid: string;
+  url: string;
+}>;
+
+export type SyscoinOwnedSubmissionOptions = SyscoinOwnedReadOptions &
+  Readonly<{
+    prepare: (descriptor: SyscoinSubmissionDescriptor) => Promise<void>;
+  }>;
+
 export interface ISyscoinTransactions {
   getEstimateSysTransactionFee: (
     {
@@ -253,15 +265,18 @@ export interface ISyscoinTransactions {
       /** Coin-control exclusions supplied by a trusted wallet policy, not transaction outputs. */
       excludedOutpoints?: readonly { txid: string; vout: number }[];
     },
-    ownedRead?: SyscoinOwnedReadOptions
+    ownedRead: SyscoinOwnedReadOptions
   ) => Promise<ISyscoinTransactionFeeQuote>; // Returns UNSIGNED psbt - may throw ISyscoinTransactionError
   getRecommendedFee: (
     explorerUrl: string,
-    ownedRead?: SyscoinOwnedReadOptions
+    ownedRead: SyscoinOwnedReadOptions
   ) => Promise<number>;
   decodeRawTransaction: (psbtOrHex: any, isRawHex?: boolean) => any;
   // Sign PSBT separately
-  sendTransaction: (psbt: any) => Promise<ITxid>;
+  sendTransaction: (
+    rawTransaction: string,
+    authority: SyscoinOwnedSubmissionOptions
+  ) => Promise<ITxid>;
   signPSBT: (
     {
       psbt,
@@ -272,7 +287,7 @@ export interface ISyscoinTransactions {
       isTrezor?: boolean;
       psbt: any;
     },
-    ownedRead?: SyscoinOwnedReadOptions
+    ownedRead: SyscoinOwnedReadOptions
   ) => Promise<any>;
 }
 

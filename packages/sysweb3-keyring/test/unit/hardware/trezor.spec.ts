@@ -3,6 +3,7 @@ import { INetworkType } from '@sidhujag/sysweb3-network';
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
 import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
+import { ownedUtxoTestRead } from '../../helpers/utxoAuthority';
 
 describe('Trezor Hardware Wallet', () => {
   let keyringManager: KeyringManager;
@@ -393,11 +394,14 @@ describe('Trezor Hardware Wallet', () => {
         psbt: 'mock_signed_psbt_data',
       });
 
-      const result = await keyringManager.syscoinTransaction.signPSBT({
-        psbt: psbtData,
-        isTrezor: true,
-        isLedger: false,
-      });
+      const result = await keyringManager.syscoinTransaction.signPSBT(
+        {
+          psbt: psbtData,
+          isTrezor: true,
+          isLedger: false,
+        },
+        ownedUtxoTestRead()
+      );
 
       expect(result).toBeDefined();
       expect(result.psbt).toBe('mock_signed_psbt_data');
@@ -405,6 +409,10 @@ describe('Trezor Hardware Wallet', () => {
         expect.objectContaining({
           isTrezor: true,
           isLedger: false,
+        }),
+        expect.objectContaining({
+          assertCurrent: expect.any(Function),
+          signal: expect.any(AbortSignal),
         })
       );
 
@@ -416,29 +424,33 @@ describe('Trezor Hardware Wallet', () => {
       const xpub = keyringManager.getAccountXpub();
       expect(xpub).toBeDefined();
 
-      // Mock the PSBT parsing for sendTransaction too
-      const mockSyscoinjs = require('syscoinjs-lib');
-      const originalImportPsbtFromJson = mockSyscoinjs.utils.importPsbtFromJson;
-      mockSyscoinjs.utils.importPsbtFromJson = jest.fn().mockReturnValue({
-        extractTransaction: jest.fn().mockReturnValue({
-          getId: jest.fn().mockReturnValue('mock_transaction_id'),
-        }),
-      });
-
-      // Mock transaction creation - use current sendTransaction API signature
-      const signedPsbt = {
-        psbt: 'valid_psbt_data',
-        assets: [],
+      const send = jest
+        .spyOn(require('syscoinjs-lib').utils, 'sendRawTransaction')
+        .mockResolvedValue({ result: 'mock_transaction_id' });
+      const authority = {
+        assertCurrent: () => undefined,
+        fetch: jest.fn(),
+        prepare: jest.fn(async () => undefined),
+        signal: new AbortController().signal,
       };
-
-      const result = await keyringManager.syscoinTransaction.sendTransaction(
-        signedPsbt
-      );
-
-      expect(result.txid).toBeDefined();
-
-      // Restore original function
-      mockSyscoinjs.utils.importPsbtFromJson = originalImportPsbtFromJson;
+      try {
+        const result = await keyringManager.syscoinTransaction.sendTransaction(
+          'mock_signed_raw_transaction',
+          authority
+        );
+        expect(result.txid).toBe('mock_transaction_id');
+        expect(send).toHaveBeenCalledWith(
+          currentVaultState.activeNetwork.url,
+          'mock_signed_raw_transaction',
+          undefined,
+          expect.objectContaining({
+            prepare: authority.prepare,
+            signal: authority.signal,
+          })
+        );
+      } finally {
+        send.mockRestore();
+      }
     });
 
     it('should handle EVM transaction signing for Trezor', async () => {
@@ -626,11 +638,14 @@ describe('Trezor Hardware Wallet', () => {
       };
 
       await expect(
-        keyringManager.syscoinTransaction.signPSBT({
-          psbt: psbtData,
-          isTrezor: true,
-          isLedger: false,
-        })
+        keyringManager.syscoinTransaction.signPSBT(
+          {
+            psbt: psbtData,
+            isTrezor: true,
+            isLedger: false,
+          },
+          ownedUtxoTestRead()
+        )
       ).rejects.toThrow();
     });
 

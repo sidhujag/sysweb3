@@ -397,7 +397,6 @@ export class KeyringCore<
       this.getSigner,
       this.getReadOnlySigner,
       this.getAccountsState,
-      this.getAddress,
       this.syscoinHardwareSigners,
       this.capturePsbtSigningContext
     );

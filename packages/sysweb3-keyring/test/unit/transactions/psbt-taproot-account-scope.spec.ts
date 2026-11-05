@@ -2,9 +2,10 @@ import { signSchnorr, verifySchnorr } from '@bitcoinerlab/secp256k1';
 import { getNetworkConfig, INetworkType } from '@sidhujag/sysweb3-network';
 import { opcodes, payments, Psbt, script, Transaction } from 'bitcoinjs-lib';
 
-import { SyscoinTransactions } from '../../../src/transactions/syscoin';
+import { SyscoinTransactionsCore } from '../../../src/transactions/syscoin-core';
 import { KeyringAccountType } from '../../../src/types';
 import { PsbtUtils } from '../../../src/utils/psbt';
+import { ownedUtxoTestRead } from '../../helpers/utxoAuthority';
 
 jest.mock('../../../src/utils/blockbook-cache', () => ({
   fetchBackendAccountCached: jest.fn().mockResolvedValue({ tokens: [] }),
@@ -67,13 +68,12 @@ const fixture = () => {
       Trezor: {},
     },
   };
-  const tx = new SyscoinTransactions(
+  const tx = new SyscoinTransactionsCore(
     () => ({ hd, main: {} }),
     () => ({ main: {} }),
     () => state,
-    jest.fn(),
-    {} as any,
-    {} as any
+    {},
+    () => () => undefined
   );
   const makePsbt = (options: InputOptions[]) => {
     const spent = options.map((option) =>
@@ -129,7 +129,7 @@ const fixture = () => {
   };
   const sign = async (psbt: Psbt) =>
     PsbtUtils.fromPali(
-      await tx.signPSBT({ psbt: PsbtUtils.toPali(psbt) }),
+      await tx.signPSBT({ psbt: PsbtUtils.toPali(psbt) }, ownedUtxoTestRead()),
       network
     );
   return { hd, sign, makePsbt, approved, otherAccount };

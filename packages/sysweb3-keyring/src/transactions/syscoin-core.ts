@@ -1,5 +1,5 @@
 import { INetworkType } from '@sidhujag/sysweb3-network';
-import { ITxid, txUtils } from '@sidhujag/sysweb3-utils';
+import { ITxid } from '@sidhujag/sysweb3-utils';
 import { Psbt } from 'bitcoinjs-lib';
 import * as syscoinjs from 'syscoinjs-lib';
 // import { BIP_84, ONE_HUNDRED_MILLION, SYSCOIN_BASIC_FEE } from 'utils';
@@ -11,6 +11,7 @@ import {
   KeyringAccountType,
   accountType,
   type SyscoinOwnedReadOptions,
+  type SyscoinOwnedSubmissionOptions,
 } from '../types';
 import { fetchBackendAccountCached } from '../utils/blockbook-cache';
 import {
@@ -32,10 +33,11 @@ import type { INetwork } from '@sidhujag/sysweb3-network';
 export interface ISyscoinHardwareSigningRequest {
   readonly account: Readonly<{ id: number; xpub: string }>;
   assertCurrent: () => void;
-  getRawTransaction?: ReturnType<typeof txUtils>['getRawTransaction'];
+  getRawTransaction?: (txid: string) => Promise<unknown>;
   readonly network: Readonly<INetwork>;
   psbt: Psbt;
   scope: PsbtAccountScope;
+  signal: AbortSignal;
 }
 
 /**
@@ -56,10 +58,6 @@ export const createHardwareSignerUnavailableError = (hardware: string) =>
   Object.assign(new Error(`${hardware} signer is unavailable in this host`), {
     code: 'HARDWARE_SIGNER_UNAVAILABLE',
   });
-
-// Recommended fee changes slowly; cache per explorer to avoid hammering
-// Blockbook while the user edits amounts on the send screen
-const FEE_CACHE_TTL_MS = 60_000;
 
 const sweepError = (code: string, message: string) => ({
   error: true,
@@ -97,6 +95,73 @@ type EstimateFeeParams = {
 
 type BlockbookRead = Pick<SyscoinOwnedReadOptions, 'fetch' | 'signal'>;
 
+function captureBlockbookRead(
+  options: SyscoinOwnedReadOptions,
+  assertContext: () => void
+) {
+  if (!options) throw new Error('Missing owned UTXO read');
+  const { fetch, signal, assertCurrent: assertHost } = options;
+  if (
+    typeof fetch !== 'function' ||
+    typeof assertHost !== 'function' ||
+    typeof signal?.aborted !== 'boolean'
+  )
+    throw new Error('Invalid owned UTXO read');
+  const assertCurrent = () => {
+    if (signal.aborted)
+      throw new Error('Wallet UTXO preparation context changed');
+    const result: unknown = assertHost();
+    if (result !== undefined) {
+      if (
+        result &&
+        (typeof result === 'object' || typeof result === 'function')
+      )
+        void Promise.resolve(result).catch(() => undefined);
+      throw new Error('Owned UTXO read requires a synchronous guard');
+    }
+    assertContext();
+    if (signal.aborted)
+      throw new Error('Wallet UTXO preparation context changed');
+  };
+  assertCurrent();
+  const transport: BlockbookRead = Object.freeze({
+    signal,
+    async fetch(input, init) {
+      assertCurrent();
+      const response = await fetch(input, init);
+      assertCurrent();
+      return response;
+    },
+  });
+  return { assertCurrent, transport };
+}
+
+async function readOwnedFee(
+  explorerUrl: string,
+  { assertCurrent, transport }: ReturnType<typeof captureBlockbookRead>
+): Promise<number> {
+  assertCurrent();
+  const fee = await syscoinjs.utils.fetchEstimateFee(
+    explorerUrl,
+    1,
+    undefined,
+    transport
+  );
+  assertCurrent();
+  return fee / 1024;
+}
+
+/** Public network fee estimate. It has no wallet, account or signing access. */
+export async function readPublicSyscoinFee(
+  explorerUrl: string,
+  owner: SyscoinOwnedReadOptions
+): Promise<number> {
+  return readOwnedFee(
+    explorerUrl,
+    captureBlockbookRead(owner, () => undefined)
+  );
+}
+
 /** Internal captured context for the keyring's existing read-only builder and address lookup. */
 export type SyscoinUtxoReadContext = Readonly<{
   assertCurrent: () => void;
@@ -119,7 +184,7 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
   // New separated transaction flow for better UX:
   // 1. Call getEstimateSysTransactionFee() - creates UNSIGNED PSBT and calculates fee
   // 2. Call signPSBT() - signs the PSBT with appropriate wallet (HD/Trezor/Ledger)
-  // 3. Call sendTransaction() - broadcasts the signed PSBT
+  // 3. Call sendTransaction() - admits and broadcasts the reviewed signed bytes
   //
   // This separation allows:
   // - Independent error handling for each step
@@ -143,8 +208,7 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
     activeAccountType: KeyringAccountType;
     activeNetwork: INetwork;
   };
-  private getAddress: GetUtxoAddress;
-  private captureSigningContext?: (bindSessionRevision?: boolean) => () => void;
+  private captureSigningContext: (bindSessionRevision: boolean) => () => void;
 
   constructor(
     getSyscoinSigner: () => {
@@ -163,14 +227,14 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
       activeAccountType: KeyringAccountType;
       activeNetwork: INetwork;
     },
-    getAddress: GetUtxoAddress,
-    hardwareSigners: ISyscoinHardwareSigners = {},
-    captureSigningContext?: (bindSessionRevision?: boolean) => () => void
+    hardwareSigners: ISyscoinHardwareSigners,
+    captureSigningContext: (bindSessionRevision: boolean) => () => void
   ) {
+    if (typeof captureSigningContext !== 'function')
+      throw new Error('Missing UTXO signing context');
     this.getSigner = getSyscoinSigner;
     this.getReadOnlySigner = getReadOnlySigner;
     this.getState = getState;
-    this.getAddress = getAddress;
     this.hardwareSigners = hardwareSigners;
     this.captureSigningContext = captureSigningContext;
   }
@@ -234,18 +298,9 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
     }
   };
 
-  private feeCache = new Map<string, { fee: number; timestamp: number }>();
-
   private captureOwnedRead(options: SyscoinOwnedReadOptions): OwnedPreparation {
-    const { fetch, signal, assertCurrent: assertHost } = options;
-    if (
-      typeof fetch !== 'function' ||
-      typeof assertHost !== 'function' ||
-      typeof signal?.aborted !== 'boolean'
-    ) {
-      throw new Error('Invalid owned UTXO read');
-    }
-    const assertSession = this.captureSigningContext?.(true);
+    if (!options) throw new Error('Missing owned UTXO read');
+    const assertSession = this.captureSigningContext(true);
     const { activeNetwork, activeAccountId, activeAccountType, accounts } =
       this.getState();
     if (activeNetwork.kind !== INetworkType.Syscoin)
@@ -257,22 +312,12 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
       xpub: selected.xpub,
     });
     const network = Object.freeze({ ...activeNetwork });
-    const assertCurrent = () => {
-      const result: unknown = assertHost();
-      if (result !== undefined) {
-        if (
-          result &&
-          (typeof result === 'object' || typeof result === 'function')
-        )
-          void Promise.resolve(result).catch(() => undefined);
-        throw new Error('Owned UTXO read requires a synchronous guard');
-      }
-      assertSession?.();
+    const read = captureBlockbookRead(options, () => {
+      assertSession();
       const current = this.getState();
       const selected =
         current.accounts[current.activeAccountType]?.[current.activeAccountId];
       if (
-        signal.aborted ||
         current.activeAccountId !== activeAccountId ||
         current.activeAccountType !== activeAccountType ||
         selected?.address !== account.address ||
@@ -282,68 +327,24 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
         current.activeNetwork.slip44 !== network.slip44 ||
         current.activeNetwork.currency !== network.currency ||
         current.activeNetwork.url !== network.url
-      ) {
+      )
         throw new Error('Wallet UTXO preparation context changed');
-      }
-    };
-    assertCurrent();
-    const transport: BlockbookRead = Object.freeze({
-      signal,
-      async fetch(input, init) {
-        assertCurrent();
-        const response = await fetch(input, init);
-        assertCurrent();
-        return response;
-      },
     });
     return {
       account,
       accountType: activeAccountType,
-      read: Object.freeze({ assertCurrent, network, transport }),
+      read: Object.freeze({ ...read, network }),
     };
-  }
-
-  private async readOwnedFee(
-    explorerUrl: string,
-    read: SyscoinUtxoReadContext
-  ): Promise<number> {
-    if (explorerUrl !== read.network.url)
-      throw new Error('Owned UTXO read endpoint changed');
-    read.assertCurrent();
-    const fee = await syscoinjs.utils.fetchEstimateFee(
-      explorerUrl,
-      1,
-      undefined,
-      read.transport
-    );
-    read.assertCurrent();
-    return fee / 1024;
   }
 
   public getRecommendedFee = async (
     explorerUrl: string,
-    ownedRead?: SyscoinOwnedReadOptions
+    ownedRead: SyscoinOwnedReadOptions
   ): Promise<number> => {
-    if (ownedRead !== undefined)
-      return this.readOwnedFee(
-        explorerUrl,
-        this.captureOwnedRead(ownedRead).read
-      );
-    const cached = this.feeCache.get(explorerUrl);
-    if (cached && Date.now() - cached.timestamp < FEE_CACHE_TTL_MS) {
-      return cached.fee;
-    }
-
-    const fee = (await syscoinjs.utils.fetchEstimateFee(explorerUrl, 1)) / 1024;
-    this.feeCache.set(explorerUrl, { fee, timestamp: Date.now() });
-    return fee;
-  };
-
-  public txUtilsFunctions = () => {
-    const { getRawTransaction } = txUtils();
-    return {
-      getRawTransaction,
-    };
+    const { read } = this.captureOwnedRead(ownedRead);
+    if (explorerUrl !== read.network.url)
+      throw new Error('Owned UTXO read endpoint changed');
+    return readOwnedFee(explorerUrl, read);
   };
 
   // Internal method for signing with the HD signer
@@ -372,14 +373,15 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
       excluded: ReadonlySet<string>;
     },
     main: any,
-    read?: SyscoinUtxoReadContext
+    read: SyscoinUtxoReadContext
   ): Promise<ISyscoinTransactionFeeQuote> => {
     const raw = await syscoinjs.utils.fetchBackendUTXOS(
       main.blockbookURL,
       source,
-      ...(read ? [undefined, read.transport] : [])
+      undefined,
+      read.transport
     );
-    read?.assertCurrent();
+    read.assertCurrent();
     const rows = excluded.size
       ? filterExcludedUtxos(raw, excluded).utxos
       : Array.isArray(raw)
@@ -498,7 +500,6 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
       receivingAddress,
       feeRateBN,
       token = null,
-      excludedOutpoints = [],
     }: {
       amount: number | string; // Accept both for safer precision handling
       feeRateBN: any; // BigNumber in satoshis/byte
@@ -507,9 +508,8 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
       txOptions?: any;
       isMax?: boolean | false;
       nativeSweep?: boolean;
-      excludedOutpoints?: readonly ExcludedOutpoint[];
     },
-    owned?: OwnedPreparation & {
+    owned: OwnedPreparation & {
       main: any;
       excluded: ReadonlySet<string>;
       getOwnedAddress: GetUtxoAddress;
@@ -517,16 +517,13 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
   ): Promise<ISyscoinTransactionFeeQuote> => {
     // Ensure RBF is enabled by default if not explicitly set
     const finalTxOptions = { rbf: true, ...txOptions };
-    const state = owned ? undefined : this.getState();
-    // Use read-only signer since we're just creating an unsigned PSBT
-    const { main } = owned ?? this.getReadOnlySigner();
-    const activeAccountType = owned?.accountType ?? state!.activeAccountType;
-    const account =
-      owned?.account ??
-      state!.accounts[activeAccountType]?.[state!.activeAccountId];
-    if (!account) {
-      throw new Error('Active account not found');
-    }
+    const {
+      account,
+      accountType: activeAccountType,
+      excluded,
+      main,
+      read,
+    } = owned;
     const xpub = account.xpub;
     const isSingleAddressImported =
       activeAccountType === KeyringAccountType.Imported &&
@@ -560,14 +557,10 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
     // If this is a single-address imported account (WIF import), use the account.address for both from and change
     const changeAddress = isSingleAddressImported
       ? account.address
-      : owned
-      ? await owned.getOwnedAddress(xpub, true)
-      : await this.getAddress(xpub, true);
-    owned?.read.assertCurrent();
+      : await owned.getOwnedAddress(xpub, true);
+    read.assertCurrent();
 
     try {
-      const excluded =
-        owned?.excluded ?? excludedOutpointIds(excludedOutpoints);
       if (nativeSweep) {
         return await this.createNativeSweepPSBT(
           {
@@ -579,7 +572,7 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
             excluded,
           },
           main,
-          owned?.read
+          read
         );
       }
       const fundingUtxos = excluded.size
@@ -587,12 +580,13 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
             await syscoinjs.utils.fetchBackendUTXOS(
               main.blockbookURL,
               sourceForUtxoLookup,
-              ...(owned ? [undefined, owned.read.transport] : [])
+              undefined,
+              read.transport
             ),
             excluded
           )
         : undefined;
-      owned?.read.assertCurrent();
+      read.assertCurrent();
       if (token && token.guid) {
         // Token transaction: use assetAllocationSend
         // Create a Map for the asset allocation
@@ -666,52 +660,26 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
   // Sign PSBT with appropriate method - separated for better error handling
   private signPSBTWithMethod = async (
     psbt: Psbt,
-    isTrezor: boolean,
-    isLedger = false,
-    ownedRead?: SyscoinUtxoReadContext
+    ownedRead: SyscoinUtxoReadContext
   ): Promise<Psbt> => {
-    const { activeNetwork, activeAccountId, activeAccountType, accounts } =
-      this.getState();
+    const { assertCurrent, network: activeNetwork, transport } = ownedRead;
+    assertCurrent();
+    const { activeAccountId, activeAccountType, accounts } = this.getState();
     const account = accounts[activeAccountType]?.[activeAccountId];
     if (!account) throw new Error('Active account not found');
     // Device choice belongs to the selected account, never to PSBT/caller flags.
-    isTrezor =
+    const isTrezor =
       activeAccountType === KeyringAccountType.Trezor ||
       account.isTrezorWallet === true;
-    isLedger =
+    const isLedger =
       activeAccountType === KeyringAccountType.Ledger ||
       account.isLedgerWallet === true;
-    const assertSession = this.captureSigningContext?.() || (() => undefined);
-    // The adapter gets a detached, immutable public context. It must not be
-    // able to mutate the wallet state or the baseline used by assertCurrent.
     const scope = Object.freeze({
       account: Object.freeze({ address: account.address, xpub: account.xpub }),
       accountId: activeAccountId,
       accountType: activeAccountType,
-      network: Object.freeze({ ...activeNetwork }),
+      network: activeNetwork,
     });
-    const assertCurrent = () => {
-      ownedRead?.assertCurrent();
-      assertSession();
-      const current = this.getState();
-      const selected =
-        current.accounts[current.activeAccountType]?.[current.activeAccountId];
-      if (
-        current.activeAccountId !== activeAccountId ||
-        current.activeAccountType !== activeAccountType ||
-        selected?.address !== scope.account.address ||
-        selected?.xpub !== scope.account.xpub ||
-        current.activeNetwork.kind !== scope.network.kind ||
-        current.activeNetwork.chainId !== scope.network.chainId ||
-        current.activeNetwork.slip44 !== scope.network.slip44 ||
-        current.activeNetwork.url !== scope.network.url
-      ) {
-        throw new Error('Wallet signing context changed');
-      }
-    };
-    assertCurrent();
-    if (ownedRead && (isLedger || isTrezor))
-      throw new Error('Owned UTXO signing requires a software account');
     const sign = isLedger
       ? this.hardwareSigners.ledger
       : isTrezor
@@ -730,8 +698,14 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
         network: scope.network,
         scope,
         assertCurrent,
+        signal: transport.signal,
         ...(isLedger && {
-          getRawTransaction: this.txUtilsFunctions().getRawTransaction,
+          getRawTransaction: (txid: string) =>
+            syscoinjs.utils.fetchBackendRawTx(
+              activeNetwork.url,
+              txid,
+              transport
+            ),
         }),
       });
       assertCurrent();
@@ -743,121 +717,116 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
       //
       // We can recover by enriching PSBT inputs with a proprietary `path` field using
       // Blockbook's xpub token list (address -> path mapping), which reliably includes paths.
-      try {
-        const account = accounts[activeAccountType]?.[activeAccountId] as any;
-        const accountXpub = account?.xpub as string | undefined;
-        const accountAddress = account?.address as string | undefined;
-        const isSingleAddressImported =
-          activeAccountType === KeyringAccountType.Imported &&
-          Boolean(accountXpub) &&
-          Boolean(accountAddress) &&
-          accountXpub === accountAddress;
-        const isImportedExtended =
-          activeAccountType === KeyringAccountType.Imported &&
-          Boolean(accountXpub) &&
-          !isSingleAddressImported;
+      const account = accounts[activeAccountType]?.[activeAccountId] as any;
+      const accountXpub = account?.xpub as string | undefined;
+      const accountAddress = account?.address as string | undefined;
+      const isSingleAddressImported =
+        activeAccountType === KeyringAccountType.Imported &&
+        Boolean(accountXpub) &&
+        Boolean(accountAddress) &&
+        accountXpub === accountAddress;
+      const isImportedExtended =
+        activeAccountType === KeyringAccountType.Imported &&
+        Boolean(accountXpub) &&
+        !isSingleAddressImported;
 
-        // IMPORTANT: Imported extended keys (zprv/vprv) are typically *account-level* keys.
-        // syscoinjs-lib signs using the imported key as the BIP32 root, so PSBT `path` must be
-        // relative (change/index), not the full `m/84'/.../change/index`. If we keep full paths,
-        // bip32.derivePath can throw, leaving no derivations and causing "Need derivation path".
-        if (isImportedExtended) {
-          const inputs: any[] = (psbt as any)?.data?.inputs || [];
-          for (const input of inputs) {
-            const unknowns = input?.unknownKeyVals || [];
-            const pathKv = unknowns.find(
-              (kv) => kv?.key?.toString?.() === 'path'
-            );
-            if (!pathKv?.value) continue;
-            const fullPath = String(Buffer.from(pathKv.value).toString());
-            const parts = fullPath.split('/').filter(Boolean);
-            // Expected: m/84'/slip44'/account'/change/index
-            if (parts.length >= 2) {
-              const change = parts[parts.length - 2];
-              const index = parts[parts.length - 1];
-              const rel = `${change}/${index}`;
-              pathKv.value = Buffer.from(rel);
-            }
-          }
-        }
-
-        const needsAnyPath = (psbt as any)?.data?.inputs?.some((input) => {
+      // IMPORTANT: Imported extended keys (zprv/vprv) are typically *account-level* keys.
+      // syscoinjs-lib signs using the imported key as the BIP32 root, so PSBT `path` must be
+      // relative (change/index), not the full `m/84'/.../change/index`. If we keep full paths,
+      // bip32.derivePath can throw, leaving no derivations and causing "Need derivation path".
+      if (isImportedExtended) {
+        const inputs: any[] = (psbt as any)?.data?.inputs || [];
+        for (const input of inputs) {
           const unknowns = input?.unknownKeyVals || [];
-          return (
-            !input.bip32Derivation?.length &&
-            !input.tapBip32Derivation?.length &&
-            !unknowns.some((kv) => kv?.key?.toString?.() === 'path')
+          const pathKv = unknowns.find(
+            (kv) => kv?.key?.toString?.() === 'path'
           );
-        });
-
-        if (
-          needsAnyPath &&
-          accountXpub &&
-          !isSingleAddressImported &&
-          typeof (psbt as any).addUnknownKeyValToInput === 'function'
-        ) {
-          // Fetch address->path mapping from Blockbook xpub endpoint
-          // (in-flight deduplicated with the keyring's getAddress lookups)
-          const blockbookUrl = activeNetwork.url;
-          const res: any = await fetchBackendAccountCached(
-            blockbookUrl,
-            accountXpub,
-            'tokens=used&details=tokens',
-            ...(ownedRead ? ([ownedRead.transport] as const) : [])
-          );
-          ownedRead?.assertCurrent();
-          const tokens: any[] = Array.isArray(res?.tokens) ? res.tokens : [];
-          const addrToPath = new Map<string, string>();
-          for (const t of tokens) {
-            if (t?.name && t?.path) {
-              addrToPath.set(String(t.name), String(t.path));
-            }
-          }
-
-          const inputs: any[] = (psbt as any)?.data?.inputs || [];
-          for (let i = 0; i < inputs.length; i++) {
-            const input = inputs[i];
-            const unknowns = input?.unknownKeyVals || [];
-            const hasPath = unknowns.some(
-              (kv) => kv?.key?.toString?.() === 'path'
-            );
-            if (hasPath) continue;
-
-            const addrKv = unknowns.find(
-              (kv) => kv?.key?.toString?.() === 'address'
-            );
-            const addr = addrKv?.value
-              ? String(Buffer.from(addrKv.value).toString())
-              : null;
-            if (!addr) continue;
-
-            const fullPath = addrToPath.get(addr);
-            if (!fullPath) continue;
-
-            // Imported extended keys are account-level (BIP84 account node), so we must provide a
-            // path relative to that node (change/index), not the full m/84'/... path.
-            const pathForSigner = isImportedExtended
-              ? (() => {
-                  const parts = String(fullPath).split('/').filter(Boolean);
-                  // Expected: m/84'/slip44'/account'/change/index
-                  if (parts.length >= 2) {
-                    const change = parts[parts.length - 2];
-                    const index = parts[parts.length - 1];
-                    return `${change}/${index}`;
-                  }
-                  return fullPath;
-                })()
-              : fullPath;
-
-            (psbt as any).addUnknownKeyValToInput(i, {
-              key: Buffer.from('path'),
-              value: Buffer.from(pathForSigner),
-            });
+          if (!pathKv?.value) continue;
+          const fullPath = String(Buffer.from(pathKv.value).toString());
+          const parts = fullPath.split('/').filter(Boolean);
+          // Expected: m/84'/slip44'/account'/change/index
+          if (parts.length >= 2) {
+            const change = parts[parts.length - 2];
+            const index = parts[parts.length - 1];
+            const rel = `${change}/${index}`;
+            pathKv.value = Buffer.from(rel);
           }
         }
-      } catch (error) {
-        if (ownedRead) throw error;
-        // Best-effort enrichment; if it fails, fall back to default signing error path.
+      }
+
+      const needsAnyPath = (psbt as any)?.data?.inputs?.some((input) => {
+        const unknowns = input?.unknownKeyVals || [];
+        return (
+          !input.bip32Derivation?.length &&
+          !input.tapBip32Derivation?.length &&
+          !unknowns.some((kv) => kv?.key?.toString?.() === 'path')
+        );
+      });
+
+      if (
+        needsAnyPath &&
+        accountXpub &&
+        !isSingleAddressImported &&
+        typeof (psbt as any).addUnknownKeyValToInput === 'function'
+      ) {
+        // Fetch address->path mapping from Blockbook xpub endpoint
+        // (in-flight deduplicated with the keyring's getAddress lookups)
+        const blockbookUrl = activeNetwork.url;
+        const res: any = await fetchBackendAccountCached(
+          blockbookUrl,
+          accountXpub,
+          'tokens=used&details=tokens',
+          transport
+        );
+        assertCurrent();
+        const tokens: any[] = Array.isArray(res?.tokens) ? res.tokens : [];
+        const addrToPath = new Map<string, string>();
+        for (const t of tokens) {
+          if (t?.name && t?.path) {
+            addrToPath.set(String(t.name), String(t.path));
+          }
+        }
+
+        const inputs: any[] = (psbt as any)?.data?.inputs || [];
+        for (let i = 0; i < inputs.length; i++) {
+          const input = inputs[i];
+          const unknowns = input?.unknownKeyVals || [];
+          const hasPath = unknowns.some(
+            (kv) => kv?.key?.toString?.() === 'path'
+          );
+          if (hasPath) continue;
+
+          const addrKv = unknowns.find(
+            (kv) => kv?.key?.toString?.() === 'address'
+          );
+          const addr = addrKv?.value
+            ? String(Buffer.from(addrKv.value).toString())
+            : null;
+          if (!addr) continue;
+
+          const fullPath = addrToPath.get(addr);
+          if (!fullPath) continue;
+
+          // Imported extended keys are account-level (BIP84 account node), so we must provide a
+          // path relative to that node (change/index), not the full m/84'/... path.
+          const pathForSigner = isImportedExtended
+            ? (() => {
+                const parts = String(fullPath).split('/').filter(Boolean);
+                // Expected: m/84'/slip44'/account'/change/index
+                if (parts.length >= 2) {
+                  const change = parts[parts.length - 2];
+                  const index = parts[parts.length - 1];
+                  return `${change}/${index}`;
+                }
+                return fullPath;
+              })()
+            : fullPath;
+
+          (psbt as any).addUnknownKeyValToInput(i, {
+            key: Buffer.from('path'),
+            value: Buffer.from(pathForSigner),
+          });
+        }
       }
 
       assertCurrent();
@@ -894,7 +863,7 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
       nativeSweep?: boolean;
       excludedOutpoints?: readonly ExcludedOutpoint[];
     },
-    ownedRead?: SyscoinOwnedReadOptions
+    ownedRead: SyscoinOwnedReadOptions
   ) => {
     try {
       if (
@@ -907,49 +876,37 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
         );
       // Ensure RBF is enabled by default if not explicitly set
       const finalTxOptions = { rbf: true, ...txOptions };
-      const preparation =
-        ownedRead === undefined ? undefined : this.captureOwnedRead(ownedRead);
-      // Use read-only signer since we're just estimating fees and creating unsigned PSBT
-      const readOnlySigner = preparation
-        ? this.getReadOnlySigner(preparation.read)
-        : this.getReadOnlySigner();
-      const { main } = readOnlySigner;
-      const getOwnedAddress = preparation && readOnlySigner.getOwnedAddress;
+      const preparation = this.captureOwnedRead(ownedRead);
+      const { main, getOwnedAddress } = this.getReadOnlySigner(
+        preparation.read
+      );
       if (
-        preparation &&
-        (typeof getOwnedAddress !== 'function' ||
-          main.blockbookURL !== preparation.read.network.url)
+        typeof getOwnedAddress !== 'function' ||
+        main.blockbookURL !== preparation.read.network.url
       )
         throw new Error('Owned UTXO read adapter is unavailable');
-      const owned = preparation && {
+      const owned = {
         ...preparation,
         main,
-        getOwnedAddress: getOwnedAddress!,
+        getOwnedAddress,
         excluded: excludedOutpointIds(excludedOutpoints),
       };
-      const selectedToken = owned && token ? { ...token } : token;
-      if (owned) {
-        const { assetWhiteList } = finalTxOptions;
-        if (assetWhiteList instanceof Map)
-          finalTxOptions.assetWhiteList = new Map(assetWhiteList);
-        else if (assetWhiteList instanceof Set)
-          finalTxOptions.assetWhiteList = new Set(assetWhiteList);
-        for (const key of ['memo', 'memoHeader', 'blobHash', 'blobData']) {
-          const bytes = finalTxOptions[key];
-          if (bytes instanceof Uint8Array)
-            finalTxOptions[key] = Buffer.from(bytes);
-        }
+      const selectedToken = token ? { ...token } : token;
+      const { assetWhiteList } = finalTxOptions;
+      if (assetWhiteList instanceof Map)
+        finalTxOptions.assetWhiteList = new Map(assetWhiteList);
+      else if (assetWhiteList instanceof Set)
+        finalTxOptions.assetWhiteList = new Set(assetWhiteList);
+      for (const key of ['memo', 'memoHeader', 'blobHash', 'blobData']) {
+        const bytes = finalTxOptions[key];
+        if (bytes instanceof Uint8Array)
+          finalTxOptions[key] = Buffer.from(bytes);
       }
-      // Step 1: Determine fee rate
-      let actualFeeRate;
-      if (feeRate !== undefined) {
-        actualFeeRate = feeRate;
-      } else {
-        actualFeeRate = owned
-          ? await this.readOwnedFee(main.blockbookURL, owned.read)
-          : await this.getRecommendedFee(main.blockbookURL);
-      }
-      owned?.read.assertCurrent();
+      const actualFeeRate =
+        feeRate === undefined
+          ? await readOwnedFee(main.blockbookURL, owned.read)
+          : feeRate;
+      owned.read.assertCurrent();
 
       // Convert fee rate to satoshis/byte and ensure minimum relay of 1 sat/vB
       // Blockbook returns coins per kB; after division by 1024, some testnets
@@ -968,12 +925,11 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
           receivingAddress,
           feeRateBN,
           token: selectedToken,
-          excludedOutpoints,
         },
         owned
       );
 
-      owned?.read.assertCurrent();
+      owned.read.assertCurrent();
       const quote = {
         fee: result.fee / 1e8,
         psbt: PsbtUtils.toPali(result.psbt), // Return UNSIGNED PSBT as JSON
@@ -984,7 +940,7 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
             }
           : {}),
       };
-      owned?.read.assertCurrent();
+      owned.read.assertCurrent();
       return quote;
     } catch (error) {
       // Pass through structured errors from syscoinjs-lib
@@ -1031,55 +987,13 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
 
   // Removed createAndSignSysTransaction - functionality merged into getEstimateSysTransactionFee
 
-  private sendSignedTransaction = async (psbt): Promise<ITxid> => {
-    try {
-      // Use read-only signer since we're just broadcasting an already-signed transaction
-      const { main } = this.getReadOnlySigner();
-      // Send the transaction
-      const result = await main.send(psbt);
-
-      // Extract the transaction ID
-      const txid = result.extractTransaction().getId();
-      return { txid };
-    } catch (error) {
-      // Pass through structured errors
-      if (error.error && error.code) {
-        throw error;
-      }
-      // Wrap other errors
-      throw {
-        error: true,
-        code: 'TRANSACTION_SEND_FAILED',
-        message: error.message || 'Failed to send transaction',
-        details: error,
-      };
-    }
-  };
-
   public signPSBT = async (
-    {
-      psbt,
-      isTrezor = false,
-      isLedger = false,
-    }: {
-      psbt: any;
-      isTrezor?: boolean;
-      isLedger?: boolean;
-    },
-    ownedRead?: SyscoinOwnedReadOptions
+    { psbt }: { isLedger?: boolean; isTrezor?: boolean; psbt: any },
+    ownedRead: SyscoinOwnedReadOptions
   ): Promise<any> => {
-    if (ownedRead !== undefined && !this.captureSigningContext)
-      throw new Error('Owned UTXO signing context is unavailable');
-    const read =
-      ownedRead === undefined
-        ? undefined
-        : this.captureOwnedRead(ownedRead).read;
-    const psbtObj = PsbtUtils.fromPali(
-      psbt,
-      read?.network ?? this.getState().activeNetwork
-    );
-    const unsigned =
-      read && Buffer.from(psbtObj.data.globalMap.unsignedTx.toBuffer());
+    const { read } = this.captureOwnedRead(ownedRead);
+    const psbtObj = PsbtUtils.fromPali(psbt, read.network);
+    const unsigned = Buffer.from(psbtObj.data.globalMap.unsignedTx.toBuffer());
     // Scope validation temporarily removes other signers' hints. Preserve the
     // public metadata for the next cosigner, without exposing it to our signer.
     const cosignerMetadata = psbtObj.data.inputs.map((input, index) => ({
@@ -1096,17 +1010,9 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
           value: Buffer.from(value.value),
         }))[0],
     }));
-    const signedPsbt = await this.signPSBTWithMethod(
-      psbtObj,
-      isTrezor,
-      isLedger,
-      read
-    );
-    read?.assertCurrent();
-    if (
-      unsigned &&
-      !unsigned.equals(signedPsbt.data.globalMap.unsignedTx.toBuffer())
-    )
+    const signedPsbt = await this.signPSBTWithMethod(psbtObj, read);
+    read.assertCurrent();
+    if (!unsigned.equals(signedPsbt.data.globalMap.unsignedTx.toBuffer()))
       throw new Error('Signed PSBT differs from the prepared transaction');
     signedPsbt.data.inputs.forEach((input, index) => {
       if (input.finalScriptSig || input.finalScriptWitness) return;
@@ -1131,16 +1037,41 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
       }
     });
     const result = PsbtUtils.toPali(signedPsbt);
-    read?.assertCurrent();
+    read.assertCurrent();
     return result;
   };
 
-  public sendTransaction = async (psbt: any): Promise<ITxid> => {
-    if (!psbt) {
-      throw new Error('Signed PSBT is required for broadcasting.');
+  public sendTransaction = async (
+    rawTransaction: string,
+    authority: SyscoinOwnedSubmissionOptions
+  ): Promise<ITxid> => {
+    let read: SyscoinUtxoReadContext;
+    let fetch: SyscoinOwnedSubmissionOptions['fetch'];
+    let signal: AbortSignal;
+    let prepare: SyscoinOwnedSubmissionOptions['prepare'];
+    try {
+      if (!authority) throw new Error('Missing owned UTXO submission context');
+      const { assertCurrent } = authority;
+      ({ fetch, signal, prepare } = authority);
+      if (typeof prepare !== 'function')
+        throw new Error('Missing UTXO submission admission');
+      ({ read } = this.captureOwnedRead({ assertCurrent, fetch, signal }));
+    } catch {
+      throw Object.assign(new Error('UTXO submission was not dispatched'), {
+        code: 'UTXO_SUBMISSION_NOT_DISPATCHED',
+        transactionNotBroadcast: true,
+      });
     }
-    return await this.sendSignedTransaction(
-      PsbtUtils.fromPali(psbt, this.getState().activeNetwork)
+
+    // SyscoinJS owns the admission, final synchronous guard and exact ACK.
+    // The POST uses the captured transport directly so a matching ACK can
+    // still be observed after a host context change without a signal abort.
+    const { result: txid } = await syscoinjs.utils.sendRawTransaction(
+      read.network.url,
+      rawTransaction,
+      undefined,
+      { assertCurrent: read.assertCurrent, fetch, prepare, signal }
     );
+    return { txid };
   };
 }

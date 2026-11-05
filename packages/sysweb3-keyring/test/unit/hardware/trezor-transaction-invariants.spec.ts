@@ -129,8 +129,32 @@ describe('Trezor unsigned transaction integrity', () => {
     jest
       .spyOn(TrezorConnect, 'signTransaction')
       .mockResolvedValue({ success: true, payload: { serializedTx } } as any);
-    const signed = await receiver.signUtxoTransaction({}, psbt);
+    const signed = await receiver.signUtxoTransaction(
+      {},
+      psbt,
+      () => undefined
+    );
     expect(signed.extractTransaction().toHex()).toBe(serializedTx);
+  });
+
+  it('never imports an otherwise valid signature after the signing owner changes', async () => {
+    const psbt = fixture();
+    const before = psbt.toBase64();
+    const serializedTx = signedTransaction(psbt);
+    let current = true;
+    const device = jest
+      .spyOn(TrezorConnect, 'signTransaction')
+      .mockImplementationOnce(async () => {
+        current = false;
+        return { success: true, payload: { serializedTx } } as any;
+      });
+    await expect(
+      receiver.signUtxoTransaction({}, psbt, () => {
+        if (!current) throw new Error('Signing owner changed');
+      })
+    ).rejects.toThrow('Signing owner changed');
+    expect(device).toHaveBeenCalledTimes(1);
+    expect(psbt.toBase64()).toBe(before);
   });
 
   it.each([
@@ -162,9 +186,9 @@ describe('Trezor unsigned transaction integrity', () => {
         payload: { serializedTx: tx.toHex() },
       } as any);
       const update = jest.spyOn(psbt, 'updateInput');
-      await expect(receiver.signUtxoTransaction({}, psbt)).rejects.toThrow(
-        'different unsigned transaction'
-      );
+      await expect(
+        receiver.signUtxoTransaction({}, psbt, () => undefined)
+      ).rejects.toThrow('different unsigned transaction');
       expect(update).not.toHaveBeenCalled();
       expect(TrezorConnect.signTransaction).toHaveBeenCalledTimes(1);
     }
@@ -178,9 +202,9 @@ describe('Trezor unsigned transaction integrity', () => {
       .spyOn(TrezorConnect, 'signTransaction')
       .mockResolvedValue({ success: true, payload: { serializedTx } } as any);
     const update = jest.spyOn(approved, 'updateInput');
-    await expect(receiver.signUtxoTransaction({}, approved)).rejects.toThrow(
-      'different unsigned transaction'
-    );
+    await expect(
+      receiver.signUtxoTransaction({}, approved, () => undefined)
+    ).rejects.toThrow('different unsigned transaction');
     expect(update).not.toHaveBeenCalled();
   });
 
@@ -204,9 +228,9 @@ describe('Trezor unsigned transaction integrity', () => {
       payload: { serializedTx: tx.toHex() },
     } as any);
     const update = jest.spyOn(psbt, 'updateInput');
-    await expect(receiver.signUtxoTransaction({}, psbt)).rejects.toThrow(
-      'different unsigned transaction'
-    );
+    await expect(
+      receiver.signUtxoTransaction({}, psbt, () => undefined)
+    ).rejects.toThrow('different unsigned transaction');
     expect(update).not.toHaveBeenCalled();
   });
 
@@ -220,9 +244,9 @@ describe('Trezor unsigned transaction integrity', () => {
         return { success: true, payload: { serializedTx } } as any;
       });
     const update = jest.spyOn(psbt, 'updateInput');
-    await expect(receiver.signUtxoTransaction({}, psbt)).rejects.toThrow(
-      'different unsigned transaction'
-    );
+    await expect(
+      receiver.signUtxoTransaction({}, psbt, () => undefined)
+    ).rejects.toThrow('different unsigned transaction');
     expect(update).not.toHaveBeenCalled();
   });
 
@@ -294,7 +318,11 @@ describe('Trezor unsigned transaction integrity', () => {
         .spyOn(TrezorConnect, 'signTransaction')
         .mockResolvedValue({ success: true, payload: { serializedTx } } as any);
       const update = jest.spyOn(psbt, 'updateInput');
-      const signed = await receiver.signUtxoTransaction({}, psbt);
+      const signed = await receiver.signUtxoTransaction(
+        {},
+        psbt,
+        () => undefined
+      );
       expect(update.mock.calls.map(([index]) => index)).toEqual([0]);
       expect(signed.data.inputs[1].finalScriptSig).toEqual(originalScript);
       expect(signed.data.inputs[1].finalScriptWitness).toEqual(originalWitness);
@@ -314,9 +342,9 @@ describe('Trezor unsigned transaction integrity', () => {
         payload: { serializedTx: tx.toHex() },
       } as any);
       const update = jest.spyOn(psbt, 'updateInput');
-      await expect(receiver.signUtxoTransaction({}, psbt)).rejects.toThrow(
-        'changed an already-finalized input'
-      );
+      await expect(
+        receiver.signUtxoTransaction({}, psbt, () => undefined)
+      ).rejects.toThrow('changed an already-finalized input');
       expect(update).not.toHaveBeenCalled();
     }
   );
@@ -331,9 +359,9 @@ describe('Trezor unsigned transaction integrity', () => {
         return { success: true, payload: { serializedTx } } as any;
       });
     const update = jest.spyOn(psbt, 'updateInput');
-    await expect(receiver.signUtxoTransaction({}, psbt)).rejects.toThrow(
-      'changed an already-finalized input'
-    );
+    await expect(
+      receiver.signUtxoTransaction({}, psbt, () => undefined)
+    ).rejects.toThrow('changed an already-finalized input');
     expect(update).not.toHaveBeenCalled();
   });
 
@@ -345,7 +373,9 @@ describe('Trezor unsigned transaction integrity', () => {
         .spyOn(TrezorConnect, 'signTransaction')
         .mockResolvedValue({ success: true, payload: { serializedTx } } as any);
       const update = jest.spyOn(psbt, 'updateInput');
-      await expect(receiver.signUtxoTransaction({}, psbt)).rejects.toThrow();
+      await expect(
+        receiver.signUtxoTransaction({}, psbt, () => undefined)
+      ).rejects.toThrow();
       expect(update).not.toHaveBeenCalled();
     }
   );
@@ -360,9 +390,9 @@ describe('Trezor unsigned transaction integrity', () => {
         .spyOn(TrezorConnect, 'signTransaction')
         .mockResolvedValue({ success: true, payload: { serializedTx } } as any);
       const update = jest.spyOn(psbt, 'updateInput');
-      await expect(receiver.signUtxoTransaction({}, psbt)).rejects.toThrow(
-        'changed an already-finalized input'
-      );
+      await expect(
+        receiver.signUtxoTransaction({}, psbt, () => undefined)
+      ).rejects.toThrow('changed an already-finalized input');
       expect(update).not.toHaveBeenCalled();
     }
   );

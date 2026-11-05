@@ -56,8 +56,11 @@ const fromBase58Check = (value: string) => {
 
 const initialHDPath = `m/44'/60'/0'/0/0`;
 const DELAY_BETWEEN_POPUPS = 2000; // Increased from 1000ms to 2000ms for more reliable operation
-const stripHexPrefix = (value: string) =>
-  value.startsWith('0x') || value.startsWith('0X') ? value.slice(2) : value;
+const stripHexPrefix = (value: string) => {
+  return value.startsWith('0x') || value.startsWith('0X')
+    ? value.slice(2)
+    : value;
+};
 const finalizedFields = (input: any) => {
   if (!input.finalScriptSig && !input.finalScriptWitness) return null;
   return {
@@ -153,7 +156,8 @@ export class TrezorKeyring {
   /**
    * Initialize Trezor script.
    */
-  public async init(): Promise<boolean> {
+  public async init(assertCurrent?: () => void): Promise<boolean> {
+    assertCurrent?.();
     const generation = this.lifecycleGeneration;
     this.observeTrezor();
     if (this.initialized) {
@@ -163,9 +167,11 @@ export class TrezorKeyring {
     // Add a small delay to ensure Chrome extension context is ready
     // This helps prevent "waiting for handshake" errors
     await new Promise((resolve) => setTimeout(resolve, 100));
+    assertCurrent?.();
     if (generation !== this.lifecycleGeneration) return false;
 
     const result = await this.hardwareWalletManager.initializeTrezor();
+    assertCurrent?.();
     if (generation !== this.lifecycleGeneration) return false;
     if (result) {
       this.initialized = true;
@@ -178,11 +184,14 @@ export class TrezorKeyring {
    */
   private async executeWithRetry<T>(
     operation: () => Promise<T>,
-    operationName: string
+    operationName: string,
+    assertCurrent?: () => void
   ): Promise<T> {
+    assertCurrent?.();
     // Ensure initialization first
     if (!this.initialized) {
-      const initResult = await this.init();
+      const initResult = await this.init(assertCurrent);
+      assertCurrent?.();
       if (!initResult) {
         throw new Error('Failed to initialize Trezor');
       }
@@ -447,7 +456,12 @@ export class TrezorKeyring {
    * @returns signature object
    */
 
-  public async signUtxoTransaction(utxoTransaction: any, psbt: Psbt) {
+  public async signUtxoTransaction(
+    utxoTransaction: any,
+    psbt: Psbt,
+    assertCurrent: () => void
+  ) {
+    assertCurrent();
     // Capture approval before the device await. Witnesses and scriptSigs are
     // signatures, but every unsigned transaction field must remain identical.
     const unsignedSnapshot = (transaction: any): string =>
@@ -468,13 +482,20 @@ export class TrezorKeyring {
       });
     const approvedTransaction = unsignedSnapshot(psbt);
     const approvedFinalInputs = psbt.data.inputs.map(finalizedFields);
-    const payload = await this.executeWithRetry(async () => {
-      const response = await TrezorConnect.signTransaction(utxoTransaction);
-      if (!response.success) {
-        throw trezorResponseError(response, 'Trezor sign failed: ');
-      }
-      return response.payload;
-    }, 'signUtxoTransaction');
+    const payload = await this.executeWithRetry(
+      async () => {
+        assertCurrent();
+        const response = await TrezorConnect.signTransaction(utxoTransaction);
+        assertCurrent();
+        if (!response.success) {
+          throw trezorResponseError(response, 'Trezor sign failed: ');
+        }
+        return response.payload;
+      },
+      'signUtxoTransaction',
+      assertCurrent
+    );
+    assertCurrent();
 
     const tx = bitcoinjs.Transaction.fromHex(payload.serializedTx);
     if (
