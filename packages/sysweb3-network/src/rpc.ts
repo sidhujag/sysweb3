@@ -1,7 +1,6 @@
 import { Chain, chains } from 'eth-chains';
 import { toBeHex } from 'ethers/utils';
 
-import { findCoin } from './coin-utils';
 // import fetch from "node-fetch";
 import {
   getNetworkConfigFromCoin,
@@ -382,20 +381,17 @@ export const observeSysRpc = async (
 /** end */
 
 /**
- * Universal batch validation for both EVM and UTXO RPC endpoints with latency testing
- * This function abstracts the validation logic for both network types
+ * Validate an EVM RPC endpoint with latency sampling
  * Performs multiple requests to get accurate latency (excluding cold start)
  *
  * @param url - The RPC endpoint URL
- * @param networkType - The network type (Ethereum or Syscoin)
  * @param expectedChainId - Optional expected chainId to validate against
  * @param timeout - Request timeout in milliseconds
  * @param minLatency - Minimum latency in milliseconds to ensure quality
  * @returns Success status, chainId if successful, error message if failed, and latency info
  */
-export const validateRpcBatchUniversal = async (
+export const validateEvmRpcBatch = async (
   url: string,
-  networkType: INetworkType,
   expectedChainId?: number,
   timeout = 5000,
   minLatency = 500
@@ -420,43 +416,28 @@ export const validateRpcBatchUniversal = async (
     const startTime = Date.now();
 
     try {
-      let response: Response;
-
-      if (networkType === INetworkType.Ethereum) {
-        // EVM: Use JSON-RPC batch request
-        response = await retryableFetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
+      const response = await retryableFetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify([
+          {
+            jsonrpc: '2.0',
+            method: 'eth_chainId',
+            params: [],
+            id: 1,
           },
-          body: JSON.stringify([
-            {
-              jsonrpc: '2.0',
-              method: 'eth_chainId',
-              params: [],
-              id: 1,
-            },
-            {
-              jsonrpc: '2.0',
-              method: 'eth_blockNumber',
-              params: [],
-              id: 2,
-            },
-          ]),
-          signal: controller.signal,
-          cache: 'no-cache', // Force fresh request for testing
-        });
-      } else {
-        // UTXO: Use Blockbook API endpoint
-        const formatURL = `${
-          url.endsWith('/') ? url.slice(0, -1) : url
-        }/api/v2`;
-
-        response = await retryableFetch(formatURL, {
-          signal: controller.signal,
-          cache: 'no-cache', // Force fresh request for testing
-        });
-      }
+          {
+            jsonrpc: '2.0',
+            method: 'eth_blockNumber',
+            params: [],
+            id: 2,
+          },
+        ]),
+        signal: controller.signal,
+        cache: 'no-cache', // Force fresh request for testing
+      });
 
       clearTimeout(timeoutId);
       const latency = Date.now() - startTime;
@@ -596,193 +577,130 @@ export const validateRpcBatchUniversal = async (
 
   const data = firstSuccessfulRequest.response;
 
-  if (networkType === INetworkType.Ethereum) {
-    // Handle EVM response
-    if (!Array.isArray(data) || data.length !== 2) {
-      // Check for single error response indicating auth issues
-      if (data?.error?.message) {
-        const errorMsg = data.error.message.toLowerCase();
-        if (
-          errorMsg.includes('unauthorized') ||
-          errorMsg.includes('authentication') ||
-          errorMsg.includes('api key') ||
-          errorMsg.includes('access denied') ||
-          errorMsg.includes('forbidden')
-        ) {
-          return {
-            success: false,
-            error:
-              'Authentication required. This RPC endpoint requires an API key.',
-            requiresAuth: true,
-            latency: averageLatency,
-          };
-        }
-      }
-
-      return {
-        success: false,
-        error: 'Invalid batch response format',
-        latency: averageLatency,
-      };
-    }
-
-    const chainIdResult = data.find((r) => r.id === 1);
-    const blockNumberResult = data.find((r) => r.id === 2);
-
-    // Check for JSON-RPC level authentication errors
-    const authErrorPatterns = [
-      'unauthorized',
-      'authentication',
-      'api key',
-      'access denied',
-      'forbidden',
-      'missing key',
-      'invalid key',
-      'subscription',
-      'upgrade',
-      'plan',
-    ];
-
-    if (chainIdResult?.error) {
-      const errorMsg = chainIdResult.error.message?.toLowerCase() || '';
-      const hasAuthError = authErrorPatterns.some((pattern) =>
-        errorMsg.includes(pattern)
-      );
-
-      if (hasAuthError) {
+  if (!Array.isArray(data) || data.length !== 2) {
+    // Check for single error response indicating auth issues
+    if (data?.error?.message) {
+      const errorMsg = data.error.message.toLowerCase();
+      if (
+        errorMsg.includes('unauthorized') ||
+        errorMsg.includes('authentication') ||
+        errorMsg.includes('api key') ||
+        errorMsg.includes('access denied') ||
+        errorMsg.includes('forbidden')
+      ) {
         return {
           success: false,
-          error: chainIdResult.error.message || 'Authentication required',
+          error:
+            'Authentication required. This RPC endpoint requires an API key.',
           requiresAuth: true,
           latency: averageLatency,
         };
       }
-
-      return {
-        success: false,
-        error: chainIdResult.error.message || 'Failed to get chainId',
-        latency: averageLatency,
-      };
-    }
-
-    if (blockNumberResult?.error) {
-      const errorMsg = blockNumberResult.error.message?.toLowerCase() || '';
-      const hasAuthError = authErrorPatterns.some((pattern) =>
-        errorMsg.includes(pattern)
-      );
-
-      if (hasAuthError) {
-        return {
-          success: false,
-          error: blockNumberResult.error.message || 'Authentication required',
-          requiresAuth: true,
-          latency: averageLatency,
-        };
-      }
-
-      return {
-        success: false,
-        error: blockNumberResult.error.message || 'Failed to get block number',
-        latency: averageLatency,
-      };
-    }
-
-    if (!chainIdResult?.result || !blockNumberResult?.result) {
-      return {
-        success: false,
-        error: 'Invalid response: missing required data',
-        latency: averageLatency,
-      };
-    }
-
-    const chainId = parseInt(chainIdResult.result, 16);
-
-    // If expectedChainId is provided, validate it matches
-    if (expectedChainId !== undefined && chainId !== expectedChainId) {
-      return {
-        success: false,
-        chainId,
-        error: `Chain ID mismatch: expected ${expectedChainId}, got ${chainId}`,
-        latency: averageLatency,
-      };
-    }
-
-    // Check minimum latency requirement using the average warm latency
-    if (averageLatency > minLatency) {
-      return {
-        success: false,
-        chainId,
-        error: `RPC response too slow (${Math.round(
-          averageLatency
-        )}ms avg). Maximum ${minLatency}ms required for quality assurance.`,
-        latency: averageLatency,
-      };
     }
 
     return {
-      success: true,
-      chainId,
-      latency: averageLatency,
-    };
-  } else {
-    // Handle UTXO response
-    if (!data || !data.blockbook || !data.backend) {
-      return {
-        success: false,
-        error: 'Invalid response format from UTXO RPC',
-        latency: averageLatency,
-      };
-    }
-
-    const {
-      blockbook: { network, coin },
-    } = data;
-
-    // Handle both old and new Blockbook API formats:
-    // - Newer Blockbook: has "network" field (e.g., "BCH")
-    // - Older Blockbook: only has "coin" field (e.g., "Syscoin")
-    const coinIdentifier = network || coin;
-
-    if (!coinIdentifier) {
-      return {
-        success: false,
-        error: 'Invalid UTXO RPC response: missing coin/network data',
-        latency: averageLatency,
-      };
-    }
-
-    // For UTXO networks, we use slip44 as chainId from coin data
-    // Try to find coin by the identifier we have
-    const coinData = findCoin({ name: coinIdentifier });
-
-    const chainId = coinData?.chainId || coinData?.slip44;
-
-    // If expectedChainId is provided, validate it matches
-    if (expectedChainId !== undefined && chainId !== expectedChainId) {
-      return {
-        success: false,
-        chainId,
-        error: `Chain ID mismatch: expected ${expectedChainId}, got ${chainId}`,
-        latency: averageLatency,
-      };
-    }
-
-    // Check minimum latency requirement using the average warm latency
-    if (averageLatency > minLatency) {
-      return {
-        success: false,
-        chainId,
-        error: `Blockbook response too slow (${Math.round(
-          averageLatency
-        )}ms avg). Maximum ${minLatency}ms required for quality assurance.`,
-        latency: averageLatency,
-      };
-    }
-
-    return {
-      success: true,
-      chainId,
+      success: false,
+      error: 'Invalid batch response format',
       latency: averageLatency,
     };
   }
+
+  const chainIdResult = data.find((r) => r.id === 1);
+  const blockNumberResult = data.find((r) => r.id === 2);
+
+  // Check for JSON-RPC level authentication errors
+  const authErrorPatterns = [
+    'unauthorized',
+    'authentication',
+    'api key',
+    'access denied',
+    'forbidden',
+    'missing key',
+    'invalid key',
+    'subscription',
+    'upgrade',
+    'plan',
+  ];
+
+  if (chainIdResult?.error) {
+    const errorMsg = chainIdResult.error.message?.toLowerCase() || '';
+    const hasAuthError = authErrorPatterns.some((pattern) =>
+      errorMsg.includes(pattern)
+    );
+
+    if (hasAuthError) {
+      return {
+        success: false,
+        error: chainIdResult.error.message || 'Authentication required',
+        requiresAuth: true,
+        latency: averageLatency,
+      };
+    }
+
+    return {
+      success: false,
+      error: chainIdResult.error.message || 'Failed to get chainId',
+      latency: averageLatency,
+    };
+  }
+
+  if (blockNumberResult?.error) {
+    const errorMsg = blockNumberResult.error.message?.toLowerCase() || '';
+    const hasAuthError = authErrorPatterns.some((pattern) =>
+      errorMsg.includes(pattern)
+    );
+
+    if (hasAuthError) {
+      return {
+        success: false,
+        error: blockNumberResult.error.message || 'Authentication required',
+        requiresAuth: true,
+        latency: averageLatency,
+      };
+    }
+
+    return {
+      success: false,
+      error: blockNumberResult.error.message || 'Failed to get block number',
+      latency: averageLatency,
+    };
+  }
+
+  if (!chainIdResult?.result || !blockNumberResult?.result) {
+    return {
+      success: false,
+      error: 'Invalid response: missing required data',
+      latency: averageLatency,
+    };
+  }
+
+  const chainId = parseInt(chainIdResult.result, 16);
+
+  // If expectedChainId is provided, validate it matches
+  if (expectedChainId !== undefined && chainId !== expectedChainId) {
+    return {
+      success: false,
+      chainId,
+      error: `Chain ID mismatch: expected ${expectedChainId}, got ${chainId}`,
+      latency: averageLatency,
+    };
+  }
+
+  // Check minimum latency requirement using the average warm latency
+  if (averageLatency > minLatency) {
+    return {
+      success: false,
+      chainId,
+      error: `RPC response too slow (${Math.round(
+        averageLatency
+      )}ms avg). Maximum ${minLatency}ms required for quality assurance.`,
+      latency: averageLatency,
+    };
+  }
+
+  return {
+    success: true,
+    chainId,
+    latency: averageLatency,
+  };
 };

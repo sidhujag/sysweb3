@@ -35,7 +35,7 @@ console.log(sysweb3);
 
 Inside of source folder, you'll find some files like:
 
-- `rpc.ts`: this file have some methods like `validateCurrentRpcUrl` and `getSysRpc(draft, owner)` . There, you'll be able to validate the your preferred RPC url. These functions will ensure that you don't have any connection issues with the chosen RPC.
+- `rpc.ts`: includes `validateEvmRpcBatch` for EVM connections, `getSysRpc(draft, owner)` for verified UTXO registrations, and `observeSysRpc(draft, owner)` for explicit first use.
 - `networks.ts`: this file have `IWeb3Network` interface and `networks` object. There, you'll be able to use these datas to add type in your functions and build an network initial state.
 - `web3.ts`: this file have the method `setActiveNetwork`. There, you'll be able to change the current network of your dapp.
 
