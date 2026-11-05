@@ -153,12 +153,9 @@ export interface IEthereumTransactions {
   }: ISendSignedErcTransactionProps) => Promise<IResponseFromSendErcSignedTransaction>;
   verifyPersonalMessage: (msg: string, sign: string) => string;
   toBigNumber: (aBigNumberish: string | number) => BigNumber;
-  sendSignedErc20Transaction: ({
-    networkUrl,
-    receiver,
-    tokenAddress,
-    tokenAmount,
-  }: ISendSignedErcTransactionProps) => Promise<IResponseFromSendErcSignedTransaction>;
+  sendSignedErc20Transaction: (
+    params: ISendSignedErc20TransactionProps
+  ) => Promise<IResponseFromSendErcSignedTransaction>;
 
   sendSignedErc721Transaction: ({
     networkUrl,
@@ -491,6 +488,16 @@ export interface ISendSignedErcTransactionProps {
   tokenAmount?: string;
   tokenId?: bigint | number | string;
 }
+
+/** Pass the legacy decimal amount or canonical uint256 base units. */
+export type ISendSignedErc20TransactionProps = Omit<
+  ISendSignedErcTransactionProps,
+  'tokenAmount'
+> &
+  (
+    | { tokenAmount?: string; tokenAmountUnits?: never }
+    | { tokenAmount?: never; tokenAmountUnits: string }
+  );
 
 export interface IResponseFromSendErcSignedTransaction {
   accessList: any[];

@@ -489,6 +489,162 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
       expect(device).toHaveBeenCalledTimes(1);
     });
 
+    describe('ERC20 base units', () => {
+      const tokenAddress = `0x${'44'.repeat(20)}`;
+      const maxUnits = ((1n << 256n) - 1n).toString();
+      const transfer = new Interface(['function transfer(address,uint256)']);
+      const tokenRequest = () => ({
+        networkUrl: state.activeNetwork.url,
+        tokenAddress,
+        receiver: recipient,
+        gasLimit: '200000',
+      });
+      const sendExact = (fields: {
+        tokenAmountUnits?: unknown;
+        tokenAmount?: string;
+        isLegacy?: boolean;
+      }) =>
+        sdk.sendSignedErc20Transaction({
+          ...tokenRequest(),
+          decimals: 255,
+          ...fields,
+        } as Parameters<typeof sdk.sendSignedErc20Transaction>[0]);
+      const expectNoTokenIo = () => {
+        expect(provider.getFeeData).not.toHaveBeenCalled();
+        expect(provider.getGasPrice).not.toHaveBeenCalled();
+        expect(provider.getTransactionCount).not.toHaveBeenCalled();
+        expect(device).not.toHaveBeenCalled();
+        expect(provider.sendTransaction).not.toHaveBeenCalled();
+      };
+      const expectSignedAmount = (units: string, isLegacy: boolean) => {
+        expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
+        const tx = Transaction.from(provider.sendTransaction.mock.calls[0][0]);
+        expect(tx).toMatchObject({
+          from: wallet.address,
+          to: tokenAddress,
+          value: 0n,
+          type: isLegacy ? 0 : 2,
+          nonce: 7,
+        });
+        expect(
+          Array.from(transfer.decodeFunctionData('transfer', tx.data))
+        ).toEqual([recipient, BigInt(units)]);
+        return tx;
+      };
+
+      beforeEach(() => {
+        provider.getGasPrice = jest.fn().mockResolvedValue(BigNumber.from(100));
+        provider.getFeeData = jest.fn().mockResolvedValue({
+          maxFeePerGas: BigNumber.from(100),
+          maxPriorityFeePerGas: BigNumber.from(2),
+        });
+      });
+
+      it.each([
+        [maxUnits, false],
+        ['0', true],
+      ] as const)(
+        'preserves exact device calldata for %s (legacy %s)',
+        async (units, isLegacy) => {
+          const response = await sendExact({
+            tokenAmountUnits: units,
+            isLegacy,
+          });
+          expect(response.hash).toBe(expectSignedAmount(units, isLegacy).hash);
+          expect(device).toHaveBeenCalledTimes(1);
+        }
+      );
+
+      it.each([
+        ['sendSignedErc721Transaction', false],
+        ['sendSignedErc1155Transaction', true],
+      ] as const)(
+        'rejects ERC20 amount on %s before RPC or device',
+        async (method, isLegacy) => {
+          const request = {
+            ...tokenRequest(),
+            tokenId: '2',
+            tokenAmountUnits: maxUnits,
+            isLegacy,
+          };
+          await expect(sdk[method](request)).rejects.toThrow(
+            'ERC20 amount is not allowed for NFT transfers'
+          );
+          expectNoTokenIo();
+        }
+      );
+
+      if (kind === KeyringAccountType.Ledger) {
+        it.each([KeyringAccountType.HDAccount, KeyringAccountType.Imported])(
+          'preserves exact local calldata for %s',
+          async (accountType) => {
+            softwareUsed = true;
+            state.activeAccountType = accountType;
+            state.accounts[accountType] = { ...state.accounts[kind] };
+            provider.verifyConfiguredChainId = jest
+              .fn()
+              .mockResolvedValue(undefined);
+            getKey.mockReturnValue({
+              address: wallet.address,
+              decryptedPrivateKey: wallet.privateKey,
+            });
+            const response = await sendExact({ tokenAmountUnits: maxUnits });
+            expect(response.hash).toBe(
+              expectSignedAmount(maxUnits, false).hash
+            );
+            expect(getKey).toHaveBeenCalledTimes(1);
+            expect(device).not.toHaveBeenCalled();
+          }
+        );
+
+        it.each([
+          null,
+          1,
+          1n,
+          '',
+          '01',
+          '0x1',
+          '1e1',
+          '1\n',
+          '-1',
+          (1n << 256n).toString(),
+        ])(
+          'rejects malformed base units %s before RPC or device',
+          async (units) => {
+            await expect(
+              sendExact({ tokenAmountUnits: units })
+            ).rejects.toThrow('Invalid ERC20 amount');
+            expectNoTokenIo();
+          }
+        );
+
+        it('rejects two amount representations before RPC or device', async () => {
+          await expect(
+            sendExact({
+              tokenAmountUnits: '1',
+              tokenAmount: '2',
+              isLegacy: true,
+            })
+          ).rejects.toThrow('Invalid ERC20 amount');
+          expectNoTokenIo();
+        });
+
+        it('retains the legacy human amount key-error precedence', async () => {
+          softwareUsed = true;
+          state.activeAccountType = KeyringAccountType.HDAccount;
+          state.accounts.HDAccount = { ...state.accounts[kind] };
+          const keyError = new Error('Cannot access selected account key');
+          getKey.mockImplementationOnce(() => {
+            throw keyError;
+          });
+          await expect(sendExact({ tokenAmount: '2' })).rejects.toBe(keyError);
+          expect(getKey).toHaveBeenCalledTimes(1);
+          expect(provider.getTransactionCount).not.toHaveBeenCalled();
+          expect(provider.sendTransaction).not.toHaveBeenCalled();
+        });
+      }
+    });
+
     describe.each([
       [
         'ERC20 zero decimals',

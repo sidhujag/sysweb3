@@ -47,6 +47,7 @@ import {
 import { CustomJsonRpcProvider, wrapTransactionResponse } from '../providers';
 import {
   IResponseFromSendErcSignedTransaction,
+  ISendSignedErc20TransactionProps,
   ISendSignedErcTransactionProps,
   IEthereumTransactions,
   IEvmCancellationOptions,
@@ -2482,6 +2483,7 @@ export class EthereumTransactions<
     receiver,
     tokenAddress,
     tokenAmount,
+    tokenAmountUnits,
     isLegacy = false,
     maxPriorityFeePerGas,
     maxFeePerGas,
@@ -2489,7 +2491,7 @@ export class EthereumTransactions<
     decimals,
     gasLimit,
     saveTrezorTx,
-  }: ISendSignedErcTransactionProps): Promise<IResponseFromSendErcSignedTransaction> => {
+  }: ISendSignedErc20TransactionProps): Promise<IResponseFromSendErcSignedTransaction> => {
     const {
       activeAccount,
       activeAccountType,
@@ -2499,6 +2501,22 @@ export class EthereumTransactions<
       assertCurrent,
     } = this.captureEvmSigningContext();
     const activeAccountAddress = activeAccount.address;
+    let exactTokenAmount: bigint | undefined;
+    if (tokenAmountUnits !== undefined) {
+      if (
+        tokenAmount !== undefined ||
+        typeof tokenAmountUnits !== 'string' ||
+        !/^(0|[1-9][0-9]{0,77})$/.test(tokenAmountUnits)
+      )
+        throw new Error('Invalid ERC20 amount');
+      exactTokenAmount = parseEvmFeeQuantity(tokenAmountUnits, 'ERC20 amount');
+    }
+    const resolveTokenAmount = () => {
+      if (exactTokenAmount !== undefined) return exactTokenAmount;
+      const resolvedDecimals =
+        decimals === undefined || decimals === null ? 18 : Number(decimals);
+      return parseUnits(tokenAmount as string, resolvedDecimals).toBigInt();
+    };
     const submission = this.captureSubmission(
       'erc20',
       activeAccount,
@@ -2528,13 +2546,7 @@ export class EthereumTransactions<
           getErc20Abi(),
           provider as any
         );
-        // Preserve zero-decimal tokens: use provided decimals when defined (including 0).
-        const resolvedDecimals =
-          decimals === undefined || decimals === null ? 18 : Number(decimals);
-        const calculatedTokenAmount = parseUnits(
-          tokenAmount as string,
-          resolvedDecimals
-        ).toBigInt();
+        const calculatedTokenAmount = resolveTokenAmount();
         let transferMethod;
         if (isLegacy) {
           const overrides = {
@@ -2602,16 +2614,9 @@ export class EthereumTransactions<
           provider as any
         );
 
-        const resolvedDecimals =
-          decimals === undefined || decimals === null ? 18 : Number(decimals);
-        const calculatedTokenAmount = parseUnits(
-          tokenAmount as string,
-          resolvedDecimals
-        ).toBigInt();
-
         const txData = _contract.interface.encodeFunctionData('transfer', [
           receiver,
-          calculatedTokenAmount,
+          resolveTokenAmount(),
         ]);
 
         // Use fallback gas limit if not provided (for auto-estimation)
@@ -2704,16 +2709,9 @@ export class EthereumTransactions<
           provider as any
         );
 
-        const resolvedDecimals =
-          decimals === undefined || decimals === null ? 18 : Number(decimals);
-        const calculatedTokenAmount = parseUnits(
-          tokenAmount as string,
-          resolvedDecimals
-        ).toBigInt();
-
         const txData = _contract.interface.encodeFunctionData('transfer', [
           receiver,
-          calculatedTokenAmount,
+          resolveTokenAmount(),
         ]);
 
         // Use fallback gas limit if not provided (for auto-estimation)
@@ -2826,16 +2824,11 @@ export class EthereumTransactions<
     }
   };
 
-  sendSignedErc721Transaction = async ({
-    receiver,
-    tokenAddress,
-    tokenId,
-    isLegacy,
-    maxPriorityFeePerGas,
-    maxFeePerGas,
-    gasPrice,
-    gasLimit,
-  }: ISendSignedErcTransactionProps): Promise<IResponseFromSendErcSignedTransaction> => {
+  sendSignedErc721Transaction = async (
+    request: ISendSignedErcTransactionProps
+  ): Promise<IResponseFromSendErcSignedTransaction> => {
+    const { receiver, tokenAddress, tokenId, gasLimit } = request;
+    let { isLegacy, maxPriorityFeePerGas, maxFeePerGas, gasPrice } = request;
     const {
       activeAccount,
       activeAccountType,
@@ -2844,6 +2837,8 @@ export class EthereumTransactions<
       provider,
       assertCurrent,
     } = this.captureEvmSigningContext();
+    if ('tokenAmountUnits' in request)
+      throw new Error('ERC20 amount is not allowed for NFT transfers');
     const activeAccountAddress = activeAccount.address;
     const submission = this.captureSubmission(
       'erc721',
@@ -3156,17 +3151,11 @@ export class EthereumTransactions<
     }
   };
 
-  sendSignedErc1155Transaction = async ({
-    receiver,
-    tokenAddress,
-    tokenId,
-    tokenAmount,
-    isLegacy,
-    maxPriorityFeePerGas,
-    maxFeePerGas,
-    gasPrice,
-    gasLimit,
-  }: ISendSignedErcTransactionProps): Promise<IResponseFromSendErcSignedTransaction> => {
+  sendSignedErc1155Transaction = async (
+    request: ISendSignedErcTransactionProps
+  ): Promise<IResponseFromSendErcSignedTransaction> => {
+    const { receiver, tokenAddress, tokenId, tokenAmount, gasLimit } = request;
+    let { isLegacy, maxPriorityFeePerGas, maxFeePerGas, gasPrice } = request;
     const {
       activeAccount,
       activeAccountType,
@@ -3175,6 +3164,8 @@ export class EthereumTransactions<
       provider,
       assertCurrent,
     } = this.captureEvmSigningContext();
+    if ('tokenAmountUnits' in request)
+      throw new Error('ERC20 amount is not allowed for NFT transfers');
     const activeAccountAddress = activeAccount.address;
     const submission = this.captureSubmission(
       'erc1155',

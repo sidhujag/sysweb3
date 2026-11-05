@@ -296,6 +296,54 @@ for (const kind of kinds)
     });
   }
 
+it('keeps exact ERC20 amounts on the ERC20 capture and persistence route', async () => {
+  const nonceRead = deferred();
+  const nonceReady = deferred();
+  const stored = deferred();
+  const acknowledged = deferred();
+  let saved!: EvmSignedSubmission;
+  const capture = jest.fn(() => ({
+    assertCurrent: () => undefined,
+    async persistSigned(record: EvmSignedSubmission) {
+      saved = record;
+      stored.resolve();
+      await acknowledged.promise;
+    },
+  }));
+  const { sdk, network, provider } = fixture(
+    KeyringAccountType.HDAccount,
+    capture
+  );
+  provider.getTransactionCount.mockImplementationOnce(async () => {
+    nonceRead.resolve();
+    await nonceReady.promise;
+    return 7;
+  });
+  const sending = sdk.sendSignedErc20Transaction({
+    networkUrl: network.url,
+    receiver: to,
+    tokenAddress: to,
+    tokenAmountUnits: '9007199254740993',
+    decimals: 255,
+    gasLimit: 42000,
+    maxFeePerGas: 3,
+    maxPriorityFeePerGas: 1,
+  });
+  await Promise.race([nonceRead.promise, sending]);
+  expect(capture).toHaveBeenCalledWith(
+    expect.objectContaining({ operation: 'erc20' })
+  );
+  expect(provider.sendTransaction).not.toHaveBeenCalled();
+  nonceReady.resolve();
+  await Promise.race([stored.promise, sending]);
+  expect(saved.context.operation).toBe('erc20');
+  expect(provider.sendTransaction).not.toHaveBeenCalled();
+  acknowledged.resolve();
+  await sending;
+  expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
+  expect(provider.sendTransaction).toHaveBeenCalledWith(saved.rawTransaction);
+});
+
 it.each(['cancel', 'speed-up'] as const)(
   'keeps %s preview read-only without a persistence capability',
   async (operation) => {
