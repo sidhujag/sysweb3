@@ -692,12 +692,22 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
     if (isTrezor || isLedger) assertPsbtAccountScope(psbt, scope);
 
     if (isLedger || isTrezor) {
+      const assertHardwareCurrent = () => {
+        try {
+          assertCurrent();
+        } catch {
+          // The vendor retry loop already treats AbortError as terminal.
+          throw Object.assign(new Error('Wallet signing context changed'), {
+            name: 'AbortError',
+          });
+        }
+      };
       const signed = await sign!({
         psbt,
         account: Object.freeze({ id: account.id, xpub: account.xpub }),
         network: scope.network,
         scope,
-        assertCurrent,
+        assertCurrent: assertHardwareCurrent,
         signal: transport.signal,
         ...(isLedger && {
           getRawTransaction: (txid: string) =>
@@ -708,7 +718,7 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
             ),
         }),
       });
-      assertCurrent();
+      assertHardwareCurrent();
       return signed;
     } else {
       // HD signing (seed-based HDAccount or imported BIP84 zprv/vprv account).
