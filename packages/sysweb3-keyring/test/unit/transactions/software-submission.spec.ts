@@ -9,6 +9,11 @@ import {
 } from '../../../src/software';
 
 import type { EvmSignedSubmission } from '../../../src/transactions/evm-submission';
+
+const specializedApproval = {
+  mode: 'specialized' as const,
+  assertCurrent: () => undefined,
+};
 const phrase =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 const password = 'Public SDK submission fixture 1!';
@@ -106,7 +111,8 @@ it.each(['healthy', 'lock', 'account-change'] as const)(
             gasPrice: 2,
             nonce: 7,
           } as any,
-          true
+          true,
+          specializedApproval
         )
         .catch((e) => e);
       await Promise.race([

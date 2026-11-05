@@ -5,6 +5,11 @@ import { BigNumber, serializeTransaction } from '../../../src/ethers-v6';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import { KeyringAccountType } from '../../../src/types';
 
+const specializedApproval = {
+  mode: 'specialized' as const,
+  assertCurrent: () => undefined,
+};
+
 const PRIVATE_KEY =
   '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const ADDRESS = '0xFCAd0B19bB29D4674531d6f115237E16AfCE377c';
@@ -100,7 +105,11 @@ describe('formatted EVM transaction submission boundary', () => {
       if (method === 'estimateGas') delete params.gasLimit;
       if (method === 'getGasPrice') delete params.gasPrice;
       await expect(
-        transaction.sendFormattedTransaction(params, method !== 'getFeeData')
+        transaction.sendFormattedTransaction(
+          params,
+          method !== 'getFeeData',
+          specializedApproval
+        )
       ).rejects.toMatchObject({
         message: failure.message,
         code: failure.code,
@@ -126,7 +135,11 @@ describe('formatted EVM transaction submission boundary', () => {
         );
       }
       await expect(
-        transaction.sendFormattedTransaction(request(), true)
+        transaction.sendFormattedTransaction(
+          request(),
+          true,
+          specializedApproval
+        )
       ).rejects.toMatchObject({ transactionNotBroadcast: true });
       expect(provider.sendTransaction).not.toHaveBeenCalled();
     }
@@ -142,7 +155,8 @@ describe('formatted EVM transaction submission boundary', () => {
       await expect(
         transaction.sendFormattedTransaction(
           { ...request(), from: state.accounts[type][0].address },
-          true
+          true,
+          specializedApproval
         )
       ).rejects.toMatchObject({
         code: 'HARDWARE_ACCOUNT_MISMATCH',
@@ -157,7 +171,7 @@ describe('formatted EVM transaction submission boundary', () => {
       Error('RPC chain id changed')
     );
     await expect(
-      transaction.sendFormattedTransaction(request(), true)
+      transaction.sendFormattedTransaction(request(), true, specializedApproval)
     ).rejects.toMatchObject({ transactionNotBroadcast: true });
     expect(provider.sendTransaction).not.toHaveBeenCalled();
   });
@@ -178,7 +192,11 @@ describe('formatted EVM transaction submission boundary', () => {
       );
       provider.sendTransaction.mockRejectedValueOnce(failure);
       await expect(
-        transaction.sendFormattedTransaction(request(), true)
+        transaction.sendFormattedTransaction(
+          request(),
+          true,
+          specializedApproval
+        )
       ).rejects.toMatchObject({
         message: failure.message,
         code: failure.code,
@@ -202,7 +220,11 @@ describe('formatted EVM transaction submission boundary', () => {
           started();
         })
     );
-    const first = transaction.sendFormattedTransaction(request(), true);
+    const first = transaction.sendFormattedTransaction(
+      request(),
+      true,
+      specializedApproval
+    );
     const firstRejected = expect(first).rejects.toMatchObject({
       transactionNotBroadcast: false,
     });
@@ -211,7 +233,8 @@ describe('formatted EVM transaction submission boundary', () => {
     await expect(
       transaction.sendFormattedTransaction(
         { ...request(), gasLimit: undefined },
-        true
+        true,
+        specializedApproval
       )
     ).rejects.toMatchObject({ transactionNotBroadcast: true });
     rejectBroadcast(Error('Broadcast acknowledgement lost'));
@@ -226,7 +249,7 @@ describe('formatted EVM transaction submission boundary', () => {
   ])('preserves the successful %s response', async (type) => {
     state.activeAccountType = type;
     await expect(
-      transaction.sendFormattedTransaction(request(), true)
+      transaction.sendFormattedTransaction(request(), true, specializedApproval)
     ).resolves.toEqual({ hash: HASH });
     expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
   });

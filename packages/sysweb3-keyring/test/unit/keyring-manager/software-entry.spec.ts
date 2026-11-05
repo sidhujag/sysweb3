@@ -13,6 +13,11 @@ import { EthereumTransactions } from '../../../src/transactions/ethereum';
 
 import type { KeyringStoragePort } from '../../../src/software';
 
+const specializedApproval = {
+  mode: 'specialized' as const,
+  assertCurrent: () => undefined,
+};
+
 const mnemonic =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 const otherMnemonic =
@@ -199,7 +204,15 @@ describe.each(missingHardwareCases)(
       ],
       ['personal message', (sdk) => sdk.signPersonalMessage(['0x11', address])],
       ['eth_sign', (sdk) => sdk.ethSign([address, '0x11'])],
-      ['transaction', (sdk) => sdk.sendFormattedTransaction({} as any)],
+      [
+        'transaction',
+        (sdk) =>
+          sdk.sendFormattedTransaction(
+            {} as any,
+            undefined,
+            specializedApproval
+          ),
+      ],
       ['ERC20', (sdk) => sdk.sendSignedErc20Transaction({} as any)],
       ['ERC721', (sdk) => sdk.sendSignedErc721Transaction({} as any)],
       ['ERC1155', (sdk) => sdk.sendSignedErc1155Transaction({} as any)],

@@ -11,6 +11,8 @@ jest.mock('../../../src/providers', () => ({
 
 import { INetworkType } from '@sidhujag/sysweb3-network';
 import { spawnSync } from 'child_process';
+import { Transaction } from 'ethers/transaction';
+import { Wallet } from 'ethers/wallet';
 import {
   mkdirSync,
   mkdtempSync,
@@ -21,13 +23,16 @@ import {
 } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { Transaction } from 'ethers/transaction';
-import { Wallet } from 'ethers/wallet';
 
 import { BigNumber, normalizeTransactionRequest } from '../../../src/ethers-v6';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import { sendLocalEvmTransaction } from '../../../src/transactions/evm-local-signer';
 import { KeyringAccountType } from '../../../src/types';
+
+const specializedApproval = {
+  mode: 'specialized' as const,
+  assertCurrent: () => undefined,
+};
 
 const originalWallet = new Wallet(`0x${'11'.repeat(32)}`);
 const FROM = originalWallet.address;
@@ -400,7 +405,8 @@ describe('formatted standard transaction fee-model retention', () => {
             maxFeePerGas: maximum,
             maxPriorityFeePerGas: priority,
           } as any,
-          false
+          false,
+          specializedApproval
         )
       ).resolves.toMatchObject({ hash: HASH });
       const sent = localSend.mock.calls[0][2];
@@ -440,7 +446,8 @@ describe('formatted standard transaction fee-model retention', () => {
             maxFeePerGas: maximum,
             maxPriorityFeePerGas: { hex: '0x0' },
           } as any,
-          false
+          false,
+          specializedApproval
         )
       ).rejects.toMatchObject({ transactionNotBroadcast: true });
       expect(getKey).not.toHaveBeenCalled();
@@ -458,7 +465,8 @@ describe('formatted standard transaction fee-model retention', () => {
           maxFeePerGas: '100',
           maxPriorityFeePerGas: '0',
         } as any,
-        true
+        true,
+        specializedApproval
       )
     ).rejects.toMatchObject({ transactionNotBroadcast: true });
     expect(getKey).not.toHaveBeenCalled();
@@ -476,7 +484,8 @@ describe('formatted standard transaction fee-model retention', () => {
             maxFeePerGas: '100',
             maxPriorityFeePerGas: zero,
           } as any,
-          false
+          false,
+          specializedApproval
         )
       ).resolves.toMatchObject({ hash: HASH });
       const sent = localSend.mock.calls[0][2];
@@ -500,7 +509,8 @@ describe('formatted standard transaction fee-model retention', () => {
       await expect(
         sdk.sendFormattedTransaction(
           { ...transaction, type: 2, ...fields } as any,
-          false
+          false,
+          specializedApproval
         )
       ).rejects.toMatchObject({ transactionNotBroadcast: true });
       expect(getKey).not.toHaveBeenCalled();
@@ -516,7 +526,11 @@ describe('formatted standard transaction fee-model retention', () => {
       maxPriorityFeePerGas: null,
     } as any);
     await expect(
-      sdk.sendFormattedTransaction({ ...transaction, type: 2 } as any, false)
+      sdk.sendFormattedTransaction(
+        { ...transaction, type: 2 } as any,
+        false,
+        specializedApproval
+      )
     ).rejects.toMatchObject({ transactionNotBroadcast: true });
     expect(getKey).not.toHaveBeenCalled();
     expect(localSend).not.toHaveBeenCalled();
@@ -532,7 +546,8 @@ describe('formatted standard transaction fee-model retention', () => {
         : { maxFeePerGas: '100', maxPriorityFeePerGas: '2' };
       await sdk.sendFormattedTransaction(
         { ...transaction, ...fields } as any,
-        legacy
+        legacy,
+        specializedApproval
       );
       const sent = localSend.mock.calls[0][2];
       if (legacy) expect(BigNumber.from(sent.gasPrice).toString()).toBe('7');

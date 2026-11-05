@@ -2411,7 +2411,7 @@ export class KeyringCore<
     if (getAddress(key.address) !== request.account.expectedAddress)
       throw new Error('Prepared EVM signer address mismatch');
     assertCurrent();
-    const signed = signPreparedEvmEnvelope(
+    const { signed } = signPreparedEvmEnvelope(
       request.transaction,
       key.decryptedPrivateKey
     );

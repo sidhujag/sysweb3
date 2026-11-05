@@ -51,6 +51,7 @@ import {
   IEthereumTransactions,
   IEvmCancellationOptions,
   IEvmReplacementOptions,
+  EvmFormattedSendArguments,
   IEvmSendOptions,
   SimpleTransactionRequest,
   KeyringAccountType,
@@ -75,6 +76,11 @@ import {
   type CaptureEvmSubmission,
   type EvmSubmissionContext,
 } from './evm-submission';
+import {
+  signPreparedEvmEnvelope,
+  snapshotPreparedEvmRequest,
+  type PreparedEvmTransaction,
+} from './prepared-evm';
 import { getAddressDerivationPath } from '../utils/derivation-paths';
 
 import type { LedgerKeyring } from '../ledger';
@@ -1542,33 +1548,41 @@ export class EthereumTransactions<
     }
   };
   //TODO: This function needs to be refactored
-  sendFormattedTransaction = async (
-    params: SimpleTransactionRequest,
-    isLegacy?: boolean,
-    options?: IEvmSendOptions
-  ) => {
+  sendFormattedTransaction = async (...args: EvmFormattedSendArguments) => {
+    const [params, isLegacy, options] = args;
     let broadcastAttempted = false;
     try {
       if (
-        options !== undefined &&
-        (!options || typeof options !== 'object' || Array.isArray(options))
+        !options ||
+        typeof options !== 'object' ||
+        Array.isArray(options) ||
+        (options.mode !== 'reviewed-native' &&
+          options.mode !== 'specialized') ||
+        typeof options.assertCurrent !== 'function'
       )
-        throw new Error('Invalid transaction context options');
+        throw new Error('Explicit transaction approval is required');
       // Capture once; later caller mutations cannot replace this invocation's
       // admission decision while chain checks or device approval are pending.
-      const assertHostCurrent = options?.assertCurrent;
-      if (
-        assertHostCurrent !== undefined &&
-        typeof assertHostCurrent !== 'function'
-      )
-        throw new Error('Invalid transaction context guard');
+      const { assertCurrent: assertHostCurrent, mode } = options;
+      const assertApproved = () => {
+        const result: unknown = assertHostCurrent();
+        if (result !== undefined) {
+          assertSynchronousOriginalValidation(
+            result,
+            'Transaction context guard must be synchronous'
+          );
+          throw new Error('Transaction context guard must return undefined');
+        }
+      };
+      assertApproved();
       return await this.sendFormattedTransactionInternal(
         params,
         isLegacy,
         () => {
           broadcastAttempted = true;
         },
-        assertHostCurrent
+        assertApproved,
+        mode
       );
     } catch (error) {
       // A broadcast transport error may mean the node accepted the signed
@@ -1592,10 +1606,11 @@ export class EthereumTransactions<
   };
 
   private sendFormattedTransactionInternal = async (
-    params: SimpleTransactionRequest,
+    input: SimpleTransactionRequest | PreparedEvmTransaction,
     isLegacy: boolean | undefined,
     beforeBroadcast: () => void,
-    assertHostCurrent?: () => void
+    assertHostCurrent: () => void,
+    mode: IEvmSendOptions['mode']
   ) => {
     // Hardware approval may outlive the selected account, network or unlocked
     // session. Keep immutable identities and one provider for this invocation.
@@ -1608,14 +1623,7 @@ export class EthereumTransactions<
       assertCurrent: assertKeyringCurrent,
     } = this.captureEvmSigningContext();
     const assertCurrent = () => {
-      const result: unknown = assertHostCurrent?.();
-      if (result !== undefined) {
-        assertSynchronousOriginalValidation(
-          result,
-          'Transaction context guard must be synchronous'
-        );
-        throw new Error('Transaction context guard must return undefined');
-      }
+      assertHostCurrent();
       assertKeyringCurrent();
     };
     const assertBeforeBroadcast = () => {
@@ -1632,8 +1640,59 @@ export class EthereumTransactions<
       assertCurrent
     );
 
+    if (mode === 'reviewed-native') {
+      const { transaction } = snapshotPreparedEvmRequest({
+        account: {
+          id: activeAccountId,
+          type: activeAccountType,
+          expectedAddress: activeAccount.address,
+        },
+        network: {
+          kind: activeNetwork.kind,
+          chainId: String(activeNetwork.chainId),
+          slip44: activeNetwork.slip44,
+          url: activeNetwork.url,
+        },
+        transaction: input,
+      });
+      const minimum = this.gasOverrides.minGasLimit;
+      if (
+        !submission.persistSigned ||
+        transaction.data !== '0x' ||
+        BigInt(transaction.value) === 0n ||
+        BigInt(transaction.gasLimit) < 21000n ||
+        (transaction.type === 2 && BigInt(transaction.maxFeePerGas) === 0n) ||
+        (minimum && BigInt(transaction.gasLimit) < minimum.toBigInt()) ||
+        (isLegacy !== undefined && isLegacy !== (transaction.type === 0))
+      )
+        throw new Error('Invalid reviewed native transfer approval');
+      assertCurrent();
+      await provider.verifyConfiguredChainId();
+      assertCurrent();
+      if (this.gasOverrides.minGasLimit !== minimum)
+        throw new Error('Reviewed native gas policy changed');
+      const { address, decryptedPrivateKey } = this.getDecryptedPrivateKey();
+      if (address.toLowerCase() !== transaction.from.toLowerCase())
+        throw new Error(
+          'Reviewed native signer does not match the approved account'
+        );
+      assertCurrent();
+      const { signed, expectedUnsigned } = signPreparedEvmEnvelope(
+        transaction,
+        decryptedPrivateKey
+      );
+      return submitSignedEvmTransaction(
+        signed.rawTransaction,
+        (raw) => provider.sendTransaction(raw),
+        submission,
+        assertBeforeBroadcast,
+        expectedUnsigned
+      );
+    }
+
     // Detach supplied values before any RPC/device await. Autofill updates only
     // this invocation; caller mutations cannot replace already supplied fields.
+    let params = input as SimpleTransactionRequest;
     if (!params || typeof params !== 'object' || Array.isArray(params))
       throw new TypeError('Invalid EVM transaction request');
     const supplied: Record<string, any> = { ...params };

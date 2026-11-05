@@ -14,6 +14,11 @@ import type {
   EvmSignedSubmission,
 } from '../../../src/transactions/evm-submission';
 
+const specializedApproval = {
+  mode: 'specialized' as const,
+  assertCurrent: () => undefined,
+};
+
 jest.mock('../../../src/providers', () => ({
   ...jest.requireActual('../../../src/providers'),
   CustomJsonRpcProvider: jest.fn(),
@@ -199,7 +204,8 @@ function fixture(kind: KeyringAccountType, capture: CaptureEvmSubmission) {
           maxFeePerGas: 3,
           maxPriorityFeePerGas: 1,
         } as any,
-        false
+        false,
+        specializedApproval
       );
     const request = {
       networkUrl: network.url,

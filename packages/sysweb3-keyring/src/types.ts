@@ -23,6 +23,7 @@ import { SyscoinHDSigner } from './signers';
 import { TrezorKeyring } from './trezor';
 
 import type { KeyringCore } from './keyring-core';
+import type { PreparedEvmTransaction } from './transactions/prepared-evm';
 
 export type AccessListish =
   | Array<{ address: string; storageKeys: string[] }>
@@ -61,8 +62,21 @@ export type EvmLocalAccount = {
 
 export interface IEvmSendOptions {
   /** Synchronous host admission, rechecked immediately before signing and broadcast. */
-  assertCurrent?: () => void;
+  assertCurrent: () => void;
+  mode: 'reviewed-native' | 'specialized';
 }
+
+export type EvmFormattedSendArguments =
+  | [
+      approvedTransaction: PreparedEvmTransaction,
+      isLegacy: boolean | undefined,
+      options: IEvmSendOptions & { mode: 'reviewed-native' }
+    ]
+  | [
+      transaction: SimpleTransactionRequest,
+      isLegacy: boolean | undefined,
+      options: IEvmSendOptions & { mode: 'specialized' }
+    ];
 
 export interface IEvmReplacementOptions {
   /** Read-only preview; never requests credentials, a device signature or broadcast. */
@@ -139,9 +153,7 @@ export interface IEthereumTransactions {
   importAccount: (mnemonicOrPrivKey: string) => EvmLocalAccount;
   parsePersonalMessage: (hexMsg: string) => string;
   sendFormattedTransaction: (
-    params: SimpleTransactionRequest,
-    isLegacy?: boolean,
-    options?: IEvmSendOptions
+    ...args: EvmFormattedSendArguments
   ) => Promise<TransactionResponse>;
   sendSignedErc1155Transaction: ({
     receiver,

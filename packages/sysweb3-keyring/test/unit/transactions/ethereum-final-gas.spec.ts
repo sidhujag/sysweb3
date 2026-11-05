@@ -7,6 +7,11 @@ import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import { signTransaction } from '../../../src/transactions/evm-local-signer';
 import { KeyringAccountType } from '../../../src/types';
 
+const specializedApproval = {
+  mode: 'specialized' as const,
+  assertCurrent: () => undefined,
+};
+
 const KEY = `0x${'11'.repeat(32)}`;
 const wallet = new Wallet(KEY);
 const to = `0x${'22'.repeat(20)}`;
@@ -109,7 +114,11 @@ describe('shared final EVM gas admission', () => {
         const f = fixture(kind),
           sign = jest.spyOn(ecc, 'signRecoverable');
         await expect(
-          f.sdk.sendFormattedTransaction(f.request(cap + 1n, legacy), legacy)
+          f.sdk.sendFormattedTransaction(
+            f.request(cap + 1n, legacy),
+            legacy,
+            specializedApproval
+          )
         ).rejects.toMatchObject({
           code: 'SYSWEB3_EVM_GAS_LIMIT_EXCEEDED',
           transactionNotBroadcast: true,
@@ -125,7 +134,11 @@ describe('shared final EVM gas admission', () => {
         legacy ? 0 : 2
       } keeps exact-cap gas unchanged`, async () => {
         const f = fixture(kind);
-        await f.sdk.sendFormattedTransaction(f.request(cap, legacy), legacy);
+        await f.sdk.sendFormattedTransaction(
+          f.request(cap, legacy),
+          legacy,
+          specializedApproval
+        );
         const signed = Transaction.from(
           f.provider.sendTransaction.mock.calls[0][0]
         );
@@ -142,7 +155,8 @@ describe('shared final EVM gas admission', () => {
         const f = fixture(kind, customChain);
         await f.sdk.sendFormattedTransaction(
           f.request(cap + 1n, legacy),
-          legacy
+          legacy,
+          specializedApproval
         );
         const signed = Transaction.from(
           f.provider.sendTransaction.mock.calls[0][0]
@@ -227,7 +241,11 @@ describe('shared final EVM gas admission', () => {
       };
     });
     await expect(
-      f.sdk.sendFormattedTransaction(f.request(cap, false), false)
+      f.sdk.sendFormattedTransaction(
+        f.request(cap, false),
+        false,
+        specializedApproval
+      )
     ).rejects.toMatchObject({ transactionNotBroadcast: true });
     expect(f.provider.sendTransaction).not.toHaveBeenCalled();
   });
