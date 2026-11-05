@@ -313,5 +313,6 @@ export async function observeFirstUseUtxoRpc(
     registration: Object.freeze(identity.registration),
     currency,
     observedBackendChain,
+    assertCurrent,
   });
 }

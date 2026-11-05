@@ -145,3 +145,37 @@ it('refuses to reinterpret a verification request as first-use observation', asy
   ).rejects.toThrow('Invalid UTXO registration verification');
   expect(owner.readJson).not.toHaveBeenCalled();
 });
+
+it.each(['abort', 'stale'])(
+  'refuses a %s first-use preview after the last observation guard',
+  async (kind) => {
+    const { backendChain, ...reader } = ownedRead(
+      { chainId: 5700, slip44: 1 },
+      'Syscoin Testnet',
+      'test'
+    );
+    expect(backendChain).toBe('test');
+    const controller = new AbortController();
+    let guardCalls = 0;
+    let current = true;
+    const observed = observeSysRpc(
+      { url: endpoint },
+      {
+        ...reader,
+        signal: controller.signal,
+        assertCurrent() {
+          if (!current) throw new Error('Draft changed');
+          if (++guardCalls === 5)
+            queueMicrotask(() => {
+              if (kind === 'abort') controller.abort();
+              else current = false;
+            });
+        },
+      }
+    );
+    await expect(observed).rejects.toThrow(
+      'UTXO registration verification cancelled'
+    );
+    expect(reader.readJson).toHaveBeenCalledTimes(2);
+  }
+);

@@ -365,17 +365,21 @@ export const observeSysRpc = async (
   owner: OwnedUtxoRpcFirstUse
 ) => {
   const draft = snapshotSysRpcDraft(input);
-  const observation = await observeFirstUseUtxoRpc(draft.url, owner);
-  const coin = findUtxoCoinByRegistration(observation.registration);
+  const { assertCurrent, currency, observedBackendChain, registration } =
+    await observeFirstUseUtxoRpc(draft.url, owner);
+  assertCurrent();
+  const coin = findUtxoCoinByRegistration(registration);
   if (!coin) throw new Error('Invalid UTXO registration verification');
-  return formatSysRpc(
+  const result = formatSysRpc(
     draft,
     coin,
-    observation.registration.chainId,
+    registration.chainId,
     coin.coinShortcut,
-    observation.observedBackendChain,
-    observation.currency
+    observedBackendChain,
+    currency
   );
+  assertCurrent();
+  return result;
 };
 /** end */
 

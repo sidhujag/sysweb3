@@ -82,6 +82,7 @@ it('observes an exact backend token and canonical registration without an expect
     registration: SYS_TEST,
     currency: 'tsys',
     observedBackendChain: 'test',
+    assertCurrent: expect.any(Function),
   });
   expect(Object.isFrozen(result)).toBe(true);
   expect(Object.isFrozen(result.registration)).toBe(true);
@@ -118,6 +119,7 @@ it.each([
       registration,
       currency: coin.coinShortcut.toLowerCase(),
       observedBackendChain: 'Main_Fixture',
+      assertCurrent: expect.any(Function),
     });
     readJson.mockClear();
     await expect(
@@ -322,6 +324,7 @@ it('captures a chosen first-use identity and owned transport before the status a
     registration: SYS_TEST,
     currency: 'tsys',
     observedBackendChain: 'test',
+    assertCurrent: expect.any(Function),
   });
   expect(wrongRead).not.toHaveBeenCalled();
   expect(readJson.mock.calls).toEqual([
