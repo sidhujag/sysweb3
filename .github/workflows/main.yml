@@ -66,6 +66,7 @@ jobs:
           # forceExit preserves the test result; it does not skip assertions.
           NODE_ENV=test node ../../node_modules/jest/bin/jest.js --config jest.config.js --runInBand --silent --forceExit \
             test/unit/storage-core.spec.ts \
+            test/unit/keyring-manager/device-unlock.spec.ts \
             test/unit/keyring-manager/software-entry.spec.ts \
             test/unit/keyring-manager/software-indexed-hd.spec.ts \
             test/unit/keyring-manager/initialization.spec.ts \

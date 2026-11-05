@@ -12,7 +12,8 @@ export interface VaultPersistence {
   setEncryptedVault(
     decryptedVault: any,
     pwd: string,
-    freshVaultKeys?: { salt: string }
+    freshVaultKeys?: { salt: string },
+    assertCurrent?: () => void
   ): Promise<void>;
   getDecryptedVault(pwd: string, legacyPassword?: string): Promise<any>;
 }
@@ -149,13 +150,18 @@ const decryptVaultWebCrypto = async (
   if (keyBytes.length !== 32) {
     throw new Error('Vault key must be 32 bytes (hex length 64)');
   }
-  const key = await subtle.importKey(
-    'raw',
-    keyBytes as unknown as BufferSource,
-    { name: 'AES-GCM' },
-    false,
-    ['decrypt']
-  );
+  let key: CryptoKey;
+  try {
+    key = await subtle.importKey(
+      'raw',
+      keyBytes as unknown as BufferSource,
+      { name: 'AES-GCM' },
+      false,
+      ['decrypt']
+    );
+  } finally {
+    keyBytes.fill(0);
+  }
 
   const ivBytes = hexToBytes(envelope.iv);
   const ctBytes = hexToBytes(envelope.ct);
@@ -181,6 +187,30 @@ const decryptVaultWebCrypto = async (
   return new TextDecoder().decode(pt);
 };
 
+/** Authenticate a captured current-format vault. This path has no CBC fallback. */
+export const decryptCurrentVault = async (
+  vault: string,
+  key: string
+): Promise<unknown> => {
+  const envelope = maybeParseGcmEnvelope(vault);
+  if (
+    !envelope ||
+    Object.keys(envelope).length !== 4 ||
+    !/^[0-9a-f]{24}$/i.test(envelope.iv) ||
+    envelope.ct.length < 32 ||
+    envelope.ct.length % 2 !== 0 ||
+    !isHex(envelope.ct)
+  ) {
+    throw new Error('Invalid encrypted vault format');
+  }
+  const plaintext = await decryptVaultWebCrypto(envelope, key);
+  try {
+    return JSON.parse(plaintext);
+  } catch {
+    throw new Error('Invalid device unlock vault payload');
+  }
+};
+
 /**
  * Create once per wallet authority and share across its network keyrings.
  * The host owns storage durability and cross-context atomic creation.
@@ -204,9 +234,11 @@ export const createVaultPersistence = (
   const setEncryptedVault = async (
     decryptedVault: any,
     pwd: string,
-    freshVaultKeys?: { salt: string }
+    freshVaultKeys?: { salt: string },
+    assertCurrent?: () => void
   ) => {
     return vaultMutex.runExclusive(async () => {
+      assertCurrent?.();
       const plaintext = JSON.stringify(decryptedVault);
 
       // Writes never downgrade to unauthenticated passphrase AES. Legacy CBC
@@ -222,6 +254,7 @@ export const createVaultPersistence = (
       }
       const envelope = await encryptVaultWebCrypto(plaintext, pwd);
       const toStore = JSON.stringify(envelope);
+      assertCurrent?.();
 
       if (freshVaultKeys) {
         // The host primitive covers the absence check and batch commit

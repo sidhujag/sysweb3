@@ -2,7 +2,12 @@
 import { KeyringCore } from './keyring-core';
 import { createVaultPersistence } from './storage-core';
 
-import type { KeyringStoragePort } from './keyring-core';
+import type {
+  DeviceUnlockControls,
+  DeviceUnlockPort,
+  KeyringCoreDependencies,
+  KeyringStoragePort,
+} from './keyring-core';
 import type {
   EncryptedEvmHdRuntimeAccount,
   EvmHdRuntimeAccountOptions,
@@ -28,23 +33,39 @@ const hosts = new WeakMap<
     storage: KeyringStoragePort;
     vaultPersistence: VaultPersistence;
     captureEvmSubmission?: CaptureEvmSubmission;
+    deviceUnlock?: DeviceUnlockPort;
+    sessionOwner?: KeyringCoreDependencies<
+      undefined,
+      undefined
+    >['sessionOwner'];
   }
 >();
 
 /** Create once per wallet authority, then share with its per-network keyrings. */
 export const createSoftwareKeyringHost = (
   storage: KeyringStoragePort,
-  options?: { captureEvmSubmission?: CaptureEvmSubmission }
+  options?: {
+    captureEvmSubmission?: CaptureEvmSubmission;
+    deviceUnlock?: DeviceUnlockPort;
+  }
 ): SoftwareKeyringHost => {
   const vaultPersistence = createVaultPersistence(storage);
   if (typeof storage.deleteItem !== 'function') {
     throw new TypeError('Keyring storage port must provide deleteItem');
   }
   const host = Object.freeze({}) as SoftwareKeyringHost;
+  const deviceUnlock = options?.deviceUnlock;
   hosts.set(host, {
     storage,
     vaultPersistence,
     captureEvmSubmission: options?.captureEvmSubmission,
+    sessionOwner: deviceUnlock ? { epoch: 0 } : undefined,
+    deviceUnlock:
+      deviceUnlock &&
+      Object.freeze({
+        readCredential: deviceUnlock.readCredential.bind(deviceUnlock),
+        writeCredential: deviceUnlock.writeCredential.bind(deviceUnlock),
+      }),
   });
   return host;
 };
@@ -56,15 +77,25 @@ const requireHost = (host: SoftwareKeyringHost) => {
 };
 
 export class SoftwareKeyring extends KeyringCore<undefined, undefined> {
-  constructor(host: SoftwareKeyringHost) {
+  constructor(
+    host: SoftwareKeyringHost,
+    receiveDeviceUnlock?: (controls: DeviceUnlockControls) => void
+  ) {
     const dependencies = requireHost(host);
+    if (receiveDeviceUnlock && !dependencies.deviceUnlock)
+      throw new TypeError('Device unlock is unavailable in this host');
     super({
       authority: host,
       captureEvmSubmission: dependencies.captureEvmSubmission,
+      sessionOwner: dependencies.sessionOwner,
       storage: dependencies.storage,
       vaultPersistence: dependencies.vaultPersistence,
       ledgerSigner: undefined,
       trezorSigner: undefined,
+      deviceUnlock:
+        receiveDeviceUnlock && dependencies.deviceUnlock
+          ? { port: dependencies.deviceUnlock, receive: receiveDeviceUnlock }
+          : undefined,
     });
   }
 
@@ -122,7 +153,13 @@ export class SoftwareKeyring extends KeyringCore<undefined, undefined> {
 export { KeyringAccountType } from './types';
 export { INetworkType } from '@sidhujag/sysweb3-network';
 export type { INetwork } from '@sidhujag/sysweb3-network';
-export type { KeyringStoragePort } from './keyring-core';
+export type {
+  DeviceUnlockControls,
+  DeviceUnlockCredential,
+  DeviceUnlockPort,
+  DeviceUnlockVaultPair,
+  KeyringStoragePort,
+} from './keyring-core';
 export type { IKeyringAccountState } from './types';
 
 export type {
