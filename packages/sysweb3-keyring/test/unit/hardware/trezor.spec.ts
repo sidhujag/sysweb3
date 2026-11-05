@@ -2,23 +2,26 @@ import { INetworkType } from '@sidhujag/sysweb3-network';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
+import { hardwareUtxoFixture } from '../../helpers/hardwareUtxoFixture';
 import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
 import { ownedUtxoTestRead } from '../../helpers/utxoAuthority';
+
+const mockUtxoAccountInfo = () =>
+  jest.fn().mockImplementation(async ({ coin, slip44, index }) => ({
+    descriptor: hardwareUtxoFixture(coin, slip44, index).descriptor,
+    balance: '100000000',
+  }));
 
 describe('Trezor Hardware Wallet', () => {
   let keyringManager: KeyringManager;
   const additionalKeyrings: KeyringManager[] = [];
   let mockVaultStateGetter: jest.Mock;
   let currentVaultState: any;
-  let accountCounter = 0;
 
   beforeEach(async () => {
     setupMocks();
     // Set up vault-keys that would normally be created by Pali's MainController
     await setupTestVault(FAKE_PASSWORD);
-
-    // Reset counter for each test
-    accountCounter = 0;
 
     // Set up UTXO vault state
     currentVaultState = createMockVaultState({
@@ -35,24 +38,10 @@ describe('Trezor Hardware Wallet', () => {
       mockVaultStateGetter
     );
 
-    // Mock Trezor signer methods with dynamic responses
-    keyringManager.trezorSigner.getAccountInfo = jest
-      .fn()
-      .mockImplementation(() => {
-        accountCounter++;
-        return Promise.resolve({
-          descriptor: `xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKpXqNPQ8R5ziHackBvPaKjYNDvyVp7ytpqqxV5BDK1Co76d4oVGkYvJXFFpbhctBCTKRQ8Y7HNrxE${accountCounter}`,
-          balance: '100000000', // 1 SYS in satoshis
-        });
-      });
+    keyringManager.trezorSigner.getAccountInfo = mockUtxoAccountInfo();
 
     keyringManager.trezorSigner.getPublicKey = jest.fn().mockResolvedValue({
       publicKey: '0x04mock_public_key',
-    });
-
-    // Mock getAddress for Trezor accounts with dynamic addresses
-    keyringManager.getAddress = jest.fn().mockImplementation(() => {
-      return Promise.resolve(`sys1qmock_trezor_address_${accountCounter}`);
     });
   });
 
@@ -75,6 +64,10 @@ describe('Trezor Hardware Wallet', () => {
       expect(account.isLedgerWallet).toBe(false);
       expect(account.isImported).toBe(false);
       expect(account.xprv).toBe(''); // Hardware wallets store empty xprv
+      const expected = hardwareUtxoFixture('sys', 57);
+      expect(account.address).toBe(expected.address);
+      expect(account.xpub).toBe(expected.descriptor);
+      expect(globalThis.fetch).not.toHaveBeenCalled();
 
       // Update vault state with imported account
       currentVaultState.accounts[KeyringAccountType.Trezor][account.id] = {
@@ -150,6 +143,9 @@ describe('Trezor Hardware Wallet', () => {
 
       expect(account3.id).toBe(2);
       expect(account3.label).toBe('Custom Trezor');
+      expect(
+        new Set([account1.address, account2.address, account3.address]).size
+      ).toBe(3);
     });
 
     it('should handle Trezor import for EVM networks', async () => {
@@ -206,7 +202,7 @@ describe('Trezor Hardware Wallet', () => {
 
       // Mock Trezor returning same address
       keyringManager.trezorSigner.getAccountInfo = jest.fn().mockResolvedValue({
-        descriptor: 'xpub_duplicate',
+        descriptor: firstAccount.xpub,
         balance: '100000000',
       });
 
@@ -535,11 +531,14 @@ describe('Trezor Hardware Wallet', () => {
         testnetVaultStateGetter
       );
       additionalKeyrings.push(testnetKeyring);
+      testnetKeyring.trezorSigner.getAccountInfo = mockUtxoAccountInfo();
 
       const account = await testnetKeyring.importTrezorAccount(
         'Testnet Trezor'
       );
-      expect(account.address.match(/^(sys1|tsys1)/)).toBeTruthy();
+      const expected = hardwareUtxoFixture('tsys', 1);
+      expect(account.address).toBe(expected.address);
+      expect(account.xpub).toBe(expected.descriptor);
     });
 
     it('should maintain separate Trezor accounts per network', async () => {
@@ -564,6 +563,7 @@ describe('Trezor Hardware Wallet', () => {
         testnetVaultStateGetter
       );
       additionalKeyrings.push(testnetKeyring);
+      testnetKeyring.trezorSigner.getAccountInfo = mockUtxoAccountInfo();
 
       // Import on testnet
       const testnetAccount = await testnetKeyring.importTrezorAccount(
@@ -572,8 +572,8 @@ describe('Trezor Hardware Wallet', () => {
 
       // Accounts should be independent
       expect(mainnetAccount.address).not.toBe(testnetAccount.address);
-      expect(mainnetAccount.address.match(/^(sys1|tsys1)/)).toBeTruthy();
-      expect(testnetAccount.address.match(/^(sys1|tsys1)/)).toBeTruthy();
+      expect(mainnetAccount.address).toMatch(/^sys1/);
+      expect(testnetAccount.address).toMatch(/^tsys1/);
     });
   });
 
@@ -596,9 +596,9 @@ describe('Trezor Hardware Wallet', () => {
         balance: null,
       });
 
-      await expect(keyringManager.importTrezorAccount()).rejects.toThrow(
-        'Something wrong happened'
-      );
+      await expect(keyringManager.importTrezorAccount()).rejects.toThrow();
+      expect(currentVaultState.accounts[KeyringAccountType.Trezor]).toEqual({});
+      expect(globalThis.fetch).not.toHaveBeenCalled();
     });
 
     it('should handle Trezor device disconnection during signing', async () => {
@@ -806,7 +806,7 @@ describe('Trezor Hardware Wallet', () => {
       // Mock getAccountInfo to return quickly
       const originalGetAccountInfo = keyringManager.trezorSigner.getAccountInfo;
       keyringManager.trezorSigner.getAccountInfo = jest.fn().mockResolvedValue({
-        descriptor: 'test-xpub',
+        descriptor: hardwareUtxoFixture('sys', 57).descriptor,
         balance: '0',
       });
 

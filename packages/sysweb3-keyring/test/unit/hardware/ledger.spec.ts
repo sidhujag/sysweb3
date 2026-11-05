@@ -5,6 +5,7 @@ import { Transaction, Wallet } from 'ethers';
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { LedgerKeyring } from '../../../src/ledger';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
+import { hardwareUtxoFixture } from '../../helpers/hardwareUtxoFixture';
 import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
 
 import type { LedgerHost } from '../../../src/ledger/host-types';
@@ -60,11 +61,10 @@ const mockHost = () => {
       ),
     },
     utxo: {
-      getXpub: jest
-        .fn()
-        .mockResolvedValue(
-          'zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNfE3EfH1r1ADqtfSdVCToUG868RvUUkgDKf31mGDtKsAYz2oz2AGutZYs'
-        ),
+      getXpub: jest.fn(
+        async ({ currency, slip44, accountIndex }) =>
+          hardwareUtxoFixture(currency, slip44, accountIndex).xpub
+      ),
       getAddress: jest.fn().mockResolvedValue('sys1qmock_ledger_address'),
       getAccount: jest.fn(),
       signMessage: jest.fn().mockResolvedValue('signed-message'),
@@ -103,9 +103,6 @@ describe('Ledger semantic host integration', () => {
       () => state,
       fixture.host as LedgerHost
     );
-    keyring.getAddress = jest
-      .fn()
-      .mockResolvedValue('sys1qmock_ledger_address');
   });
 
   afterEach(async () => {
@@ -114,13 +111,18 @@ describe('Ledger semantic host integration', () => {
   });
 
   it('imports a UTXO account through the injected host without private keys', async () => {
+    const expected = hardwareUtxoFixture(
+      state.activeNetwork.currency,
+      state.activeNetwork.slip44
+    );
     const account = await keyring.importLedgerAccount('My Ledger');
     expect(account).toMatchObject({
       id: 0,
       label: 'My Ledger',
       isLedgerWallet: true,
       xprv: '',
-      address: 'sys1qmock_ledger_address',
+      address: expected.address,
+      xpub: expected.descriptor,
     });
     expect(fixture.host.utxo.getXpub).toHaveBeenCalledWith({
       currency: state.activeNetwork.currency,
@@ -128,6 +130,7 @@ describe('Ledger semantic host integration', () => {
       accountIndex: 0,
       checkOnDevice: true,
     });
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it('requests device confirmation for unusual import paths without retrying', async () => {
@@ -188,6 +191,10 @@ describe('Ledger semantic host integration', () => {
   it('rejects duplicate imported addresses', async () => {
     const account = await keyring.importLedgerAccount();
     state.accounts[KeyringAccountType.Ledger][account.id] = account;
+    const { currency, slip44 } = state.activeNetwork;
+    fixture.host.utxo.getXpub.mockResolvedValueOnce(
+      hardwareUtxoFixture(currency, slip44, account.id).xpub
+    );
     await expect(keyring.importLedgerAccount()).rejects.toThrow(
       'Account already exists'
     );
@@ -196,9 +203,10 @@ describe('Ledger semantic host integration', () => {
   it('keeps Ledger accounts separate and uses the next account index', async () => {
     const first = await keyring.importLedgerAccount();
     state.accounts[KeyringAccountType.Ledger][first.id] = first;
-    (keyring.getAddress as jest.Mock).mockResolvedValue('sys1q_second_ledger');
     const second = await keyring.importLedgerAccount('Second');
     expect(second.id).toBe(1);
+    expect(second.address).not.toBe(first.address);
+    expect(second.xpub).not.toBe(first.xpub);
     expect(fixture.host.utxo.getXpub).toHaveBeenLastCalledWith(
       expect.objectContaining({ accountIndex: 1 })
     );
@@ -235,8 +243,14 @@ describe('Ledger semantic host integration', () => {
       fixture.host as LedgerHost
     );
     additional.push(testnet);
-    testnet.getAddress = jest.fn().mockResolvedValue('tsys1qledger');
-    await testnet.importLedgerAccount();
+    const expected = hardwareUtxoFixture(
+      testState.activeNetwork.currency,
+      testState.activeNetwork.slip44
+    );
+    await expect(testnet.importLedgerAccount()).resolves.toMatchObject({
+      address: expected.address,
+      xpub: expected.descriptor,
+    });
     expect(fixture.host.utxo.getXpub).toHaveBeenCalledWith({
       currency: testState.activeNetwork.currency,
       slip44: testState.activeNetwork.slip44,
