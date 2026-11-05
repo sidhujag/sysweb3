@@ -240,18 +240,19 @@ describe('shared final EVM gas admission', () => {
     ] as const) {
       it(`${kind} ${method} applies the same supplied-gas limit before the device`, async () => {
         const f = fixture(kind);
-        await expect(
-          f.sdk[method]({
-            receiver: to,
-            tokenAddress: to,
-            tokenAmount: '1',
-            tokenId: '1',
-            decimals: 0,
-            gasLimit: BigNumber.from((cap + 1n).toString()),
-            gasPrice: BigNumber.from(2),
-            isLegacy: true,
-          } as any)
-        ).rejects.toBeInstanceOf(EvmGasLimitError);
+        const request = {
+          networkUrl: 'https://offline.invalid',
+          receiver: to,
+          tokenAddress: to,
+          gasLimit: BigNumber.from((cap + 1n).toString()),
+          gasPrice: BigNumber.from(2),
+          isLegacy: true,
+        };
+        const sending =
+          method === 'sendSignedErc20Transaction'
+            ? f.sdk[method]({ ...request, tokenAmountUnits: '1' })
+            : f.sdk[method]({ ...request, tokenId: '1', tokenAmount: '1' });
+        await expect(sending).rejects.toBeInstanceOf(EvmGasLimitError);
         expect(f.device).not.toHaveBeenCalled();
         expect(f.provider.sendTransaction).not.toHaveBeenCalled();
       });

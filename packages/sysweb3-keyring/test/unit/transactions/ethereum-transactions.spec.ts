@@ -214,14 +214,13 @@ describe('Ethereum Transactions', () => {
 
       await expect(
         keyringManager.ethereumTransaction.sendSignedErc20Transaction({
-          decimals: 18,
           gasLimit: serializeBigNumber('100000'),
           maxFeePerGas: serializeBigNumber('20000000000'),
           maxPriorityFeePerGas: serializeBigNumber('2000000000'),
           networkUrl: 'https://rpc.example',
           receiver: '0x2c7536E3605D9C16a7a3D7b1898e529396a65c23',
           tokenAddress: '0x1111111111111111111111111111111111111111',
-          tokenAmount: '1',
+          tokenAmountUnits: '1000000000000000000',
         })
       ).resolves.toBeDefined();
 

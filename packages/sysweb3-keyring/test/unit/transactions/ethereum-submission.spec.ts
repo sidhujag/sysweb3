@@ -2,7 +2,7 @@
 jest.resetModules();
 (global as any).window.location = { href: 'http://localhost/' };
 
-import { Wallet, Transaction } from 'ethers';
+import { Interface, Wallet, Transaction } from 'ethers';
 
 import { BigNumber, serializeTransaction } from '../../../src/ethers-v6';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
@@ -21,16 +21,27 @@ jest.mock('../../../src/providers', () => ({
 
 jest.mock('../../../src/ethers-v6', () => {
   const actual = jest.requireActual('../../../src/ethers-v6');
+  const { Interface } = jest.requireActual('ethers');
+  const erc20 = new Interface(['function transfer(address,uint256)']);
   return {
     ...actual,
     Contract: jest.fn().mockImplementation((address) => ({
-      interface: { encodeFunctionData: () => '0x12345678' },
+      interface: {
+        encodeFunctionData: (method: string, args: unknown[]) => {
+          if (method !== 'transfer') return '0x12345678';
+          return erc20.encodeFunctionData(method, args);
+        },
+      },
       transfer: {
         populateTransaction: async (
-          _to: any,
-          _amount: any,
+          to: string,
+          amount: bigint,
           overrides: any
-        ) => ({ to: address, data: '0x12345678', ...overrides }),
+        ) => ({
+          to: address,
+          data: erc20.encodeFunctionData('transfer', [to, amount]),
+          ...overrides,
+        }),
       },
       transferFrom: {
         populateTransaction: async (
@@ -190,23 +201,26 @@ function fixture(kind: KeyringAccountType, capture: CaptureEvmSubmission) {
         } as any,
         false
       );
-    return sdk[
-      operation === 'erc20'
-        ? 'sendSignedErc20Transaction'
-        : operation === 'erc721'
-        ? 'sendSignedErc721Transaction'
-        : 'sendSignedErc1155Transaction'
-    ]({
+    const request = {
       networkUrl: network.url,
       saveTrezorTx,
       receiver: to,
       tokenAddress: to,
-      tokenAmount: '1',
-      tokenId: '1',
-      decimals: 0,
       gasLimit: 42000,
       maxFeePerGas: 3,
       maxPriorityFeePerGas: 1,
+    };
+    if (operation === 'erc20')
+      return sdk.sendSignedErc20Transaction({
+        ...request,
+        tokenAmountUnits: '1',
+      });
+    if (operation === 'erc721')
+      return sdk.sendSignedErc721Transaction({ ...request, tokenId: '1' });
+    return sdk.sendSignedErc1155Transaction({
+      ...request,
+      tokenId: '1',
+      tokenAmount: '1',
     });
   };
   return {
@@ -295,6 +309,59 @@ for (const kind of kinds)
       ).toMatchObject({ transactionNotBroadcast: true });
     });
   }
+
+it('keeps exact ERC20 amounts on the ERC20 capture and persistence route', async () => {
+  const nonceRead = deferred();
+  const nonceReady = deferred();
+  const stored = deferred();
+  const acknowledged = deferred();
+  let saved!: EvmSignedSubmission;
+  const capture = jest.fn(() => ({
+    assertCurrent: () => undefined,
+    async persistSigned(record: EvmSignedSubmission) {
+      saved = record;
+      stored.resolve();
+      await acknowledged.promise;
+    },
+  }));
+  const { sdk, network, provider } = fixture(
+    KeyringAccountType.HDAccount,
+    capture
+  );
+  provider.getTransactionCount.mockImplementationOnce(async () => {
+    nonceRead.resolve();
+    await nonceReady.promise;
+    return 7;
+  });
+  const sending = sdk.sendSignedErc20Transaction({
+    networkUrl: network.url,
+    receiver: to,
+    tokenAddress: to,
+    tokenAmountUnits: '9007199254740993',
+    gasLimit: 42000,
+    maxFeePerGas: 3,
+    maxPriorityFeePerGas: 1,
+  });
+  await Promise.race([nonceRead.promise, sending]);
+  expect(capture).toHaveBeenCalledWith(
+    expect.objectContaining({ operation: 'erc20' })
+  );
+  expect(provider.sendTransaction).not.toHaveBeenCalled();
+  nonceReady.resolve();
+  await Promise.race([stored.promise, sending]);
+  expect(saved.context.operation).toBe('erc20');
+  const tx = Transaction.from(saved.rawTransaction);
+  const transfer = new Interface(['function transfer(address,uint256)']);
+  expect(Array.from(transfer.decodeFunctionData('transfer', tx.data))).toEqual([
+    to,
+    9007199254740993n,
+  ]);
+  expect(provider.sendTransaction).not.toHaveBeenCalled();
+  acknowledged.resolve();
+  await sending;
+  expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
+  expect(provider.sendTransaction).toHaveBeenCalledWith(saved.rawTransaction);
+});
 
 it.each(['cancel', 'speed-up'] as const)(
   'keeps %s preview read-only without a persistence capability',
