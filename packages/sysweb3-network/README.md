@@ -43,6 +43,25 @@ These methods are just some of the ones available in our library.
 
 Feel free to explore the possibilities. We hope you enjoy it.
 
+### Owned UTXO endpoint verification
+
+Import the verifier directly when you already have a trusted registration and
+only need UTXO endpoint identity checks.
+
+```ts
+import {
+  verifyOwnedUtxoRpc,
+  type OwnedUtxoRpcVerification,
+} from '@sidhujag/sysweb3-network/cjs/ownedUtxoRpc.js';
+```
+
+CommonJS also supports the subpath without the `.js` suffix. Provide the
+expected `chainId`, `slip44` and `backendChain` from a trusted profile before
+contacting the endpoint. The caller supplies a bounded, redirect-rejecting
+`readJson` transport, an abort signal and a synchronous currentness guard.
+Use the root `getSysRpc` API with the same owner when you also need the formatted
+network registration.
+
 ## License
 
 MIT License
