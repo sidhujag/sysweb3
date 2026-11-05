@@ -137,9 +137,11 @@ export type EvmCancellationFeeInput = Readonly<
     }
 >;
 
+export const EVM_CANCELLATION_GAS_LIMIT = 42000n;
+
 /** Plan only the cancellation fees. The host validates the rates and envelope. */
 export function planEvmCancellationFees(input: EvmCancellationFeeInput) {
-  const gasLimit = 42000n;
+  const gasLimit = EVM_CANCELLATION_GAS_LIMIT;
   const higher = (left: bigint, right: bigint) => (left > right ? left : right);
   // The replacement must also bump zero and small rates by at least one wei.
   const bump = (fee: bigint) => higher((fee * 120n) / 100n, fee + 1n);
