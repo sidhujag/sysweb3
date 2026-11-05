@@ -15,11 +15,20 @@ import type { LedgerHost, LedgerEvmConfig } from './ledger/host-types';
 export interface LedgerDmkHostConfig extends LedgerEvmConfig {
   /** Platform-owned DMK, allowing a future host to register its own transports. */
   dmk?: object;
+  /** Disable automatic discovery until the platform selects a device. */
+  requireDeviceSelection?: boolean;
+}
+
+export interface LedgerDmkHost extends LedgerHost {
+  /** Start before enumerating. The returned capability is single use. */
+  beginDeviceSelection(
+    signal?: AbortSignal
+  ): (candidate: object) => Promise<void>;
 }
 
 export function createLedgerDmkHost(
   config: LedgerDmkHostConfig = {}
-): LedgerHost {
+): LedgerDmkHost {
   const candidate =
     config.dmk ??
     new DeviceManagementKitBuilder()
@@ -42,9 +51,10 @@ export function createLedgerDmkHost(
   // Keep upstream exports-only types out of this public declaration. A trusted
   // platform supplies its concrete DMK here; dapps cannot select this object.
   const dmk = candidate as DeviceManagementKit;
-  const session = new LedgerDmkSession(dmk);
+  const session = new LedgerDmkSession(dmk, config.requireDeviceSelection);
   return {
     connect: (request, options) => session.connect(request, options),
+    beginDeviceSelection: (signal) => session.beginDeviceSelection(signal),
     disconnect: () => session.disconnect(),
     getStatus: () => session.getStatus(),
     evm: createLedgerEvmAdapter(session, config),

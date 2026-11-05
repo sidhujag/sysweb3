@@ -32,10 +32,49 @@ export interface LedgerDmkOperation {
   runAction<Output>(createAction: () => Action<Output>): Promise<Output>;
 }
 
+type SelectedDevice = Readonly<{ device: DiscoveredDevice; owner: object }>;
+type DmkConnection = { sessionId: string; pendingSelection?: object };
+
+function snapshotDiscoveredDevice(candidate: object): DiscoveredDevice {
+  const invalid = () =>
+    ledgerHostError('LEDGER_INVALID_DEVICE', 'Invalid Ledger discovery handle');
+  if (
+    !candidate ||
+    Object.getPrototypeOf(candidate) !== Object.prototype ||
+    'sessionId' in candidate
+  )
+    throw invalid();
+  const ownValue = (key: keyof DiscoveredDevice): unknown =>
+    Object.getOwnPropertyDescriptor(candidate, key)?.value;
+  const id = ownValue('id');
+  const transport = ownValue('transport');
+  const name = ownValue('name');
+  const deviceModel = ownValue('deviceModel');
+  if (
+    typeof id !== 'string' ||
+    !id.trim() ||
+    typeof transport !== 'string' ||
+    !transport.trim() ||
+    typeof name !== 'string' ||
+    !deviceModel ||
+    typeof deviceModel !== 'object' ||
+    Array.isArray(deviceModel)
+  )
+    throw invalid();
+  // The vendor uses transport and ID to connect. Keep a stable snapshot
+  // without copying extra fields, particularly the reconnect discriminator.
+  return Object.freeze({
+    id,
+    transport,
+    name,
+    deviceModel: deviceModel as DiscoveredDevice['deviceModel'],
+  });
+}
+
 /** One owner and one semantic operation at a time, across EVM and UTXO apps. */
 export class LedgerDmkSession {
   private generation = 0;
-  private sessionId: string | undefined;
+  private connection: DmkConnection | undefined;
   private queue: Promise<unknown> = Promise.resolve();
   private activeCancel: (() => void) | undefined;
   private activeAbort: AbortController | undefined;
@@ -43,12 +82,21 @@ export class LedgerDmkSession {
   private stateSubscription: Subscription | undefined;
   private connectionAttempt: Promise<void> | undefined;
   private connectionAbort: AbortController | undefined;
+  private deviceSelection: object | undefined;
   private readonly invalidationListeners = new Set<() => void>();
 
-  constructor(readonly dmk: DeviceManagementKit) {}
+  constructor(
+    readonly dmk: DeviceManagementKit,
+    private requireDeviceSelection = false
+  ) {}
+
+  private get readyConnection(): DmkConnection | undefined {
+    // A provisional lease belongs to cleanup until its picker accepts handoff.
+    return this.connection?.pendingSelection ? undefined : this.connection;
+  }
 
   getStatus() {
-    return { connected: this.sessionId !== undefined };
+    return { connected: this.readyConnection !== undefined };
   }
 
   onInvalidated(listener: () => void): () => void {
@@ -58,7 +106,50 @@ export class LedgerDmkSession {
 
   private invalidate(): void {
     this.generation++;
+    this.deviceSelection = undefined;
     for (const listener of this.invalidationListeners) listener();
+  }
+
+  /** The platform passes one candidate from its own current DMK picker. */
+  beginDeviceSelection(
+    signal?: AbortSignal
+  ): (candidate: object) => Promise<void> {
+    if (signal?.aborted) throw ledgerCancelledError();
+    if (this.connection || this.connectionAttempt) throw this.connectionBusy();
+    this.requireDeviceSelection = true;
+    const selection = {};
+    this.deviceSelection = selection;
+    let used = false;
+    const assertCurrent = () => {
+      if (this.deviceSelection !== selection || signal?.aborted)
+        throw ledgerCancelledError();
+    };
+    return async (candidate) => {
+      assertCurrent();
+      if (used) throw ledgerCancelledError();
+      used = true;
+      try {
+        const device = snapshotDiscoveredDevice(candidate);
+        assertCurrent();
+        await this.startConnection(
+          {},
+          { signal },
+          { device, owner: selection }
+        );
+        const connection = this.connection;
+        // The connection listener is gone by this handoff. A close in that
+        // interval must still retire this selection's newly acquired session.
+        if (connection?.pendingSelection === selection && signal?.aborted)
+          await this.disconnect();
+        assertCurrent();
+        if (connection?.pendingSelection !== selection)
+          throw ledgerCancelledError();
+        connection.pendingSelection = undefined;
+      } finally {
+        if (this.deviceSelection === selection)
+          this.deviceSelection = undefined;
+      }
+    };
   }
 
   /** Device selection belongs to the visible host, never to a dapp request. */
@@ -67,35 +158,60 @@ export class LedgerDmkSession {
     options: LedgerOperationOptions = {}
   ): Promise<void> {
     if (options.signal?.aborted) return Promise.reject(ledgerCancelledError());
-    if (this.sessionId) return Promise.resolve();
-    if (this.connectionAttempt)
+    if (this.readyConnection?.sessionId) return Promise.resolve();
+    if (this.requireDeviceSelection)
       return Promise.reject(
         ledgerHostError(
-          'HARDWARE_SIGNER_BUSY',
-          'Ledger connection is already pending'
+          'HARDWARE_SIGNER_UNAVAILABLE',
+          'Select a Ledger device first'
         )
       );
+    return this.startConnection(request, options);
+  }
+
+  private connectionBusy() {
+    return ledgerHostError(
+      'HARDWARE_SIGNER_BUSY',
+      'Ledger connection is already pending or active'
+    );
+  }
+
+  private startConnection(
+    request: { useGrantedDevices?: boolean },
+    options: LedgerOperationOptions,
+    selected?: SelectedDevice
+  ): Promise<void> {
+    if (options.signal?.aborted) return Promise.reject(ledgerCancelledError());
+    if (this.connectionAttempt) return Promise.reject(this.connectionBusy());
     const controller = new AbortController();
     this.connectionAbort = controller;
     const abort = () => controller.abort();
     options.signal?.addEventListener('abort', abort, { once: true });
-    const attempt = this.connectDevice(request, controller.signal);
+    const attempt = this.connectDevice(request, controller.signal, selected);
     this.connectionAttempt = attempt;
-    return attempt.finally(() => {
+    return attempt.finally(async () => {
       options.signal?.removeEventListener('abort', abort);
-      if (this.connectionAttempt === attempt)
-        this.connectionAttempt = undefined;
-      if (this.connectionAbort === controller) this.connectionAbort = undefined;
+      try {
+        if (controller.signal.aborted) {
+          if (this.connection) await this.disconnect();
+          else await this.closing;
+          throw ledgerCancelledError();
+        }
+      } finally {
+        if (this.connectionAttempt === attempt)
+          this.connectionAttempt = undefined;
+        if (this.connectionAbort === controller)
+          this.connectionAbort = undefined;
+      }
     });
   }
 
-  private async connectDevice(
+  private discoverDevice(
     request: { useGrantedDevices?: boolean },
     signal: AbortSignal
-  ): Promise<void> {
-    const generation = this.generation;
+  ): Promise<DiscoveredDevice> {
     let subscription: Subscription | undefined;
-    const device = await new Promise<DiscoveredDevice>((resolve, reject) => {
+    return new Promise<DiscoveredDevice>((resolve, reject) => {
       let settled = false;
       const timer = request.useGrantedDevices
         ? setTimeout(
@@ -153,35 +269,58 @@ export class LedgerDmkSession {
       });
       if (settled) subscription?.unsubscribe();
     });
-    if (generation !== this.generation || signal.aborted)
-      throw ledgerCancelledError();
+  }
+
+  private async connectDevice(
+    request: { useGrantedDevices?: boolean },
+    signal: AbortSignal,
+    selected?: SelectedDevice
+  ): Promise<void> {
+    const generation = this.generation;
+    const isCurrent = () => generation === this.generation && !signal.aborted;
+    const device =
+      selected?.device ?? (await this.discoverDevice(request, signal));
+    if (!isCurrent()) throw ledgerCancelledError();
     await this.closing;
+    if (!isCurrent()) throw ledgerCancelledError();
     const sessionId = await this.dmk.connect({ device });
-    if (generation !== this.generation || signal.aborted) {
-      await this.dmk.disconnect({ sessionId }).catch(() => undefined);
-      throw ledgerCancelledError();
-    }
-    this.sessionId = sessionId;
-    this.stateSubscription = this.dmk
-      .getDeviceSessionState({ sessionId })
-      .subscribe({
+    const connection = { sessionId, pendingSelection: selected?.owner };
+    let subscription: Subscription | undefined;
+    let ended = false;
+    try {
+      if (!isCurrent()) throw ledgerCancelledError();
+      subscription = this.dmk.getDeviceSessionState({ sessionId }).subscribe({
+        error: () => {
+          ended = true;
+          if (isCurrent() && this.connection === connection)
+            void this.disconnect();
+        },
         complete: () => {
-          if (this.sessionId === sessionId) {
-            this.sessionId = undefined;
+          ended = true;
+          if (isCurrent() && this.connection === connection) {
+            this.connection = undefined;
             this.invalidate();
             this.activeAbort?.abort();
             this.activeCancel?.();
           }
         },
       });
+      if (ended || !isCurrent()) throw ledgerCancelledError();
+    } catch (error) {
+      subscription?.unsubscribe();
+      await this.dmk.disconnect({ sessionId }).catch(() => undefined);
+      throw error;
+    }
+    this.connection = connection;
+    this.stateSubscription = subscription;
   }
 
   /** Cancel revokes the result and closes I/O; it cannot undo on-device approval. */
   disconnect(): Promise<void> {
     this.invalidate();
     this.connectionAbort?.abort();
-    const sessionId = this.sessionId;
-    this.sessionId = undefined;
+    const sessionId = this.connection?.sessionId;
+    this.connection = undefined;
     this.activeAbort?.abort();
     this.activeAbort = undefined;
     this.activeCancel?.();
@@ -200,13 +339,18 @@ export class LedgerDmkSession {
     options: LedgerOperationOptions = {}
   ): Promise<Output> {
     const generation = this.generation;
+    const admitted = this.readyConnection;
     const run = async () => {
       await this.closing;
-      const sessionId = this.sessionId;
+      const connection = this.readyConnection;
       const assertCurrent = () => {
         if (generation !== this.generation || options.signal?.aborted)
           throw ledgerCancelledError();
-        if (!sessionId || this.sessionId !== sessionId)
+        if (
+          !connection?.sessionId ||
+          this.readyConnection !== connection ||
+          (this.requireDeviceSelection && admitted !== connection)
+        )
           throw ledgerHostError(
             'HARDWARE_SIGNER_UNAVAILABLE',
             'Connect a Ledger device first'
@@ -233,7 +377,7 @@ export class LedgerDmkSession {
         assertCurrent();
         const context: LedgerDmkOperation = {
           dmk: this.dmk,
-          sessionId: sessionId!,
+          sessionId: connection!.sessionId,
           generation,
           signal: controller.signal,
           assertCurrent,
