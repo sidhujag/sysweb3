@@ -1,3 +1,7 @@
+jest.unmock('../../src/providers');
+jest.resetModules();
+(global as any).window.location = { href: 'http://localhost/' };
+
 import { BigNumber, JsonRpcProvider } from '../../src/ethers-v6';
 import { LedgerKeyring } from '../../src/ledger';
 import { KeyringAccountType } from '../../src/types';
@@ -45,7 +49,7 @@ const sdkFor = (provider: any) => {
     () => ({ activeNetwork: network }),
     {},
     {},
-    undefined,
+    () => () => undefined,
     null
   );
   Object.defineProperty(sdk, 'web3Provider', { get: () => provider });
@@ -77,6 +81,109 @@ describe('JSON-RPC response correlation', () => {
     for (const provider of providers.splice(0)) provider.destroy();
     global.fetch = originalFetch;
   });
+
+  it('refuses construction without an explicit session guard factory', () => {
+    const unavailable = jest.fn(() => {
+      throw new Error('A missing guard must reject before using the wallet');
+    });
+    expect(() =>
+      Reflect.construct(EthereumTransactions, [
+        unavailable,
+        unavailable,
+        unavailable,
+        undefined,
+        undefined,
+        undefined,
+        null,
+      ])
+    ).toThrow('Ethereum transactions require a signing context');
+    expect(unavailable).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['missing guard', () => undefined],
+    [
+      'async factory',
+      async () => {
+        throw new Error('Late factory rejection');
+      },
+    ],
+    [
+      'async guard',
+      () => async () => {
+        throw new Error('Late guard rejection');
+      },
+    ],
+  ])(
+    'rejects a %s before EVM submission is admitted',
+    async (_label, capture) => {
+      const chain = { ...network, kind: 'ethereum', slip44: 60 };
+      const type = KeyringAccountType.Imported;
+      const key = jest.fn();
+      const captureSubmission = jest.fn();
+      const sdk = new EthereumTransactions(
+        () => chain,
+        key,
+        () => ({
+          activeNetwork: chain,
+          activeAccountId: 0,
+          activeAccountType: type,
+          accounts: { [type]: { 0: { address: FROM } } },
+        }),
+        undefined,
+        undefined,
+        capture,
+        captureSubmission
+      );
+      try {
+        await expect(
+          sdk.sendFormattedTransaction({ to: FROM }, true, {
+            mode: 'specialized',
+            assertCurrent: () => undefined,
+          })
+        ).rejects.toMatchObject({
+          message: expect.stringContaining('synchronous'),
+          transactionNotBroadcast: true,
+        });
+        expect(key).not.toHaveBeenCalled();
+        expect(captureSubmission).not.toHaveBeenCalled();
+        expect(fetchMock).not.toHaveBeenCalled();
+      } finally {
+        sdk.web3Provider.destroy();
+      }
+    }
+  );
+
+  it.each(['blockbook', 'trezor'])(
+    'uses the explicit network family when an EVM RPC URL contains %s',
+    async (name) => {
+      const url = `https://${name}.example/evm`;
+      let selected = { url, kind: 'ethereum', chainId: 5700 };
+      const sdk = new EthereumTransactions(
+        () => selected,
+        () => {
+          throw new Error('Read-only fixture must not access a signing key');
+        },
+        () => ({ activeNetwork: selected }),
+        undefined,
+        undefined,
+        () => () => undefined,
+        null
+      );
+      const ethereum = sdk.web3Provider;
+      expect(ethereum).toBeInstanceOf(CustomJsonRpcProvider);
+      providers.push(ethereum);
+      await expect(ethereum.send('eth_blockNumber', [])).resolves.toBe(
+        '0x5208'
+      );
+      expect(fetchMock.mock.calls[0][0]).toBe(url);
+      selected = { ...selected, kind: 'syscoin' };
+      expect(sdk.web3Provider).toBeUndefined();
+      expect(ethereum.signal.aborted).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it.each(['before-sign', 'after-persist', 'revoked', 'current'])(
     'checks the RPC chain on both sides of real Ledger signing (%s)',
@@ -126,7 +233,7 @@ describe('JSON-RPC response correlation', () => {
         () => state,
         new LedgerKeyring(undefined, host),
         undefined,
-        undefined,
+        () => () => undefined,
         () => ({
           assertCurrent: () => undefined,
           async persistSigned(record: EvmSignedSubmission) {

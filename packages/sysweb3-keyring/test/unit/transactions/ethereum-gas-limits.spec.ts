@@ -20,7 +20,7 @@ const make = (chainId = 1) => {
     (() => ({ activeNetwork: network })) as any,
     {} as any,
     {} as any,
-    undefined,
+    () => () => undefined,
     null
   );
   Object.defineProperty(sdk, 'web3Provider', { get: () => provider });

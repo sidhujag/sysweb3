@@ -245,7 +245,7 @@ describe('source SDK account-scoped replacement signing', () => {
       (() => state) as any,
       ledger as any,
       trezor as any,
-      undefined,
+      () => () => undefined,
       createTestSubmissionCapture()
     );
     Object.defineProperty(sdk, 'web3Provider', {

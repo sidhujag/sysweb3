@@ -59,7 +59,7 @@ describe('formatted EVM transaction host admission', () => {
       () => state,
       {} as any,
       {} as any,
-      undefined,
+      () => () => undefined,
       createTestSubmissionCapture()
     );
     provider = sdk.web3Provider as any;

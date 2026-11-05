@@ -198,7 +198,7 @@ describe.each(missingHardwareCases)(
         }),
         undefined,
         undefined,
-        undefined,
+        () => () => undefined,
         null
       );
     });

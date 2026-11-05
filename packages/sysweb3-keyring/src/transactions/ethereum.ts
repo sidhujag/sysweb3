@@ -268,7 +268,7 @@ export class EthereumTransactions<
   public trezorSigner: TTrezor;
   public ledgerSigner: TLedger;
   private getNetwork: () => INetwork;
-  private captureSigningContext?: () => () => void;
+  private readonly captureSigningContext: () => () => void;
   private readonly captureSubmissionLifecycle: CaptureEvmSubmission | null;
   private abortController: AbortController;
   private getDecryptedPrivateKey: (
@@ -318,9 +318,11 @@ export class EthereumTransactions<
     },
     ledgerSigner: TLedger,
     trezorSigner: TTrezor,
-    captureSigningContext: (() => () => void) | undefined,
+    captureSigningContext: () => () => void,
     captureSubmissionLifecycle: CaptureEvmSubmission | null
   ) {
+    if (typeof captureSigningContext !== 'function')
+      throw new TypeError('Ethereum transactions require a signing context');
     if (
       captureSubmissionLifecycle !== null &&
       typeof captureSubmissionLifecycle !== 'function'
@@ -368,6 +370,19 @@ export class EthereumTransactions<
       this.requireTrezorSigner();
   };
 
+  private captureSessionGuard = () => {
+    const guard = this.captureSigningContext();
+    if (typeof guard !== 'function') {
+      void Promise.resolve(guard).catch(() => undefined);
+      throw new TypeError('Signing context must return a synchronous guard');
+    }
+    return () =>
+      assertSynchronousOriginalValidation(
+        guard(),
+        'Signing context guard must be synchronous'
+      );
+  };
+
   private captureEvmSigningContext = (
     target?: IEvmReplacementOptions['targetAccount']
   ) => {
@@ -384,10 +399,10 @@ export class EthereumTransactions<
       throw new Error('Active account not found');
     const account = { address: selectedAccount.address };
     const network = { ...state.activeNetwork };
-    const assertSession = this.captureSigningContext?.();
+    const assertSession = this.captureSessionGuard();
     const provider = this.web3Provider;
     const assertCurrent = () => {
-      assertSession?.();
+      assertSession();
       const current = this.getState();
       const currentAccount =
         current.accounts[activeAccountType]?.[activeAccountId];
@@ -490,14 +505,15 @@ export class EthereumTransactions<
     // RPC/network than `activeNetwork`, nodes will reject broadcasts with chain-id mismatch errors.
     try {
       const currentNetwork = this.getNetwork();
-      const currentUrl = currentNetwork?.url;
-      const currentKey = `${currentNetwork?.chainId ?? 'unknown'}|${
-        currentUrl ?? ''
+      if (currentNetwork?.kind !== INetworkType.Ethereum) {
+        if (this._web3Provider) this.setWeb3Provider(currentNetwork);
+        return;
+      }
+      const currentKey = `${currentNetwork.chainId}|${
+        currentNetwork.url ?? ''
       }`;
       const needsInit =
-        !this._web3Provider ||
-        !this._web3ProviderKey ||
-        (currentUrl && this._web3ProviderKey !== currentKey);
+        !this._web3Provider || this._web3ProviderKey !== currentKey;
       if (needsInit) {
         this.setWeb3Provider(currentNetwork);
       }
@@ -509,19 +525,6 @@ export class EthereumTransactions<
         error?.message || error
       );
     }
-  }
-
-  // Helper method to detect UTXO networks
-  private isUtxoNetwork(network: INetwork): boolean {
-    // Generic UTXO network detection patterns:
-    // 1. URL contains blockbook or trezor (most reliable)
-    // 2. Network kind is explicitly set to 'syscoin'
-    const hasBlockbookUrl = !!(
-      network.url?.includes('blockbook') || network.url?.includes('trezor')
-    );
-    const hasUtxoKind = (network as any).kind === INetworkType.Syscoin;
-
-    return hasBlockbookUrl || hasUtxoKind;
   }
 
   signTypedData = async (
@@ -1188,9 +1191,9 @@ export class EthereumTransactions<
     }
     if (!previewOnly) this.assertHardwareSignerAvailable(targetAccount);
     const provider = this.web3Provider;
-    const assertSession = this.captureSigningContext?.();
+    const assertSession = this.captureSessionGuard();
     const assertKeyringContext = () => {
-      assertSession?.();
+      assertSession();
       const current = this.getState();
       if (
         current.activeAccountType !== selectedType ||
@@ -3847,26 +3850,17 @@ export class EthereumTransactions<
     this.abortController.abort();
     this.abortController = new AbortController();
 
-    // Check if network is a UTXO network to avoid creating web3 providers for blockbook URLs
-    const isUtxoNetwork = this.isUtxoNetwork(network);
-
-    if (isUtxoNetwork) {
-      // For UTXO networks, don't create web3 providers at all since they won't be used
-      console.log(
-        '[EthereumTransactions] setWeb3Provider: Skipping web3Provider creation for UTXO network:',
-        network.url
-      );
-      // Clear any existing providers for UTXO networks
+    if (network?.kind !== INetworkType.Ethereum) {
       this._web3Provider = undefined as any;
       this._web3ProviderKey = undefined;
-    } else {
-      this._web3Provider = new CustomJsonRpcProvider(
-        this.abortController.signal,
-        network.url,
-        network.chainId
-      );
-      this._web3ProviderKey = `${network.chainId}|${network.url ?? ''}`;
+      return;
     }
+    this._web3Provider = new CustomJsonRpcProvider(
+      this.abortController.signal,
+      network.url,
+      network.chainId
+    );
+    this._web3ProviderKey = `${network.chainId}|${network.url ?? ''}`;
   }
 
   public importAccount = (mnemonicOrPrivKey: string) => {

@@ -71,7 +71,7 @@ function fixture(kind: KeyringAccountType, chainId = 1) {
     () => state,
     ledger,
     trezor,
-    undefined,
+    () => () => undefined,
     createTestSubmissionCapture()
   );
   const provider = {

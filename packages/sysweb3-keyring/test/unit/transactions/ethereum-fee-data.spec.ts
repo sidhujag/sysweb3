@@ -197,7 +197,7 @@ function fixture() {
       } as any),
     {} as any,
     {} as any,
-    undefined,
+    () => () => undefined,
     createTestSubmissionCapture()
   );
   Object.defineProperty(sdk, 'web3Provider', { get: () => provider });

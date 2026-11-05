@@ -72,6 +72,7 @@ beforeEach(() => {
     accounts: { Trezor: { 0: { id: 0, address: wallet.address } } },
   };
   provider = {
+    verifyConfiguredChainId: jest.fn().mockResolvedValue(undefined),
     getTransactionCount: jest.fn().mockResolvedValue(7),
     getGasPrice: jest.fn().mockResolvedValue(BigNumber.from(99)),
     getFeeData: jest.fn().mockResolvedValue({
@@ -100,6 +101,10 @@ beforeEach(() => {
       success: true,
       payload: { r: signature.r, s: signature.s, v: signature.v.toString(16) },
     };
+  });
+  connect.ethereumSignTransactionOwned = jest.fn((request, assertCurrent) => {
+    assertCurrent();
+    return connect.ethereumSignTransaction(request);
   });
   sdk = new EthereumTransactions(
     () => state.activeNetwork,

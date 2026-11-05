@@ -84,7 +84,7 @@ describe('formatted EVM transaction submission boundary', () => {
       () => state,
       ledger,
       trezor,
-      undefined,
+      () => () => undefined,
       createTestSubmissionCapture()
     );
     provider = transaction.web3Provider as any;
