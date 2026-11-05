@@ -2,7 +2,9 @@ import { installNativeStorageTestClient } from '../../helpers/native-storage-loc
 
 import type { IKeyValueDb } from '../../../../sysweb3-core/src';
 
-const { sysweb3Di } = jest.requireActual('@sidhujag/sysweb3-core');
+const { createFixedBrowserStateStorage, sysweb3Di } = jest.requireActual(
+  '@sidhujag/sysweb3-core'
+);
 
 const deferred = () => {
   let resolve!: () => void;
@@ -193,6 +195,118 @@ describe('real core asynchronous storage adapter', () => {
         expect.any(Function)
       );
       expect(nativeStorage.request).toHaveBeenCalledTimes(2);
+    });
+
+    it.each(['legacy', 'fixed'])(
+      'shares the native vault create lock when the %s client writes first',
+      async (winner) => {
+        const records: Record<string, unknown> = {};
+        const entered = deferred();
+        const release = deferred();
+        const client = {
+          get: jest.fn(async (keys: string[]) =>
+            Object.fromEntries(keys.map((key) => [key, records[key]]))
+          ),
+          set: jest.fn(async (items: Record<string, unknown>) => {
+            entered.resolve();
+            await release.promise;
+            Object.assign(records, items);
+          }),
+          remove: jest.fn(async (key: string) => {
+            delete records[key];
+          }),
+        };
+        nativeStorage = installNativeStorageTestClient(client);
+        db.setClient(client as any);
+        const first = createFixedBrowserStateStorage(client);
+        const second = createFixedBrowserStateStorage(client);
+        const vault = '{"v":4,"alg":"A256GCM","ct":"synthetic"}';
+        const keys = { salt: 'a'.repeat(32) };
+        const creates = [
+          (winner === 'legacy' ? db : first).createManyIfAbsent({
+            vault,
+            'vault-keys': keys,
+          }),
+        ];
+        try {
+          await entered.promise;
+          for (const owner of [winner === 'legacy' ? first : db, second]) {
+            creates.push(
+              owner.createManyIfAbsent({
+                vault: 'replacement',
+                'vault-keys': { salt: 'replacement' },
+              })
+            );
+          }
+          await Promise.resolve();
+          expect(client.get).toHaveBeenCalledTimes(1);
+          expect(client.set).toHaveBeenCalledTimes(1);
+          expect(records).toEqual({});
+        } finally {
+          release.resolve();
+          await expect(Promise.all(creates)).resolves.toEqual([
+            true,
+            false,
+            false,
+          ]);
+        }
+        expect(nativeStorage.request).toHaveBeenCalledTimes(3);
+        for (const call of nativeStorage.request.mock.calls) {
+          expect(call.slice(0, 2)).toEqual([
+            'sysweb3:create:sysweb3-',
+            { mode: 'exclusive' },
+          ]);
+        }
+        expect(records).toEqual({
+          'sysweb3-vault': vault,
+          'sysweb3-vault-keys': keys,
+        });
+        expect(client.set).toHaveBeenCalledTimes(1);
+        expect(Object.keys(first).sort()).toEqual([
+          'createManyIfAbsent',
+          'deleteItem',
+          'get',
+          'set',
+        ]);
+        expect(Object.isFrozen(first)).toBe(true);
+        db.setPrefix('different');
+        db.setClient();
+        await expect(first.get('vault')).resolves.toBe(vault);
+        await expect(second.get('vault-keys')).resolves.toEqual(keys);
+        await expect(first.deleteItem('vault-keys')).resolves.toBeUndefined();
+        await expect(
+          second.createManyIfAbsent({ vault: 'new', 'vault-keys': keys })
+        ).resolves.toBe(false);
+        expect(records).toEqual({ 'sysweb3-vault': vault });
+        await expect(second.set('vault-keys', keys)).resolves.toBeUndefined();
+        expect(records['sysweb3-vault-keys']).toEqual(keys);
+      }
+    );
+
+    it('admits only the explicit native storage area with the required methods', () => {
+      const client = { get: jest.fn(), set: jest.fn(), remove: jest.fn() };
+      nativeStorage = installNativeStorageTestClient(client);
+      expect(() => createFixedBrowserStateStorage(undefined)).toThrow(
+        /native browser storage/
+      );
+      expect(() => createFixedBrowserStateStorage({ ...client })).toThrow(
+        /native browser storage/
+      );
+      expect(() =>
+        createFixedBrowserStateStorage(
+          Object.assign(client, { createItemsIfAbsent: jest.fn() })
+        )
+      ).toThrow(/native browser storage/);
+      nativeStorage.restore();
+      const incomplete = { get: jest.fn(), set: jest.fn() };
+      nativeStorage = installNativeStorageTestClient(incomplete);
+      expect(() => createFixedBrowserStateStorage(incomplete)).toThrow(
+        /native browser storage/
+      );
+      expect(client.get).not.toHaveBeenCalled();
+      expect(client.set).not.toHaveBeenCalled();
+      expect(incomplete.get).not.toHaveBeenCalled();
+      expect(incomplete.set).not.toHaveBeenCalled();
     });
 
     it.each([false, true])(
