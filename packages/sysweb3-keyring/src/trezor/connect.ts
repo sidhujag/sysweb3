@@ -1,3 +1,6 @@
+import { captureHardwareTransactionAuthority } from '../hardware-transaction-authority';
+
+import type { HardwareTransactionAuthority } from '../hardware-transaction-authority';
 import type {
   ConnectDynamicSettings,
   TrezorConnectPublicAPI,
@@ -12,14 +15,14 @@ const methods = [
   'getPublicKey',
   'getAddress',
   'signTransaction',
-  'ethereumSignTransaction',
   'signMessage',
   'ethereumSignMessage',
   'ethereumSignTypedData',
   'verifyMessage',
   'ethereumVerifyMessage',
 ] as const;
-type Method = (typeof methods)[number];
+type ForwardedMethod = (typeof methods)[number];
+type Method = ForwardedMethod | 'ethereumSignTransaction';
 type Compatible<T> = T extends { success: false }
   ? T & { payload: { error: string; code?: string } }
   : T;
@@ -34,7 +37,7 @@ type CompatibleCall<FunctionType> = FunctionType extends {
       (...args: C): Promise<Compatible<Awaited<T>>>;
     }
   : never;
-type Calls = { [Name in Method]: CompatibleCall<Client[Name]> };
+type Calls = { [Name in ForwardedMethod]: CompatibleCall<Client[Name]> };
 type ConnectionEvent =
   | { type: 'disconnected' }
   | { type: 'model'; model: string };
@@ -199,13 +202,14 @@ const calls = Object.fromEntries(
 const TrezorConnect: Calls & {
   ethereumSignTransactionOwned: (
     request: Parameters<Client['ethereumSignTransaction']>[0],
-    assertCurrent: () => void
-  ) => ReturnType<Calls['ethereumSignTransaction']>;
+    authority: HardwareTransactionAuthority
+  ) => ReturnType<CompatibleCall<Client['ethereumSignTransaction']>>;
   init: Client['init'];
   dispose: () => Promise<void>;
 } = {
   ...calls,
-  async ethereumSignTransactionOwned(request, assertCurrent) {
+  async ethereumSignTransactionOwned(request, authority) {
+    const { assertCurrent } = captureHardwareTransactionAuthority(authority);
     const captured = generation;
     const response = await withClient((client) => {
       assertCurrent();

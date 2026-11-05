@@ -863,39 +863,37 @@ export class TrezorKeyring {
       coin: string;
       slip44: number;
     },
-    authority?: HardwareTransactionAuthority
+    authority: HardwareTransactionAuthority
   ) {
-    const check =
-      authority === undefined
-        ? undefined
-        : captureHardwareTransactionAuthority(authority).assertCurrent;
+    const owner = captureHardwareTransactionAuthority(authority);
     return this.executeWithRetry(
       async () => {
-        check?.();
+        owner.assertCurrent();
         // Wait between popups
         await new Promise((resolve) =>
           setTimeout(resolve, DELAY_BETWEEN_POPUPS)
         );
-        check?.();
+        owner.assertCurrent();
 
         // Use dynamic path generation based on actual network parameters
         this.setHdPath(coin, Number(index) || 0, slip44);
         const request = { path: this.hdPath, transaction: tx };
 
         try {
-          const response = await (check
-            ? TrezorConnect.ethereumSignTransactionOwned(request, check)
-            : TrezorConnect.ethereumSignTransaction(request));
-          check?.();
+          const response = await TrezorConnect.ethereumSignTransactionOwned(
+            request,
+            owner
+          );
+          owner.assertCurrent();
           if (response.success) return response;
           throw trezorResponseError(response);
         } catch (error) {
-          check?.();
+          owner.assertCurrent();
           throw error;
         }
       },
       'signEthTransaction',
-      check
+      owner.assertCurrent
     );
   }
 

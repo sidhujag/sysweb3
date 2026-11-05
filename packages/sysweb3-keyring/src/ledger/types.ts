@@ -52,7 +52,7 @@ export interface IEvmMethods {
       rawTx: string;
       expectedAddress: string;
     },
-    authority?: HardwareTransactionAuthority
+    authority: HardwareTransactionAuthority
   ) => Promise<{
     r: string;
     s: string;

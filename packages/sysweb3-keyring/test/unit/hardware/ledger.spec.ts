@@ -301,15 +301,31 @@ describe('Ledger authority facade', () => {
       rawTx: transactionHex,
       expectedAddress: address,
     };
-    await expect(ledger.evm.signEVMTransaction(request)).resolves.toEqual(
+    const signal = new AbortController().signal;
+    await expect(
+      ledger.evm.signEVMTransaction(request, {
+        signal,
+        assertCurrent: () => undefined,
+      })
+    ).resolves.toEqual(
       signDigest(Transaction.from(`0x${transactionHex}`).unsignedHash)
     );
-    expect(host.connect).toHaveBeenCalledWith({ useGrantedDevices: true });
-    expect(host.evm.signTransaction).toHaveBeenCalledWith({
-      accountIndex: 2,
-      unsignedTxHex: transactionHex,
-      expectedAddress: address,
+    const authority = expect.objectContaining({
+      signal,
+      assertCurrent: expect.any(Function),
     });
+    expect(host.connect).toHaveBeenCalledWith(
+      { useGrantedDevices: true },
+      authority
+    );
+    expect(host.evm.signTransaction).toHaveBeenCalledWith(
+      {
+        accountIndex: 2,
+        unsignedTxHex: transactionHex,
+        expectedAddress: address,
+      },
+      authority
+    );
   });
 
   it('forwards message bytes and typed-data version without changing their payload', async () => {

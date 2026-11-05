@@ -389,6 +389,46 @@ it('does not open the vendor signer when the review retires during the Trezor po
   expect(device).not.toHaveBeenCalled();
 });
 
+it('rejects a direct Trezor transaction without explicit approval before vendor dispatch', async () => {
+  jest.useFakeTimers({ doNotFake: ['setImmediate'] });
+  const value = new Keyring();
+  keyrings.push(value);
+  const initialization = value.init();
+  await jest.advanceTimersByTimeAsync(100);
+  await expect(initialization).resolves.toBe(true);
+  const device = vendorSigner();
+  const outcome = Reflect.apply(value.signEthTransaction, value, [
+    evmRequest,
+  ]).catch((error: unknown) => error);
+  await jest.advanceTimersByTimeAsync(2_000);
+  await expect(outcome).resolves.toMatchObject({
+    code: 'HARDWARE_REQUEST_CANCELLED',
+    transactionNotBroadcast: true,
+  });
+  expect(device).not.toHaveBeenCalled();
+  expect('ethereumSignTransaction' in adapter.default).toBe(false);
+});
+
+it('rejects asynchronous approval before entering the Trezor transaction connector', async () => {
+  const device = vendorSigner();
+  await expect(
+    adapter.default.ethereumSignTransactionOwned(
+      { path: "m/44'/60'/0'/0/0", transaction: evmRequest.tx },
+      {
+        signal: new AbortController().signal,
+        async assertCurrent() {
+          throw new Error('Late rejection');
+        },
+      }
+    )
+  ).rejects.toMatchObject({
+    code: 'HARDWARE_REQUEST_CANCELLED',
+    transactionNotBroadcast: true,
+  });
+  expect(ConnectMock.init).not.toHaveBeenCalled();
+  expect(device).not.toHaveBeenCalled();
+});
+
 it('checks the owner after the Connect adapter waits to enter the vendor method', async () => {
   const value = new Keyring();
   keyrings.push(value);
@@ -397,11 +437,17 @@ it('checks the owner after the Connect adapter waits to enter the vendor method'
   let current = true;
   const pending = adapter.default.ethereumSignTransactionOwned(
     { path: "m/44'/60'/0'/0/0", transaction: evmRequest.tx },
-    () => {
-      if (!current) throw new Error('Approval expired');
+    {
+      signal: new AbortController().signal,
+      assertCurrent() {
+        if (!current) throw new Error('Approval expired');
+      },
     }
   );
   current = false;
-  await expect(pending).rejects.toThrow('Approval expired');
+  await expect(pending).rejects.toMatchObject({
+    code: 'HARDWARE_REQUEST_CANCELLED',
+    transactionNotBroadcast: true,
+  });
   expect(device).not.toHaveBeenCalled();
 });

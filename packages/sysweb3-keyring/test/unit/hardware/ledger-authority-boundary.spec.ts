@@ -127,6 +127,25 @@ const cryptoHost = () => {
   return { host, ledger: new LedgerKeyring(undefined, host) };
 };
 
+test('rejects a direct Ledger transaction without explicit approval before connection', async () => {
+  const { host, ledger } = cryptoHost();
+  host.getStatus = () => ({ connected: false });
+  await expect(
+    Reflect.apply(ledger.evm.signEVMTransaction, undefined, [
+      {
+        accountIndex: 0,
+        expectedAddress: signingWallet.address,
+        rawTx: tx().unsignedSerialized,
+      },
+    ])
+  ).rejects.toMatchObject({
+    code: 'HARDWARE_REQUEST_CANCELLED',
+    transactionNotBroadcast: true,
+  });
+  expect(host.connect).not.toHaveBeenCalled();
+  expect(host.evm.signTransaction).not.toHaveBeenCalled();
+});
+
 test('does not dispatch an EVM signer after the review changes during Ledger connection', async () => {
   const { host, ledger } = cryptoHost();
   host.getStatus = () => ({ connected: false });
@@ -197,11 +216,17 @@ test.each(['valid', 'wrong-account', 'different-transaction', 'wrong-chain-v'])(
       signature.v = (Number.parseInt(signature.v, 16) + 12).toString(16); // EIP155 chain 2, approved chain 1.
       (host.evm.signTransaction as jest.Mock).mockResolvedValueOnce(signature);
     }
-    const pending = ledger.evm.signEVMTransaction({
-      accountIndex: 0,
-      expectedAddress: signingWallet.address,
-      rawTx: approved.unsignedSerialized,
-    });
+    const pending = ledger.evm.signEVMTransaction(
+      {
+        accountIndex: 0,
+        expectedAddress: signingWallet.address,
+        rawTx: approved.unsignedSerialized,
+      },
+      {
+        signal: new AbortController().signal,
+        assertCurrent: () => undefined,
+      }
+    );
     if (response === 'valid')
       await expect(pending).resolves.toEqual(
         fields(signingWallet.signingKey.sign(approved.unsignedHash))

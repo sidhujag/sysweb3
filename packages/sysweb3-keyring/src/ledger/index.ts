@@ -148,10 +148,7 @@ export class LedgerKeyring {
         });
       },
       signEVMTransaction: async (request, authority) => {
-        const owner =
-          authority === undefined
-            ? undefined
-            : captureHardwareTransactionAuthority(authority);
+        const owner = captureHardwareTransactionAuthority(authority);
         const index = accountIndex(request.accountIndex);
         const expected = approvedAddress(request.expectedAddress);
         let transaction: Transaction;
@@ -172,11 +169,9 @@ export class LedgerKeyring {
         const digest = transaction.unsignedHash;
         try {
           return await this.run(async (host, assertCurrent) => {
-            owner?.assertCurrent();
-            const result = await (owner
-              ? host.evm.signTransaction(approved, owner)
-              : host.evm.signTransaction(approved));
-            owner?.assertCurrent();
+            owner.assertCurrent();
+            const result = await host.evm.signTransaction(approved, owner);
+            owner.assertCurrent();
             assertCurrent();
             const signature = checkedSignature(result, digest, expected);
             if (
@@ -191,7 +186,7 @@ export class LedgerKeyring {
             };
           }, owner);
         } catch (error) {
-          owner?.assertCurrent();
+          owner.assertCurrent();
           throw error;
         }
       },
