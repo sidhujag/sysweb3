@@ -9,6 +9,10 @@ import { KeyringManager, KeyringAccountType } from '../../../src';
 import { BigNumber } from '../../../src/ethers-v6';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
 import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
+const tokenApproval = {
+  assertCurrent: () => undefined,
+  signal: new AbortController().signal,
+};
 
 const specializedApproval = {
   mode: 'specialized' as const,
@@ -237,7 +241,7 @@ describe('Ethereum Transactions', () => {
             tokenAmountUnits: '1000000000000000000',
             isLegacy: false,
           },
-          () => undefined
+          tokenApproval
         )
       ).resolves.toBeDefined();
 
@@ -254,29 +258,37 @@ describe('Ethereum Transactions', () => {
 
     it('should accept ERC721 token IDs beyond Number safe integer range', async () => {
       await expect(
-        keyringManager.ethereumTransaction.sendSignedErc721Transaction({
-          gasLimit: '0x0249f0',
-          maxFeePerGas: '0x4a817c800',
-          maxPriorityFeePerGas: '0x77359400',
-          networkUrl: 'https://rpc.example',
-          receiver: '0x2c7536E3605D9C16a7a3D7b1898e529396a65c23',
-          tokenAddress: '0x1111111111111111111111111111111111111111',
-          tokenId: '9007199254740993',
-        })
+        keyringManager.ethereumTransaction.sendSignedErc721Transaction(
+          {
+            gasLimit: '0x0249f0',
+            maxFeePerGas: '0x4a817c800',
+            maxPriorityFeePerGas: '0x77359400',
+            networkUrl: currentVaultState.activeNetwork.url,
+            receiver: '0x2c7536E3605D9C16a7a3D7b1898e529396a65c23',
+            tokenAddress: '0x1111111111111111111111111111111111111111',
+            tokenId: '9007199254740993',
+            isLegacy: false,
+          },
+          tokenApproval
+        )
       ).resolves.toBeDefined();
     });
 
     it('should reject ERC721 sends without a token ID', async () => {
       await expect(
-        keyringManager.ethereumTransaction.sendSignedErc721Transaction({
-          gasLimit: '0x0249f0',
-          maxFeePerGas: '0x4a817c800',
-          maxPriorityFeePerGas: '0x77359400',
-          networkUrl: 'https://rpc.example',
-          receiver: '0x2c7536E3605D9C16a7a3D7b1898e529396a65c23',
-          tokenAddress: '0x1111111111111111111111111111111111111111',
-        })
-      ).rejects.toThrow('ERC721 tokenId is required');
+        keyringManager.ethereumTransaction.sendSignedErc721Transaction(
+          {
+            gasLimit: '0x0249f0',
+            maxFeePerGas: '0x4a817c800',
+            maxPriorityFeePerGas: '0x77359400',
+            networkUrl: currentVaultState.activeNetwork.url,
+            receiver: '0x2c7536E3605D9C16a7a3D7b1898e529396a65c23',
+            tokenAddress: '0x1111111111111111111111111111111111111111',
+            isLegacy: false,
+          } as any,
+          tokenApproval
+        )
+      ).rejects.toThrow('Invalid ERC721 token ID');
     });
 
     it('should preserve explicit zero priority fee on formatted transactions', async () => {

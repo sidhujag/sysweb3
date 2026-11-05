@@ -13,6 +13,10 @@ import type {
   CaptureEvmSubmission,
   EvmSignedSubmission,
 } from '../../../src/transactions/evm-submission';
+const tokenApproval = {
+  assertCurrent: () => undefined,
+  signal: new AbortController().signal,
+};
 
 const specializedApproval = {
   mode: 'specialized' as const,
@@ -220,6 +224,7 @@ function fixture(kind: KeyringAccountType, capture?: CaptureEvmSubmission) {
       gasLimit: 42000,
       maxFeePerGas: 3,
       maxPriorityFeePerGas: 1,
+      isLegacy: false as const,
     };
     if (operation === 'erc20')
       return sdk.sendSignedErc20Transaction(
@@ -228,15 +233,21 @@ function fixture(kind: KeyringAccountType, capture?: CaptureEvmSubmission) {
           tokenAmountUnits: '1',
           isLegacy: false,
         },
-        () => undefined
+        tokenApproval
       );
     if (operation === 'erc721')
-      return sdk.sendSignedErc721Transaction({ ...request, tokenId: '1' });
-    return sdk.sendSignedErc1155Transaction({
-      ...request,
-      tokenId: '1',
-      tokenAmount: '1',
-    });
+      return sdk.sendSignedErc721Transaction(
+        { ...request, tokenId: '1' },
+        tokenApproval
+      );
+    return sdk.sendSignedErc1155Transaction(
+      {
+        ...request,
+        tokenId: '1',
+        tokenAmount: '1',
+      },
+      tokenApproval
+    );
   };
   return {
     sdk,
@@ -361,7 +372,7 @@ it('keeps exact ERC20 amounts on the ERC20 capture and persistence route', async
       maxFeePerGas: 3,
       maxPriorityFeePerGas: 1,
     },
-    () => undefined
+    tokenApproval
   );
   await Promise.race([nonceRead.promise, sending]);
   expect(capture).toHaveBeenCalledWith(
@@ -403,26 +414,29 @@ it('rejects absent or async review, a different RPC and missing reviewed fees be
     (f.sdk.sendSignedErc20Transaction as any)(approved)
   ).rejects.toThrow('approval required');
   await expect(
-    f.sdk.sendSignedErc20Transaction(approved, async () => {
-      throw Error('late');
+    f.sdk.sendSignedErc20Transaction(approved, {
+      ...tokenApproval,
+      assertCurrent: async () => {
+        throw Error('late');
+      },
     })
   ).rejects.toThrow('must be synchronous');
   await expect(
     f.sdk.sendSignedErc20Transaction(
       { ...approved, networkUrl: 'https://wrong.invalid' },
-      () => undefined
+      tokenApproval
     )
   ).rejects.toThrow('network changed');
   await expect(
     f.sdk.sendSignedErc20Transaction(
       { ...approved, maxFeePerGas: undefined } as any,
-      () => undefined
+      tokenApproval
     )
   ).rejects.toThrow('ERC20 maximum fee');
   await expect(
     f.sdk.sendSignedErc20Transaction(
       { ...approved, gasPrice: 3 } as any,
-      () => undefined
+      tokenApproval
     )
   ).rejects.toThrow('Invalid ERC20 transaction fee model');
   for (const method of Object.values(f.provider))
@@ -452,8 +466,11 @@ it('blocks the ERC20 POST when approval closes during durable persistence', asyn
       isLegacy: true,
       gasPrice: 3,
     },
-    () => {
-      if (!current) throw Error('Review closed');
+    {
+      ...tokenApproval,
+      assertCurrent: () => {
+        if (!current) throw Error('Review closed');
+      },
     }
   );
   await Promise.race([stored.promise, sending]);
@@ -465,6 +482,48 @@ it('blocks the ERC20 POST when approval closes during durable persistence', asyn
   expect(f.provider.sendTransaction).not.toHaveBeenCalled();
 });
 
+it('rejects omitted, aborted, or substituted collectible approval before I/O', async () => {
+  const f = fixture(KeyringAccountType.HDAccount, () => ({
+    assertCurrent: () => undefined,
+    persistSigned: jest.fn(async () => undefined),
+  }));
+  const request = {
+    networkUrl: f.network.url,
+    receiver: to,
+    tokenAddress: to,
+    tokenId: '9007199254740993',
+    gasLimit: 60000,
+    isLegacy: true as const,
+    gasPrice: 3,
+  };
+  const aborted = new AbortController();
+  aborted.abort();
+  await expect(
+    (f.sdk.sendSignedErc721Transaction as any)(request)
+  ).rejects.toThrow('approval required');
+  await expect(
+    f.sdk.sendSignedErc721Transaction(request, {
+      ...tokenApproval,
+      signal: aborted.signal,
+    })
+  ).rejects.toMatchObject({ transactionNotBroadcast: true });
+  await expect(
+    f.sdk.sendSignedErc1155Transaction(
+      {
+        ...request,
+        tokenAmount: '9007199254740993',
+        networkUrl: 'https://wrong.invalid',
+      },
+      tokenApproval
+    )
+  ).rejects.toThrow('network changed');
+  await expect(
+    f.sdk.sendSignedErc1155Transaction(request as any, tokenApproval)
+  ).rejects.toThrow('ERC1155 amount');
+  for (const method of Object.values(f.provider))
+    expect(method).not.toHaveBeenCalled();
+  expect(f.keyAccess).not.toHaveBeenCalled();
+});
 it.each(operations)(
   'refuses %s without durable authority before RPC or signer entry',
   async (operation) => {

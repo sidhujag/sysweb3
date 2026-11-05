@@ -7,6 +7,10 @@ import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import { signTransaction } from '../../../src/transactions/evm-local-signer';
 import { KeyringAccountType } from '../../../src/types';
 import { createTestSubmissionCapture } from '../../helpers/evm-submission';
+const tokenApproval = {
+  assertCurrent: () => undefined,
+  signal: new AbortController().signal,
+};
 
 const specializedApproval = {
   mode: 'specialized' as const,
@@ -273,9 +277,17 @@ describe('shared final EVM gas admission', () => {
           method === 'sendSignedErc20Transaction'
             ? f.sdk[method](
                 { ...request, isLegacy: true, tokenAmountUnits: '1' },
-                () => undefined
+                tokenApproval
               )
-            : f.sdk[method]({ ...request, tokenId: '1', tokenAmount: '1' });
+            : method === 'sendSignedErc721Transaction'
+            ? f.sdk[method](
+                { ...request, isLegacy: true, tokenId: '1' },
+                tokenApproval
+              )
+            : f.sdk[method](
+                { ...request, isLegacy: true, tokenId: '1', tokenAmount: '1' },
+                tokenApproval
+              );
         await expect(sending).rejects.toBeInstanceOf(EvmGasLimitError);
         expect(f.device).not.toHaveBeenCalled();
         expect(f.provider.sendTransaction).not.toHaveBeenCalled();

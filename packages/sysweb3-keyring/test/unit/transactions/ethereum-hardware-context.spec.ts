@@ -13,6 +13,10 @@ import { BigNumber, serializeTransaction } from '../../../src/ethers-v6';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import { KeyringAccountType } from '../../../src/types';
 import { createTestSubmissionCapture } from '../../helpers/evm-submission';
+const tokenApproval = {
+  assertCurrent: () => undefined,
+  signal: new AbortController().signal,
+};
 
 const specializedApproval = {
   mode: 'specialized' as const,
@@ -549,7 +553,7 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
               ? { gasPrice: 100 }
               : { maxFeePerGas: 100, maxPriorityFeePerGas: 2 }),
           } as Parameters<typeof sdk.sendSignedErc20Transaction>[0],
-          () => undefined
+          tokenApproval
         );
       const expectNoTokenIo = () => {
         expect(captureSubmission).not.toHaveBeenCalled();
@@ -611,9 +615,9 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
             tokenAmountUnits: maxUnits,
             isLegacy,
           };
-          await expect(sdk[method](request)).rejects.toThrow(
-            'ERC20 amount is not allowed for NFT transfers'
-          );
+          await expect(
+            sdk[method](request as any, tokenApproval)
+          ).rejects.toThrow('ERC20 amount is not allowed for NFT transfers');
           expectNoTokenIo();
         }
       );
@@ -746,36 +750,32 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
             tokenAddress,
             receiver: recipient,
             gasLimit: '200000',
-            isLegacy: legacy,
             ...(legacy
-              ? { gasPrice: '100' }
-              : { maxFeePerGas: '100', maxPriorityFeePerGas: '2' }),
+              ? { isLegacy: true as const, gasPrice: '100' }
+              : {
+                  isLegacy: false as const,
+                  maxFeePerGas: '100',
+                  maxPriorityFeePerGas: '2',
+                }),
           };
-          return method === 'sendSignedErc20Transaction'
-            ? sdk[method](
-                {
-                  networkUrl: request.networkUrl,
-                  tokenAddress,
-                  receiver: recipient,
-                  gasLimit: request.gasLimit,
-                  tokenAmountUnits: atomic,
-                  ...(legacy
-                    ? { isLegacy: true, gasPrice: '100' }
-                    : {
-                        isLegacy: false,
-                        maxFeePerGas: '100',
-                        maxPriorityFeePerGas: '2',
-                      }),
-                },
-                () => undefined
-              )
-            : sdk[method]({
-                ...request,
-                tokenId: '9007199254740993',
-                ...(method === 'sendSignedErc1155Transaction'
-                  ? { tokenAmount: atomic }
-                  : {}),
-              });
+          if (method === 'sendSignedErc20Transaction')
+            return sdk[method](
+              { ...request, tokenAmountUnits: atomic },
+              tokenApproval
+            );
+          if (method === 'sendSignedErc721Transaction')
+            return sdk[method](
+              { ...request, tokenId: '9007199254740993' },
+              tokenApproval
+            );
+          return sdk[method](
+            {
+              ...request,
+              tokenId: '9007199254740993',
+              tokenAmount: atomic,
+            },
+            tokenApproval
+          );
         };
 
         it.each([false, true])(

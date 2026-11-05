@@ -142,29 +142,21 @@ export interface IEthereumTransactions {
   sendFormattedTransaction: (
     ...args: EvmFormattedSendArguments
   ) => Promise<TransactionResponse>;
-  sendSignedErc1155Transaction: ({
-    receiver,
-    tokenAddress,
-    tokenId,
-    isLegacy,
-    gasPrice,
-    gasLimit,
-    maxFeePerGas,
-    maxPriorityFeePerGas,
-  }: ISendSignedErcTransactionProps) => Promise<IResponseFromSendErcSignedTransaction>;
+  sendSignedErc1155Transaction: (
+    params: ISendSignedErc1155TransactionProps,
+    approval: IReviewedEvmTokenApproval
+  ) => Promise<IResponseFromSendErcSignedTransaction>;
   verifyPersonalMessage: (msg: string, sign: string) => string;
   toBigNumber: (aBigNumberish: string | number) => BigNumber;
   sendSignedErc20Transaction: (
     params: ISendSignedErc20TransactionProps,
-    assertApproved: () => void
+    approval: IReviewedEvmTokenApproval
   ) => Promise<IResponseFromSendErcSignedTransaction>;
 
-  sendSignedErc721Transaction: ({
-    networkUrl,
-    receiver,
-    tokenAddress,
-    tokenId,
-  }: ISendSignedErcTransactionProps) => Promise<IResponseFromSendErcSignedTransaction>;
+  sendSignedErc721Transaction: (
+    params: ISendSignedErc721TransactionProps,
+    approval: IReviewedEvmTokenApproval
+  ) => Promise<IResponseFromSendErcSignedTransaction>;
 
   sendTransactionWithEditedFee: (
     txHash: string,
@@ -489,51 +481,44 @@ export interface ILatestUpdateForSysAccount {
   xpub: any;
 }
 
-export interface ISendSignedErcTransactionProps {
-  decimals?: number;
-  gasLimit?: BigNumberish;
-  gasPrice?: BigNumberish;
-  isLegacy?: boolean;
-  maxFeePerGas?: BigNumberish;
-  maxPriorityFeePerGas?: BigNumberish;
+export type IReviewedEvmTokenApproval = Readonly<{
+  assertCurrent: () => void;
+  signal: AbortSignal;
+}>;
+
+export type IReviewedEvmTokenFees = { gasLimit: BigNumberish } & (
+  | {
+      isLegacy: true;
+      gasPrice: BigNumberish;
+      maxFeePerGas?: never;
+      maxPriorityFeePerGas?: never;
+    }
+  | {
+      isLegacy: false;
+      maxFeePerGas: BigNumberish;
+      maxPriorityFeePerGas: BigNumberish;
+      gasPrice?: never;
+    }
+);
+
+type ISendReviewedTokenBase = IReviewedEvmTokenFees & {
   networkUrl: string;
   receiver: string;
-  saveTrezorTx?: (tx: any) => void;
   tokenAddress: string;
-  tokenAmount?: string;
-  tokenId?: bigint | number | string;
-}
+};
 
-/** The amount is a canonical decimal string of uint256 base units. */
-export type ISendSignedErc20TransactionProps = Omit<
-  ISendSignedErcTransactionProps,
-  | 'decimals'
-  | 'tokenAmount'
-  | 'tokenId'
-  | 'gasLimit'
-  | 'gasPrice'
-  | 'isLegacy'
-  | 'maxFeePerGas'
-  | 'maxPriorityFeePerGas'
-> & {
+/** Integer amounts and token identifiers are canonical uint256 strings. */
+export type ISendSignedErc20TransactionProps = ISendReviewedTokenBase & {
   tokenAmountUnits: string;
-  tokenAmount?: never;
-  decimals?: never;
-  gasLimit: BigNumberish;
-} & (
-    | {
-        isLegacy: true;
-        gasPrice: BigNumberish;
-        maxFeePerGas?: never;
-        maxPriorityFeePerGas?: never;
-      }
-    | {
-        isLegacy: false;
-        maxFeePerGas: BigNumberish;
-        maxPriorityFeePerGas: BigNumberish;
-        gasPrice?: never;
-      }
-  );
+  saveTrezorTx?: (tx: any) => void;
+};
+export type ISendSignedErc721TransactionProps = ISendReviewedTokenBase & {
+  tokenId: string;
+};
+export type ISendSignedErc1155TransactionProps =
+  ISendSignedErc721TransactionProps & {
+    tokenAmount: string;
+  };
 
 export interface IResponseFromSendErcSignedTransaction {
   accessList: any[];
