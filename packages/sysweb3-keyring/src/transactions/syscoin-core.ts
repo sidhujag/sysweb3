@@ -1043,7 +1043,11 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
     }));
     const signedPsbt = await this.signPSBTWithMethod(psbtObj, read);
     read.assertCurrent();
-    if (!unsigned.equals(signedPsbt.data.globalMap.unsignedTx.toBuffer()))
+    if (
+      !unsigned.equals(
+        Buffer.from(signedPsbt.data.globalMap.unsignedTx.toBuffer())
+      )
+    )
       throw new Error('Signed PSBT differs from the prepared transaction');
     signedPsbt.data.inputs.forEach((input, index) => {
       if (input.finalScriptSig || input.finalScriptWitness) return;
