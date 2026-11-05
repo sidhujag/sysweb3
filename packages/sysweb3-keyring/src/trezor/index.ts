@@ -461,9 +461,10 @@ export class TrezorKeyring {
   public async signUtxoTransaction(
     utxoTransaction: any,
     psbt: Psbt,
-    assertCurrent: () => void
+    authority: HardwareTransactionAuthority
   ) {
-    assertCurrent();
+    const owner = captureHardwareTransactionAuthority(authority);
+    const { assertCurrent } = owner;
     // Capture approval before the device await. Witnesses and scriptSigs are
     // signatures, but every unsigned transaction field must remain identical.
     const unsignedSnapshot = (transaction: any): string =>
@@ -487,7 +488,10 @@ export class TrezorKeyring {
     const payload = await this.executeWithRetry(
       async () => {
         assertCurrent();
-        const response = await TrezorConnect.signTransaction(utxoTransaction);
+        const response = await TrezorConnect.signTransactionOwned(
+          utxoTransaction,
+          owner
+        );
         assertCurrent();
         if (!response.success) {
           throw trezorResponseError(response, 'Trezor sign failed: ');

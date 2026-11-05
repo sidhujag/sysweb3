@@ -385,11 +385,58 @@ test.each(['signPsbt', 'signUtxoMessage'] as const)(
     complete();
     await pending;
     if (method === 'signPsbt')
-      expect(sign).toHaveBeenCalledWith(expected, { signal });
+      expect(sign).toHaveBeenCalledWith(expected, {
+        assertCurrent: expect.any(Function),
+        signal,
+      });
     else expect(sign).toHaveBeenCalledWith(expected);
     expect(Object.isFrozen(sign.mock.calls[0][0])).toBe(true);
   }
 );
+
+test('carries Ledger PSBT approval through a held platform dispatch', async () => {
+  const host = hostFixture();
+  const ledger = new LedgerKeyring(undefined, host);
+  const request = {
+    currency: 'tSYS',
+    slip44: 1,
+    accountIndex: 0,
+    accountXpub: 'approved account xpub',
+    psbtBase64: 'approved psbt',
+  };
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const post = jest.fn();
+  host.utxo.signPsbt = jest.fn(async (_request, owner) => {
+    entered();
+    await held;
+    owner.assertCurrent();
+    post();
+    return { fingerprint: '01020304', signatures: [] };
+  });
+  const controller = new AbortController();
+  let current = true;
+  const pending = ledger.signPsbt(request, {
+    signal: controller.signal,
+    assertCurrent() {
+      if (!current) throw new Error('Approval expired');
+    },
+  });
+  const denied = expect(pending).rejects.toMatchObject({
+    code: 'HARDWARE_REQUEST_CANCELLED',
+  });
+  await started;
+  current = false;
+  release();
+  await denied;
+  expect(controller.signal.aborted).toBe(false);
+  expect(post).not.toHaveBeenCalled();
+});
 
 test('discards a queued valid personal signature after synchronous destruction', async () => {
   const { host, ledger } = cryptoHost();

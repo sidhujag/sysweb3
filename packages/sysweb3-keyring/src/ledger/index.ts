@@ -331,14 +331,11 @@ export class LedgerKeyring {
     return this.run((host) => host.utxo.signMessage(approved));
   };
 
-  public signPsbt = (
+  public signPsbt = async (
     request: Parameters<LedgerUtxoHost['signPsbt']>[0],
-    {
-      assertCurrent,
-      signal,
-    }: Readonly<{ assertCurrent: () => void; signal: AbortSignal }>
+    authority: Parameters<LedgerUtxoHost['signPsbt']>[1]
   ): ReturnType<LedgerUtxoHost['signPsbt']> => {
-    assertCurrent();
+    const owner = captureHardwareTransactionAuthority(authority);
     const approved = Object.freeze({
       currency: request.currency,
       slip44: request.slip44,
@@ -346,15 +343,18 @@ export class LedgerKeyring {
       accountXpub: request.accountXpub,
       psbtBase64: request.psbtBase64,
     });
-    return this.run(
-      async (host) => {
-        assertCurrent();
-        const result = await host.utxo.signPsbt(approved, { signal });
+    try {
+      return await this.run(async (host, assertCurrent) => {
+        owner.assertCurrent();
+        const result = await host.utxo.signPsbt(approved, owner);
+        owner.assertCurrent();
         assertCurrent();
         return result;
-      },
-      { signal }
-    );
+      }, owner);
+    } catch (error) {
+      owner.assertCurrent();
+      throw error;
+    }
   };
 
   public getStatus() {

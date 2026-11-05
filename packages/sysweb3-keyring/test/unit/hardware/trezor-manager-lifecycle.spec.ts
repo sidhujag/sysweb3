@@ -451,3 +451,27 @@ it('checks the owner after the Connect adapter waits to enter the vendor method'
   });
   expect(device).not.toHaveBeenCalled();
 });
+
+it('checks UTXO approval after the Connect adapter waits to enter the vendor method', async () => {
+  const value = new Keyring();
+  keyrings.push(value);
+  await expect(value.init()).resolves.toBe(true);
+  const device = jest.spyOn(ConnectMock, 'signTransaction');
+  let current = true;
+  const pending = adapter.default.signTransactionOwned(
+    { coin: 'sys', inputs: [], outputs: [] },
+    {
+      signal: new AbortController().signal,
+      assertCurrent() {
+        if (!current) throw new Error('Approval expired');
+      },
+    }
+  );
+  current = false;
+  await expect(pending).rejects.toMatchObject({
+    code: 'HARDWARE_REQUEST_CANCELLED',
+    transactionNotBroadcast: true,
+  });
+  expect(device).not.toHaveBeenCalled();
+  expect('signTransaction' in adapter.default).toBe(false);
+});

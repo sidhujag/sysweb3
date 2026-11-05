@@ -16,6 +16,11 @@ import {
 
 jest.unmock('syscoinjs-lib');
 
+const owner = (assertCurrent = () => undefined) => ({
+  assertCurrent,
+  signal: new AbortController().signal,
+});
+
 const response = (data: number[], status: number) =>
   new ApduResponse({
     data: Uint8Array.from(data),
@@ -187,7 +192,17 @@ describe('Ledger DMK Syscoin/Bitcoin APDU adapter', () => {
     };
     const session: any = {
       onInvalidated: jest.fn(),
-      runExclusive: async (run: any) => run(operation),
+      runExclusive: async (
+        run: any,
+        options?: { assertCurrent?: () => void }
+      ) =>
+        run({
+          ...operation,
+          assertCurrent() {
+            options?.assertCurrent?.();
+            operation.assertCurrent();
+          },
+        }),
     };
     const adapter = createLedgerUtxoAdapter(session);
     return {
@@ -416,7 +431,7 @@ describe('Ledger DMK Syscoin/Bitcoin APDU adapter', () => {
         ];
       });
     try {
-      const output = await adapter.signPsbt(request);
+      const output = await adapter.signPsbt(request, owner());
       expect(output).toEqual({
         fingerprint: '01020304',
         signatures: [
@@ -430,6 +445,61 @@ describe('Ledger DMK Syscoin/Bitcoin APDU adapter', () => {
       expect(calls).toEqual(['fingerprint', 'xpub', 'register', 'sign']);
       expect(operation.dmk.executeDeviceAction).toHaveBeenCalledTimes(1);
       expect(actions[0].input.appName).toBe('Syscoin');
+    } finally {
+      fingerprint.mockRestore();
+      xpub.mockRestore();
+      registration.mockRestore();
+      sign.mockRestore();
+    }
+  });
+
+  it('rejects a direct PSBT request without an owner before the device action', async () => {
+    const { adapter, request, operation } = signingFixture();
+    await expect(
+      Reflect.apply(adapter.signPsbt, adapter, [request])
+    ).rejects.toMatchObject({ code: 'HARDWARE_REQUEST_CANCELLED' });
+    expect(operation.dmk.executeDeviceAction).not.toHaveBeenCalled();
+  });
+
+  it('does not start the signing APDU after approval expires during device registration', async () => {
+    const { adapter, request } = signingFixture();
+    let registered!: () => void, release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      registered = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let current = true;
+    const fingerprint = jest
+      .spyOn(AppClient.prototype, 'getMasterFingerprint')
+      .mockResolvedValue('01020304');
+    const xpub = jest
+      .spyOn(AppClient.prototype, 'getExtendedPubkey')
+      .mockResolvedValue(request.accountXpub);
+    const registration = jest
+      .spyOn(AppClient.prototype, 'registerWallet')
+      .mockImplementation(async (policy) => {
+        registered();
+        await held;
+        return [policy.getId(), Buffer.alloc(32, 0x55)];
+      });
+    const sign = jest.spyOn(AppClient.prototype, 'signPsbt');
+    try {
+      const pending = adapter.signPsbt(
+        request,
+        owner(() => {
+          if (!current) throw new Error('Approval expired');
+        })
+      );
+      const rejected = expect(pending).rejects.toMatchObject({
+        code: 'HARDWARE_REQUEST_CANCELLED',
+      });
+      await started;
+      current = false;
+      release();
+      await rejected;
+      expect(sign).not.toHaveBeenCalled();
     } finally {
       fingerprint.mockRestore();
       xpub.mockRestore();
@@ -454,7 +524,7 @@ describe('Ledger DMK Syscoin/Bitcoin APDU adapter', () => {
       .mockRejectedValue(rejection);
     const sign = jest.spyOn(AppClient.prototype, 'signPsbt');
     try {
-      await expect(adapter.signPsbt(request)).rejects.toMatchObject({
+      await expect(adapter.signPsbt(request, owner())).rejects.toMatchObject({
         statusCode: 0x6985,
       });
       expect(registration).toHaveBeenCalledTimes(1);

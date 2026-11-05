@@ -1,3 +1,5 @@
+import type { HardwareTransactionAuthority } from '../hardware-transaction-authority';
+
 /** Serializable Ledger requests. This module must remain free of device SDK imports. */
 export interface LedgerProgress {
   status: 'not-started' | 'pending' | 'stopped' | 'completed' | 'error';
@@ -10,6 +12,9 @@ export interface LedgerOperationOptions {
   signal?: AbortSignal;
   onProgress?: (progress: LedgerProgress) => void;
 }
+
+export type LedgerPsbtAuthority = HardwareTransactionAuthority &
+  Pick<LedgerOperationOptions, 'onProgress'>;
 
 export interface LedgerUtxoAccount {
   currency: string;
@@ -127,7 +132,7 @@ export interface LedgerUtxoHost {
       psbtBase64: string;
       accountXpub: string;
     },
-    options?: LedgerOperationOptions
+    authority: LedgerPsbtAuthority
   ): Promise<{ fingerprint: string; signatures: LedgerPartialSignature[] }>;
 }
 
