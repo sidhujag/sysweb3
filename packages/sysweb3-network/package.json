@@ -52,6 +52,12 @@
       ],
       "cjs/evm.js": [
         "types/evm.d.ts"
+      ],
+      "cjs/ownedUtxoRpc": [
+        "types/ownedUtxoRpc.d.ts"
+      ],
+      "cjs/ownedUtxoRpc.js": [
+        "types/ownedUtxoRpc.d.ts"
       ]
     }
   }
