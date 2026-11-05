@@ -54,6 +54,12 @@
       "esm/ledger-host.js": [
         "types/ledger-host.d.ts"
       ],
+      "esm/ledger/dmk-selected-host": [
+        "types/ledger/dmk-selected-host.d.ts"
+      ],
+      "esm/ledger/dmk-selected-host.js": [
+        "types/ledger/dmk-selected-host.d.ts"
+      ],
       "cjs/ledger/host-types": [
         "types/ledger/host-types.d.ts"
       ],
