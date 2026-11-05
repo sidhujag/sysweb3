@@ -24,6 +24,12 @@
       "cjs/transactions/evm-submission.js": [
         "types/transactions/evm-submission.d.ts"
       ],
+      "cjs/transactions/evm-cancellation": [
+        "types/transactions/evm-cancellation.d.ts"
+      ],
+      "cjs/transactions/evm-cancellation.js": [
+        "types/transactions/evm-cancellation.d.ts"
+      ],
       "cjs/transactions/ethereum": [
         "types/transactions/ethereum.d.ts"
       ],

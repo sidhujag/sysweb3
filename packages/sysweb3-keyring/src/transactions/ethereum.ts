@@ -57,6 +57,7 @@ import {
   accountType,
   IGasParams,
 } from '../types';
+import { assertEvmCancellationEnvelope } from './evm-cancellation';
 import {
   deriveEvmAccountFromMnemonic,
   parsePersonalMessage as parseLocalPersonalMessage,
@@ -1177,6 +1178,19 @@ export class EthereumTransactions<
             activeAccount.address.toLowerCase(),
             activeNetwork.chainId
           );
+    const software =
+      activeAccountType !== KeyringAccountType.Ledger &&
+      activeAccountType !== KeyringAccountType.Trezor;
+    const softwareNonce = software ? tx?.nonce ?? fallbackNonce : undefined;
+    // The host validator may retain the wrapped response and its fee objects.
+    const softwareOriginalFees =
+      software && tx
+        ? {
+            gasPrice: tx.gasPrice.toBigInt(),
+            maxFeePerGas: tx.maxFeePerGas.toBigInt(),
+            maxPriorityFeePerGas: tx.maxPriorityFeePerGas.toBigInt(),
+          }
+        : undefined;
     assertSynchronousOriginalValidation(
       options.validateOriginal(tx as TransactionResponse | null)
     );
@@ -1224,7 +1238,7 @@ export class EthereumTransactions<
       gasPrice: originalGasPrice,
       maxFeePerGas: originalMaxFeePerGas,
       maxPriorityFeePerGas: originalMaxPriorityFeePerGas,
-    } = tx;
+    } = softwareOriginalFees ?? tx;
     let feePlan: ReturnType<typeof planEvmCancellationFees>;
     if (isLegacy) {
       const currentGasPrice = parseEvmFeeQuantity(
@@ -1286,7 +1300,7 @@ export class EthereumTransactions<
 
     // Base cancel transaction parameters (same for all wallet types)
     const baseCancelTx = {
-      nonce: tx.nonce,
+      nonce: software ? softwareNonce : tx.nonce,
       from: activeAccount.address,
       to: activeAccount.address,
       value: Zero,
@@ -1486,7 +1500,15 @@ export class EthereumTransactions<
           changedTxToCancel,
           assertCurrent,
           assertCurrent,
-          assertApprovedEnvelope,
+          (transaction) => {
+            assertApprovedEnvelope(transaction);
+            assertEvmCancellationEnvelope(serializeTransaction(transaction), {
+              payer: activeAccount.address,
+              chainId: activeNetwork.chainId,
+              nonce: softwareNonce,
+              feePlan,
+            });
+          },
           submission
         );
 

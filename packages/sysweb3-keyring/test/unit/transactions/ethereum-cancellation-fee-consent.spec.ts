@@ -100,7 +100,7 @@ function fixture(
   };
   const sent: Transaction[] = [];
   const provider = {
-    getTransaction: jest.fn(async () => row),
+    getTransaction: jest.fn(async (): Promise<typeof row | null> => row),
     getGasPrice: jest.fn(async () => BigNumber.from(100)),
     getNetwork: jest.fn(async () => ({ chainId: CHAIN })),
     verifyConfiguredChainId: jest.fn(async () => undefined),
@@ -177,8 +177,8 @@ function fixture(
     assertCurrentContext: () => undefined,
     validateOriginal,
   });
-  const run = (opts: any = options()) =>
-    sdk.cancelSentTransaction(original.hash!, legacy, undefined, opts);
+  const run = (opts: any = options(), fallbackNonce?: number) =>
+    sdk.cancelSentTransaction(original.hash!, legacy, fallbackNonce, opts);
   const noSigning = () => {
     expect(getKey).not.toHaveBeenCalled();
     expect(ledger.evm.signEVMTransaction).not.toHaveBeenCalled();
@@ -302,49 +302,141 @@ describe.each([true, false])(
       }
     );
 
-    it('retains the validated original fee references while the current fee read waits', async () => {
+    it.each(['field replacement', 'in-place fee mutation'])(
+      'retains the authenticated nonce and fees during a held quote with %s',
+      async (mutation) => {
+        const f = fixture(legacy, false, {
+          nonce: 0,
+          originalPrice: 120n,
+          originalTip: 20n,
+        });
+        const ready = deferred<void>();
+        const resume = deferred<void>();
+        if (legacy) {
+          f.provider.getGasPrice.mockImplementationOnce(async () => {
+            ready.resolve();
+            await resume.promise;
+            return BigNumber.from(100);
+          });
+        } else {
+          jest
+            .mocked(f.sdk.getFeeDataWithDynamicMaxPriorityFeePerGas)
+            .mockImplementationOnce(async () => {
+              ready.resolve();
+              await resume.promise;
+              return {
+                maxFeePerGas: BigNumber.from(100),
+                maxPriorityFeePerGas: BigNumber.from(10),
+              };
+            });
+        }
+
+        const options = f.options();
+        const pending = f.run({ ...options, approvedMaximumFee: '6048000' });
+        await ready.promise;
+        const [original] = options.validateOriginal.mock.calls[0];
+        original.nonce = 91;
+        if (mutation === 'field replacement') {
+          original.gasPrice = BigNumber.from(1);
+          original.maxFeePerGas = BigNumber.from(1);
+          original.maxPriorityFeePerGas = BigNumber.from(1);
+        } else {
+          Object.assign(original.gasPrice, { value: 1n });
+          Object.assign(original.maxFeePerGas, { value: 1n });
+          Object.assign(original.maxPriorityFeePerGas, { value: 1n });
+        }
+        resume.resolve();
+
+        await expect(pending).resolves.toMatchObject({ isCanceled: true });
+        expect(f.sent).toHaveLength(1);
+        const [sent] = f.sent;
+        expect(sent.nonce).toBe(0);
+        expect(sent.gasLimit).toBe(42000n);
+        expect(legacy ? sent.gasPrice : sent.maxFeePerGas).toBe(144n);
+        expect(sent.maxPriorityFeePerGas).toBe(legacy ? null : 24n);
+      }
+    );
+
+    it('retains authenticated original fees after synchronous field replacement', async () => {
       const f = fixture(legacy, false, {
         nonce: 0,
         originalPrice: 120n,
         originalTip: 20n,
       });
-      const ready = deferred<void>();
-      const resume = deferred<void>();
-      if (legacy) {
-        f.provider.getGasPrice.mockImplementationOnce(async () => {
-          ready.resolve();
-          await resume.promise;
-          return BigNumber.from(100);
-        });
-      } else {
-        jest
-          .mocked(f.sdk.getFeeDataWithDynamicMaxPriorityFeePerGas)
-          .mockImplementationOnce(async () => {
-            ready.resolve();
-            await resume.promise;
-            return {
-              maxFeePerGas: BigNumber.from(100),
-              maxPriorityFeePerGas: BigNumber.from(10),
-            };
-          });
-      }
-
       const options = f.options();
-      const pending = f.run({ ...options, approvedMaximumFee: '6048000' });
-      await ready.promise;
-      const [original] = options.validateOriginal.mock.calls[0];
-      original.gasPrice = BigNumber.from(1);
-      original.maxFeePerGas = BigNumber.from(1);
-      original.maxPriorityFeePerGas = BigNumber.from(1);
-      resume.resolve();
-
-      await expect(pending).resolves.toMatchObject({ isCanceled: true });
+      options.validateOriginal.mockImplementationOnce((original) => {
+        expect(original.nonce).toBe(0);
+        original.gasPrice = BigNumber.from(1);
+        original.maxFeePerGas = BigNumber.from(1);
+        original.maxPriorityFeePerGas = BigNumber.from(1);
+      });
+      await expect(
+        f.run({ ...options, approvedMaximumFee: '6048000' })
+      ).resolves.toMatchObject({ isCanceled: true });
       expect(f.sent).toHaveLength(1);
-      const [sent] = f.sent;
-      expect(sent.nonce).toBe(0);
-      expect(sent.gasLimit).toBe(42000n);
-      expect(legacy ? sent.gasPrice : sent.maxFeePerGas).toBe(144n);
-      expect(sent.maxPriorityFeePerGas).toBe(legacy ? null : 24n);
+      expect(legacy ? f.sent[0].gasPrice : f.sent[0].maxFeePerGas).toBe(144n);
+      expect(f.sent[0].maxPriorityFeePerGas).toBe(legacy ? null : 24n);
+    });
+
+    it('does not read hostile nonce or fee getters after admitting a software original', async () => {
+      const f = fixture(legacy, false, { nonce: 0 });
+      const options = f.options();
+      const lateRead = jest.fn(() => {
+        throw new Error('Unexpected late original read');
+      });
+      options.validateOriginal.mockImplementationOnce((original) => {
+        expect(original.nonce).toBe(0);
+        for (const field of [
+          'nonce',
+          'gasPrice',
+          'maxFeePerGas',
+          'maxPriorityFeePerGas',
+        ])
+          Object.defineProperty(original, field, { get: lateRead });
+      });
+      await expect(f.run(options)).resolves.toMatchObject({ isCanceled: true });
+      expect(lateRead).not.toHaveBeenCalled();
+      expect(f.sent).toHaveLength(1);
+      expect(f.sent[0]).toMatchObject({ nonce: 0, to: PAYER, from: PAYER });
+    });
+
+    it('refuses a changed final software cancellation recipient before signing', async () => {
+      const f = fixture(legacy, false);
+      const resolve = ethersCompat.resolveProperties;
+      jest
+        .spyOn(ethersCompat, 'resolveProperties')
+        .mockImplementationOnce(async (value) => ({
+          ...(await resolve(value)),
+          to: OTHER,
+        }));
+      const sign = jest.spyOn(localSigner, 'signTransaction');
+      await expect(f.run()).resolves.toMatchObject({
+        isCanceled: false,
+        error: true,
+        transactionNotBroadcast: true,
+      });
+      expect(sign).not.toHaveBeenCalled();
+      expect(f.provider.sendTransaction).not.toHaveBeenCalled();
+    });
+
+    it('signs the host-admitted fallback nonce zero without inferring another nonce', async () => {
+      const f = fixture(legacy, false);
+      f.provider.getTransaction.mockResolvedValueOnce(null);
+      const validateOriginal = jest.fn((original) =>
+        expect(original).toBeNull()
+      );
+      await expect(
+        f.run({ ...f.options(), validateOriginal }, 0)
+      ).resolves.toMatchObject({ isCanceled: true });
+      expect(validateOriginal).toHaveBeenCalledWith(null);
+      expect(f.sent).toHaveLength(1);
+      expect(f.sent[0]).toMatchObject({
+        nonce: 0,
+        from: PAYER,
+        to: PAYER,
+        value: 0n,
+        data: '0x',
+      });
     });
 
     it.each([undefined, '', '00', '-1', '1.5', '0x100', 1, '9'.repeat(79)])(
