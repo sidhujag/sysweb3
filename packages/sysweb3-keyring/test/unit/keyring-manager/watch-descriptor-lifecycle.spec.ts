@@ -7,6 +7,7 @@ import { KeyringAccountType } from '../../../src/types';
 import { descriptorChecksum } from '../../../src/utils/watch-descriptor';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
 import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
+import { ownedUtxoTestRead } from '../../helpers/utxoAuthority';
 
 const XPUB =
   'xpub6BgBgsespWvERF3LHQu6CnqdvfEvtMcQjYrcRzx53QJjSxarj2afYWcLteoGVky7D3UKDP9QyrLprQ3VCECoY49yfdDEHGCtMMj92pReUsQ';
@@ -145,22 +146,28 @@ describe('watch descriptor import and address lifecycle', () => {
     );
   });
 
-  it('derives force-index-zero addresses without backend recipient authority', async () => {
-    await expect(
-      manager.getAddress(WPKH, false, { forceIndex0: true })
-    ).resolves.toBe(ADDRESS);
-    await expect(
-      manager.getAddress(WPKH, true, { forceIndex0: true })
-    ).resolves.toBe('bc1qm4y5h28kytu6uftd94vtcjppffk5sx0hgat2c5');
-    expect(fetchMock).not.toHaveBeenCalled();
+  it('derives the first imported xpub address without requesting used paths', async () => {
+    const { utils } = jest.requireMock('syscoinjs-lib');
+    jest.mocked(utils.fetchBackendAccount).mockClear();
+    await expect(manager.importWatchOnly(XPUB)).resolves.toMatchObject({
+      xpub: XPUB,
+      address: ADDRESS,
+    });
+    expect(utils.fetchBackendAccount).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `https://watch-only.invalid/api/v2/xpub/${XPUB}?details=basic`
+    );
   });
 
   it.each([false, true])(
     'refuses descriptor rotation with change=%s',
     async (change) => {
-      await expect(manager.getAddress(WPKH, change)).rejects.toThrow(
-        /descriptor|rotation|index/i
-      );
+      activate(await manager.importWatchOnly(WPKH));
+      fetchMock.mockClear();
+      await expect(
+        manager.getAddress(WPKH, change, ownedUtxoTestRead())
+      ).rejects.toThrow(/descriptor|rotation|index/i);
       expect(fetchMock).not.toHaveBeenCalled();
     }
   );
@@ -171,15 +178,15 @@ describe('watch descriptor import and address lifecycle', () => {
       const account = await manager.importWatchOnly(WPKH);
       activate(oldRecord ? { ...account, address: WPKH } : account);
       fetchMock.mockClear();
-      await expect(manager.getChangeAddress(account.id)).rejects.toThrow(
-        /descriptor|rotation|index/i
-      );
-      await expect(manager.getNewChangeAddress()).rejects.toThrow(
-        /descriptor|rotation|index/i
-      );
-      await expect(manager.updateReceivingAddress()).rejects.toThrow(
-        /descriptor|rotation|index/i
-      );
+      await expect(
+        manager.getChangeAddress(account.id, ownedUtxoTestRead())
+      ).rejects.toThrow(/descriptor|rotation|index/i);
+      await expect(
+        manager.getNewChangeAddress(ownedUtxoTestRead())
+      ).rejects.toThrow(/descriptor|rotation|index/i);
+      await expect(
+        manager.updateReceivingAddress(ownedUtxoTestRead())
+      ).rejects.toThrow(/descriptor|rotation|index/i);
       expect(fetchMock).not.toHaveBeenCalled();
     }
   );
@@ -188,12 +195,12 @@ describe('watch descriptor import and address lifecycle', () => {
     const account = await manager.importWatchOnly(WPKH);
     activate(account);
     fetchMock.mockClear();
-    await expect(manager.getPubkey(account.id, false)).rejects.toThrow(
-      /watch-only/i
-    );
-    await expect(manager.getBip32Path(account.id, false)).rejects.toThrow(
-      /watch-only/i
-    );
+    await expect(
+      manager.getPubkey(account.id, false, ownedUtxoTestRead())
+    ).rejects.toThrow(/watch-only/i);
+    await expect(
+      manager.getBip32Path(account.id, false, ownedUtxoTestRead())
+    ).rejects.toThrow(/watch-only/i);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

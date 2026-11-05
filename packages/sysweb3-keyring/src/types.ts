@@ -338,11 +338,24 @@ export interface IKeyringManager {
     label?: string,
     options?: { utxoAddressType?: 'p2wpkh' | 'p2pkh' }
   ) => Promise<IKeyringAccountState>;
-  getNewChangeAddress: () => Promise<string>;
-  getChangeAddress: (id: number) => Promise<string>;
-  getPubkey: (id: number, isChangeAddress: boolean) => Promise<string>;
-  getBip32Path: (id: number, isChangeAddress: boolean) => Promise<string>;
-  updateReceivingAddress: () => Promise<string>;
+  getNewChangeAddress: (ownedRead: SyscoinOwnedReadOptions) => Promise<string>;
+  getChangeAddress: (
+    id: number,
+    ownedRead: SyscoinOwnedReadOptions
+  ) => Promise<string>;
+  getPubkey: (
+    id: number,
+    isChangeAddress: boolean,
+    ownedRead: SyscoinOwnedReadOptions
+  ) => Promise<string>;
+  getBip32Path: (
+    id: number,
+    isChangeAddress: boolean,
+    ownedRead: SyscoinOwnedReadOptions
+  ) => Promise<string>;
+  updateReceivingAddress: (
+    ownedRead: SyscoinOwnedReadOptions
+  ) => Promise<string>;
   getActiveAccount: () => {
     activeAccount: Omit<IKeyringAccountState, 'xprv'>;
     activeAccountType: KeyringAccountType;
@@ -355,7 +368,11 @@ export interface IKeyringManager {
   ) => Promise<IKeyringAccountState | undefined>;
   getActiveUTXOAccountState: () => any;
   createEthAccount: (privateKey: string) => any;
-  getAddress: (xpub: string, isChangeAddress: boolean) => Promise<string>;
+  getAddress: (
+    xpub: string,
+    isChangeAddress: boolean,
+    ownedRead: SyscoinOwnedReadOptions
+  ) => Promise<string>;
   // Secure initialization and password management
   initializeWalletSecurely: (
     seedPhrase: string,

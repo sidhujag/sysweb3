@@ -304,7 +304,9 @@ describe('Syscoin Transactions', () => {
     });
 
     it('should handle change address generation', async () => {
-      const changeAddress = await keyringManager.getNewChangeAddress();
+      const changeAddress = await keyringManager.getNewChangeAddress(
+        ownedUtxoTestRead()
+      );
 
       expect(changeAddress).toBeDefined();
       expect(changeAddress.startsWith('tsys1')).toBe(true); // Testnet address
@@ -312,7 +314,9 @@ describe('Syscoin Transactions', () => {
     });
 
     it('should get current receiving address', async () => {
-      const address = await keyringManager.updateReceivingAddress();
+      const address = await keyringManager.updateReceivingAddress(
+        ownedUtxoTestRead()
+      );
 
       expect(address).toBeDefined();
       expect(address.startsWith('tsys1')).toBe(true);
@@ -452,7 +456,10 @@ describe('Syscoin Transactions', () => {
       };
 
       // Get change address for account 1
-      const changeAddress1 = await keyringManager.getChangeAddress(0);
+      const changeAddress1 = await keyringManager.getChangeAddress(
+        0,
+        ownedUtxoTestRead()
+      );
 
       // Switch to account 2
       currentVaultState.activeAccount = {
@@ -461,7 +468,10 @@ describe('Syscoin Transactions', () => {
       };
 
       // Get change address for account 2
-      const changeAddress2 = await keyringManager.getChangeAddress(1);
+      const changeAddress2 = await keyringManager.getChangeAddress(
+        1,
+        ownedUtxoTestRead()
+      );
 
       // Addresses should be different
       expect(changeAddress1).not.toBe(changeAddress2);

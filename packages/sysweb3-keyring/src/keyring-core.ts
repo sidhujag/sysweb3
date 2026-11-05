@@ -56,6 +56,7 @@ import {
 } from './transactions/prepared-evm';
 import {
   SyscoinTransactionsCore,
+  captureOwnedSyscoinRead,
   createHardwareSignerUnavailableError,
   type ISyscoinHardwareSigners,
   type SyscoinUtxoReadContext,
@@ -67,13 +68,14 @@ import {
   KeyringAccountType,
   IEthereumTransactions,
   IEvmReplacementOptions,
+  type SyscoinOwnedReadOptions,
 } from './types';
-import { fetchBackendAccountCached as fetchBlockbookAccountCached } from './utils/blockbook-cache';
 import {
   getAddressDerivationPath,
   isEvmCoin,
   convertExtendedKeyVersion,
 } from './utils/derivation-paths';
+import { fetchOwnedBlockbookAccount } from './utils/owned-blockbook-account';
 import {
   assertPsbtAccountScope,
   createPsbtDerivationGuard,
@@ -1054,110 +1056,90 @@ export class KeyringCore<
     };
   }
 
-  public getNewChangeAddress = async (): Promise<string> => {
-    const vault = this.getVault();
-    const { accounts, activeAccount } = vault;
-    const account = accounts[activeAccount.type]?.[activeAccount.id];
-    if (!account) {
-      throw new Error('Active account not found');
-    }
-    const { xpub, isImported, address } = account as any;
-    // For imported single-address accounts, always return the single address
-    const looksLikeSingleAddress =
-      isImported &&
-      xpub === address &&
-      !this.isDescriptor(xpub) &&
-      !this.isXpubLike(xpub);
-    if (looksLikeSingleAddress) return address;
-    return await this.getAddress(xpub, true); // Don't skip increment - get next unused
+  private getActiveUtxoAddressAccount = (
+    id: number,
+    ownedRead: SyscoinOwnedReadOptions
+  ) => {
+    const captured = captureOwnedSyscoinRead(
+      ownedRead,
+      this.getAccountsState,
+      this.capturePsbtSigningContext
+    );
+    if (id !== captured.accountId)
+      throw new Error('UTXO account is not active');
+    const account = this.getVault().accounts[captured.accountType]?.[id];
+    captured.read.assertCurrent();
+    return { account, read: captured.read };
   };
 
-  public getChangeAddress = async (id: number): Promise<string> => {
-    const vault = this.getVault();
-    const { accounts, activeAccount } = vault;
-    const account = accounts[activeAccount.type]?.[id];
-    if (!account) {
-      throw new Error(`Account with id ${id} not found`);
-    }
-    const { xpub, isImported, address } = account as any;
-    if (
-      isImported &&
-      xpub === address &&
-      !this.isDescriptor(xpub) &&
-      !this.isXpubLike(xpub)
-    )
-      return address;
-    return await this.getAddress(xpub, true);
+  public getNewChangeAddress = (ownedRead: SyscoinOwnedReadOptions) =>
+    this.getChangeAddress(this.getVault().activeAccount.id, ownedRead);
+
+  public getChangeAddress = async (
+    id: number,
+    ownedRead: SyscoinOwnedReadOptions
+  ): Promise<string> => {
+    const { account, read } = this.getActiveUtxoAddressAccount(id, ownedRead);
+    return this.getAddressForUtxoAccount(account, true, read);
   };
 
   public getPubkey = async (
     id: number,
-    isChangeAddress: boolean
+    isChangeAddress: boolean,
+    ownedRead: SyscoinOwnedReadOptions
   ): Promise<string> => {
-    const vault = this.getVault();
-    const { accounts, activeAccount } = vault;
-    const account = accounts[activeAccount.type]?.[id];
-    if (!account) {
-      throw new Error(`Account with id ${id} not found`);
-    }
-    const { xpub, isImported, address } = account as any;
-    // Guard: single-address imported are watch-only
-    if (isImported && xpub === address) {
-      throw new Error(
-        'Public key not available for single-address imported accounts'
-      );
-    }
-    // Guard: descriptor/xpub watch-only (no xprv and not hardware)
-    if (this.isWatchOnlyAccount(account as any)) {
-      throw new Error('Public key not available for watch-only accounts');
-    }
-    return await this.getCurrentAddressPubkey(xpub, isChangeAddress);
+    const { account, read } = this.getActiveUtxoAddressAccount(id, ownedRead);
+    this.assertUtxoDerivationAvailable(account, 'Public key');
+    return this.getAddressPubkey(isChangeAddress, read);
   };
 
   public getBip32Path = async (
     id: number,
-    isChangeAddress: boolean
+    isChangeAddress: boolean,
+    ownedRead: SyscoinOwnedReadOptions
   ): Promise<string> => {
-    const vault = this.getVault();
-    const { accounts, activeAccount } = vault;
-    const account = accounts[activeAccount.type]?.[id];
-    if (!account) {
-      throw new Error(`Account with id ${id} not found`);
-    }
-    const { xpub, isImported, address } = account as any;
-    // Guard: single-address imported are watch-only
-    if (isImported && xpub === address) {
-      throw new Error(
-        'BIP32 path not available for single-address imported accounts'
-      );
-    }
-    // Guard: descriptor/xpub watch-only (no xprv and not hardware)
-    if (this.isWatchOnlyAccount(account as any)) {
-      throw new Error('BIP32 path not available for watch-only accounts');
-    }
-    return await this.getCurrentAddressBip32Path(xpub, isChangeAddress);
+    const { account, read } = this.getActiveUtxoAddressAccount(id, ownedRead);
+    this.assertUtxoDerivationAvailable(account, 'BIP32 path');
+    return this.getAddressBip32Path(id, isChangeAddress, read);
   };
 
-  public updateReceivingAddress = async (): Promise<string> => {
-    const vault = this.getVault();
-    const { accounts, activeAccount } = vault;
-    const account = accounts[activeAccount.type]?.[activeAccount.id];
-    if (!account) {
-      throw new Error('Active account not found');
-    }
-    const { xpub, isImported, address } = account as any;
+  public updateReceivingAddress = async (
+    ownedRead: SyscoinOwnedReadOptions
+  ): Promise<string> => {
+    const { account, read } = this.getActiveUtxoAddressAccount(
+      this.getVault().activeAccount.id,
+      ownedRead
+    );
+    return this.getAddressForUtxoAccount(account, false, read);
+  };
+
+  private getAddressForUtxoAccount = (
+    account: IKeyringAccountState,
+    change: boolean,
+    read: SyscoinUtxoReadContext
+  ): Promise<string> => {
+    const { xpub, isImported, address } = account;
     if (
       isImported &&
       xpub === address &&
       !this.isDescriptor(xpub) &&
       !this.isXpubLike(xpub)
     )
-      return address;
-    const nextAddress = await this.getAddress(xpub, false);
-    // NOTE: Address updates should be dispatched to Redux store, not updated here
-    // The calling code should handle the Redux dispatch
-    return nextAddress;
+      return Promise.resolve(address);
+    return this.discoverUtxoAddress(change, read);
   };
+
+  private assertUtxoDerivationAvailable(
+    account: IKeyringAccountState,
+    field: 'Public key' | 'BIP32 path'
+  ) {
+    if (account.isImported && account.xpub === account.address)
+      throw new Error(
+        `${field} not available for single-address imported accounts`
+      );
+    if (this.isWatchOnlyAccount(account))
+      throw new Error(`${field} not available for watch-only accounts`);
+  }
 
   public getAccountById = (
     id: number,
@@ -1708,133 +1690,129 @@ export class KeyringCore<
   public createEthAccount = (privateKey: string) =>
     privateKeyToAccount(privateKey);
 
-  // Helper to get current account data from backend
-  private fetchCurrentAccountData = async (
-    xpub: string,
-    isChangeAddress: boolean,
-    ownedRead?: SyscoinUtxoReadContext
-  ) => {
-    const activeNetwork = ownedRead?.network ?? this.getVault().activeNetwork;
-
-    // Use read-only signer for backend calls - works for all account types including hardware wallets
-    const backendUrl =
-      ownedRead?.network.url ?? this.getReadOnlySigner().main.blockbookURL;
-    const options = 'tokens=used&details=tokens';
-
-    // In-flight deduplicated: concurrent callers within a send flow
-    // share a single request unless the host owns a separate read lifetime.
-    ownedRead?.assertCurrent();
-    const { tokens } = await fetchBlockbookAccountCached(
-      backendUrl,
-      xpub,
-      options,
-      ...(ownedRead ? ([ownedRead.transport] as const) : [])
+  private loadBip84AddressAccount(xpub: string, network: INetwork) {
+    const { types, networks } = getNetworkConfig(
+      network.slip44,
+      network.currency
     );
-    ownedRead?.assertCurrent();
+    if (!types?.zPubType)
+      throw new Error('Missing zPubType in network configuration');
+    return new BIP84.fromZPub(xpub, types.zPubType, networks);
+  }
 
+  private deriveFirstUtxoAddress(xpub: string, network: INetwork) {
+    if (this.isDescriptor(xpub)) return deriveDescriptorAddress(xpub, network);
+    return this.loadBip84AddressAccount(xpub, network).getAddress(
+      0,
+      false,
+      84
+    ) as string;
+  }
+
+  private fetchCurrentAccountData = async (
+    isChangeAddress: boolean,
+    read: SyscoinUtxoReadContext
+  ) => {
+    read.assertCurrent();
+    const { tokens } = await fetchOwnedBlockbookAccount(
+      read.network.url,
+      read.xpub,
+      read.transport
+    );
+    read.assertCurrent();
     const { receivingIndex, changeIndex } =
       this.setLatestIndexesFromXPubTokens(tokens);
-
-    // Get network configuration for BIP84 using network-provided pub type macros
-    const networkConfig = getNetworkConfig(
-      activeNetwork.slip44,
-      activeNetwork.currency
-    );
-
-    const pubTypes = networkConfig?.types?.zPubType;
-    if (!pubTypes) {
-      throw new Error('Missing zPubType in network configuration');
-    }
-    const networks = networkConfig.networks;
-
-    const currentAccount = new BIP84.fromZPub(xpub, pubTypes, networks);
-
-    const addressIndex = isChangeAddress ? changeIndex : receivingIndex;
-
     return {
-      currentAccount,
-      addressIndex,
+      currentAccount: this.loadBip84AddressAccount(read.xpub, read.network),
+      addressIndex: isChangeAddress ? changeIndex : receivingIndex,
     };
+  };
+
+  private discoverUtxoAddress = async (
+    isChangeAddress: boolean,
+    read: SyscoinUtxoReadContext
+  ) => {
+    read.assertCurrent();
+    if (this.isDescriptor(read.xpub))
+      throw new Error(
+        'Address rotation is not supported for watch-only descriptors'
+      );
+    const { currentAccount, addressIndex } = await this.fetchCurrentAccountData(
+      isChangeAddress,
+      read
+    );
+    read.assertCurrent();
+    return currentAccount.getAddress(
+      addressIndex,
+      isChangeAddress,
+      84
+    ) as string;
   };
 
   public getAddress = async (
     xpub: string,
     isChangeAddress: boolean,
-    options?: { forceIndex0?: boolean; ownedRead?: SyscoinUtxoReadContext }
+    ownedRead: SyscoinOwnedReadOptions
   ) => {
-    const ownedRead = options?.ownedRead;
-    ownedRead?.assertCurrent();
-    if (this.isDescriptor(xpub)) {
-      // The BIP84 history scanner below cannot choose a descriptor's next
-      // unused index. Import can derive index zero locally, but rotation must
-      // not reinterpret a descriptor as a BIP84 extended key.
-      if (!options?.forceIndex0) {
-        throw new Error(
-          'Address rotation is not supported for watch-only descriptors'
-        );
-      }
-      return deriveDescriptorAddress(
-        xpub,
-        ownedRead?.network ?? this.getVault().activeNetwork,
-        {
-          change: isChangeAddress,
-        }
-      );
-    }
+    const id = this.getVault().activeAccount.id;
+    const { account, read } = this.getActiveUtxoAddressAccount(id, ownedRead);
+    if (xpub !== read.xpub) throw new Error('UTXO account is not active');
+    return this.getAddressForUtxoAccount(account, isChangeAddress, read);
+  };
+
+  private getAddressPubkey = async (
+    isChangeAddress: boolean,
+    read: SyscoinUtxoReadContext
+  ): Promise<string> => {
     const { currentAccount, addressIndex } = await this.fetchCurrentAccountData(
-      xpub,
       isChangeAddress,
-      ownedRead
+      read
     );
-    ownedRead?.assertCurrent();
-
-    const effectiveIndex = options?.forceIndex0 ? 0 : addressIndex;
-
-    const address = currentAccount.getAddress(
-      effectiveIndex,
-      isChangeAddress,
-      84
-    ) as string;
-
-    return address;
+    read.assertCurrent();
+    return currentAccount.getPublicKey(addressIndex, isChangeAddress);
   };
 
   public getCurrentAddressPubkey = async (
     xpub: string,
-    isChangeAddress: boolean
+    isChangeAddress: boolean,
+    ownedRead: SyscoinOwnedReadOptions
   ): Promise<string> => {
-    const { currentAccount, addressIndex } = await this.fetchCurrentAccountData(
-      xpub,
-      isChangeAddress
-    );
+    const id = this.getVault().activeAccount.id;
+    const { account, read } = this.getActiveUtxoAddressAccount(id, ownedRead);
+    if (xpub !== read.xpub) throw new Error('UTXO account is not active');
+    this.assertUtxoDerivationAvailable(account, 'Public key');
+    return this.getAddressPubkey(isChangeAddress, read);
+  };
 
-    // BIP84 returns the public key as a hex string directly
-    return currentAccount.getPublicKey(addressIndex, isChangeAddress);
+  private getAddressBip32Path = async (
+    id: number,
+    isChangeAddress: boolean,
+    read: SyscoinUtxoReadContext
+  ): Promise<string> => {
+    const { addressIndex } = await this.fetchCurrentAccountData(
+      isChangeAddress,
+      read
+    );
+    read.assertCurrent();
+    return getAddressDerivationPath(
+      read.network.currency.toLowerCase(),
+      read.network.slip44,
+      id,
+      isChangeAddress,
+      addressIndex
+    );
   };
 
   public getCurrentAddressBip32Path = async (
     xpub: string,
-    isChangeAddress: boolean
+    isChangeAddress: boolean,
+    ownedRead: SyscoinOwnedReadOptions
   ): Promise<string> => {
-    const vault = this.getVault();
-    const { activeAccount, activeNetwork } = vault;
-
-    const { addressIndex } = await this.fetchCurrentAccountData(
-      xpub,
-      isChangeAddress
-    );
-
-    // Use the utility function to generate the proper derivation path
-    const coinShortcut = activeNetwork.currency.toLowerCase(); // e.g., 'sys', 'btc'
-    const path = getAddressDerivationPath(
-      coinShortcut,
-      activeNetwork.slip44,
-      activeAccount.id,
-      isChangeAddress,
-      addressIndex
-    );
-
-    return path;
+    const id = this.getVault().activeAccount.id;
+    const { account, read } = this.getActiveUtxoAddressAccount(id, ownedRead);
+    if (xpub !== read.xpub) throw new Error('UTXO account is not active');
+    this.assertUtxoDerivationAvailable(account, 'BIP32 path');
+    return this.getAddressBip32Path(id, isChangeAddress, read);
   };
 
   public logout = () => {
@@ -1896,9 +1874,7 @@ export class KeyringCore<
           ? (types.zPubType as any).testnet.vpub
           : types.zPubType.mainnet.zpub;
       const bip84Key = convertExtendedKeyVersion(identifier, target);
-      addressToStore = await this.getAddress(bip84Key, false, {
-        forceIndex0: true,
-      });
+      addressToStore = this.deriveFirstUtxoAddress(bip84Key, activeNetwork);
     }
 
     // Validate duplicates across all account buckets, including passkey smart accounts.
@@ -2554,11 +2530,13 @@ export class KeyringCore<
     );
 
     if (!ownedRead) return { main: syscoinMainSigner };
-    const getAddress = this.getAddress;
     return {
       main: syscoinMainSigner,
-      getOwnedAddress: (xpub: string, isChangeAddress: boolean) =>
-        getAddress(xpub, isChangeAddress, { ownedRead }),
+      getOwnedAddress: (xpub: string, isChangeAddress: boolean) => {
+        if (xpub !== ownedRead.xpub)
+          throw new Error('UTXO account is not active');
+        return this.discoverUtxoAddress(isChangeAddress, ownedRead);
+      },
     };
   };
 
@@ -2818,7 +2796,7 @@ export class KeyringCore<
     } else {
       // For UTXO, use the xpub to derive the address
       // Always use first receive address (index 0) for imported account display
-      address = await this.getAddress(xpub, false, { forceIndex0: true });
+      address = this.deriveFirstUtxoAddress(xpub, vault.activeNetwork);
     }
 
     if (this.accountAddressExists(accounts, address, isEVM))
@@ -2902,7 +2880,7 @@ export class KeyringCore<
       xpub = convertExtendedKeyVersion(ledgerXpub, bip84Target);
 
       // Always use first receive address (index 0) for imported account display
-      address = await this.getAddress(xpub, false, { forceIndex0: true });
+      address = this.deriveFirstUtxoAddress(xpub, vault.activeNetwork);
     }
 
     if (this.accountAddressExists(accounts, address, isEvmCoin(coin, slip44)))

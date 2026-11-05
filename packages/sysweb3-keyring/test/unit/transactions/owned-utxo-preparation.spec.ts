@@ -219,12 +219,13 @@ it('uses the SDK change-address lookup and the originally captured exclusions af
   const accountReply = () =>
     Response.json({ tokens: [{ transfers: 2, path: "m/84'/1'/0'/1/0" }] });
   const ambient = jest.mocked(globalThis.fetch);
-  ambient.mockImplementationOnce(async (url) => {
+  const readChange = owned((url) => {
     expect(String(url)).toBe(accountRoute(account.xpub));
     return accountReply();
   });
-  const change = await ring.getAddress(account.xpub, true);
-  ambient.mockClear();
+  const change = await ring.getAddress(account.xpub, true, readChange.options);
+  expect(readChange.calls).toEqual([accountRoute(account.xpub)]);
+  expect(ambient).not.toHaveBeenCalled();
   const feeStarted = deferred();
   const release = deferred();
   const excludedOutpoints = [{ txid: parent(1), vout: 0 }];
@@ -274,6 +275,57 @@ it('uses the SDK change-address lookup and the originally captured exclusions af
       (output) => Buffer.from(output.script).toString('hex') === '6a02abcd'
     )
   ).toBe(true);
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
+it('rejects absent ownership and a nonselected ID or xpub before any address read', async () => {
+  const { ring, account } = await fixture();
+  const ambient = jest.mocked(globalThis.fetch);
+  ambient.mockResolvedValueOnce(Response.json({ tokens: [] }));
+  const read = owned(() => Response.json({ tokens: [] }));
+  await expect(
+    Reflect.apply(ring.getAddress, undefined, [account.xpub, true])
+  ).rejects.toThrow('Missing owned UTXO read');
+  await expect(ring.getChangeAddress(1, read.options)).rejects.toThrow(
+    'UTXO account is not active'
+  );
+  await expect(
+    ring.getAddress('another-xpub', true, read.options)
+  ).rejects.toThrow('UTXO account is not active');
+  expect(ambient).not.toHaveBeenCalled();
+  expect(read.calls).toEqual([]);
+});
+
+it('discards address, pubkey and path results if the SDK wallet locks during body parsing', async () => {
+  const { ring, account } = await fixture();
+  const parsing = deferred();
+  const release = deferred();
+  let entered = 0;
+  const read = owned(() => {
+    const response = Response.json({ tokens: [] });
+    jest.spyOn(response, 'json').mockImplementation(async () => {
+      if (++entered === 3) parsing.resolve();
+      await release.promise;
+      return { tokens: [] };
+    });
+    return response;
+  });
+  const pending = Promise.allSettled([
+    ring.updateReceivingAddress(read.options),
+    ring.getPubkey(account.id, false, read.options),
+    ring.getBip32Path(account.id, true, read.options),
+  ]);
+  await Promise.race([parsing.promise, pending]);
+  await ring.lockWallet();
+  release.resolve();
+  for (const result of await pending)
+    expect(result).toMatchObject({
+      status: 'rejected',
+      reason: expect.objectContaining({
+        message: 'Wallet signing context changed',
+      }),
+    });
+  expect(read.calls).toEqual(Array(3).fill(accountRoute(account.xpub)));
   expect(globalThis.fetch).not.toHaveBeenCalled();
 });
 

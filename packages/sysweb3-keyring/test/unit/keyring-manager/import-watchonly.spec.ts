@@ -4,6 +4,7 @@ import bs58check from 'bs58check';
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
 import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
+import { ownedUtxoTestRead } from '../../helpers/utxoAuthority';
 
 const XPUB =
   'xpub6BgBgsespWvERF3LHQu6CnqdvfEvtMcQjYrcRzx53QJjSxarj2afYWcLteoGVky7D3UKDP9QyrLprQ3VCECoY49yfdDEHGCtMMj92pReUsQ';
@@ -72,13 +73,16 @@ describe('Watch-only Import - KeyringManager', () => {
       };
 
       // Guards
-      const changeAddr = await keyringManager.getChangeAddress(imported.id);
+      const changeAddr = await keyringManager.getChangeAddress(
+        imported.id,
+        ownedUtxoTestRead()
+      );
       expect(changeAddr).toBe(imported.address);
       await expect(
-        keyringManager.getPubkey(imported.id, false)
+        keyringManager.getPubkey(imported.id, false, ownedUtxoTestRead())
       ).rejects.toThrow(/watch-only|Public key|not available/i);
       await expect(
-        keyringManager.getBip32Path(imported.id, false)
+        keyringManager.getBip32Path(imported.id, false, ownedUtxoTestRead())
       ).rejects.toThrow(/watch-only|BIP32|not available/i);
     });
   });
@@ -130,10 +134,10 @@ describe('Watch-only Import - KeyringManager', () => {
       };
 
       await expect(
-        keyringManager.getPubkey(imported.id, false)
+        keyringManager.getPubkey(imported.id, false, ownedUtxoTestRead())
       ).rejects.toThrow(/watch-only|Public key|not available/i);
       await expect(
-        keyringManager.getBip32Path(imported.id, false)
+        keyringManager.getBip32Path(imported.id, false, ownedUtxoTestRead())
       ).rejects.toThrow(/watch-only|BIP32|not available/i);
     });
 
@@ -167,10 +171,10 @@ describe('Watch-only Import - KeyringManager', () => {
       };
 
       await expect(
-        keyringManager.getPubkey(imported.id, false)
+        keyringManager.getPubkey(imported.id, false, ownedUtxoTestRead())
       ).rejects.toThrow(/watch-only|Public key|not available/i);
       await expect(
-        keyringManager.getBip32Path(imported.id, false)
+        keyringManager.getBip32Path(imported.id, false, ownedUtxoTestRead())
       ).rejects.toThrow(/watch-only|BIP32|not available/i);
     });
 
