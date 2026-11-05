@@ -32,7 +32,6 @@ import {
   isHexString,
   normalizeTransactionRequest,
   normalizeTxValue,
-  parseUnits,
   resolveProperties,
   serializeTransaction as serializeUncheckedTransaction,
 } from '../ethers-v6';
@@ -2479,19 +2478,17 @@ export class EthereumTransactions<
         return await speedUpWithPrivateKey();
     }
   };
-  sendSignedErc20Transaction = async ({
-    receiver,
-    tokenAddress,
-    tokenAmount,
-    tokenAmountUnits,
-    isLegacy = false,
-    maxPriorityFeePerGas,
-    maxFeePerGas,
-    gasPrice,
-    decimals,
-    gasLimit,
-    saveTrezorTx,
-  }: ISendSignedErc20TransactionProps): Promise<IResponseFromSendErcSignedTransaction> => {
+  sendSignedErc20Transaction = async (
+    request: ISendSignedErc20TransactionProps
+  ): Promise<IResponseFromSendErcSignedTransaction> => {
+    const { receiver, tokenAddress, tokenAmountUnits, gasLimit, saveTrezorTx } =
+      request;
+    let {
+      isLegacy = false,
+      maxPriorityFeePerGas,
+      maxFeePerGas,
+      gasPrice,
+    } = request;
     const {
       activeAccount,
       activeAccountType,
@@ -2501,22 +2498,17 @@ export class EthereumTransactions<
       assertCurrent,
     } = this.captureEvmSigningContext();
     const activeAccountAddress = activeAccount.address;
-    let exactTokenAmount: bigint | undefined;
-    if (tokenAmountUnits !== undefined) {
-      if (
-        tokenAmount !== undefined ||
-        typeof tokenAmountUnits !== 'string' ||
-        !/^(0|[1-9][0-9]{0,77})$/.test(tokenAmountUnits)
-      )
-        throw new Error('Invalid ERC20 amount');
-      exactTokenAmount = parseEvmFeeQuantity(tokenAmountUnits, 'ERC20 amount');
-    }
-    const resolveTokenAmount = () => {
-      if (exactTokenAmount !== undefined) return exactTokenAmount;
-      const resolvedDecimals =
-        decimals === undefined || decimals === null ? 18 : Number(decimals);
-      return parseUnits(tokenAmount as string, resolvedDecimals).toBigInt();
-    };
+    if (
+      'tokenAmount' in request ||
+      'decimals' in request ||
+      typeof tokenAmountUnits !== 'string' ||
+      !/^(0|[1-9][0-9]{0,77})$/.test(tokenAmountUnits)
+    )
+      throw new Error('Invalid ERC20 amount');
+    const exactTokenAmount = parseEvmFeeQuantity(
+      tokenAmountUnits,
+      'ERC20 amount'
+    );
     const submission = this.captureSubmission(
       'erc20',
       activeAccount,
@@ -2546,7 +2538,6 @@ export class EthereumTransactions<
           getErc20Abi(),
           provider as any
         );
-        const calculatedTokenAmount = resolveTokenAmount();
         let transferMethod;
         if (isLegacy) {
           const overrides = {
@@ -2560,7 +2551,7 @@ export class EthereumTransactions<
           };
           transferMethod = await _contract.transfer.populateTransaction(
             receiver,
-            calculatedTokenAmount,
+            exactTokenAmount,
             normalizeEthersOverrides(overrides)
           );
         } else {
@@ -2576,7 +2567,7 @@ export class EthereumTransactions<
 
           transferMethod = await _contract.transfer.populateTransaction(
             receiver,
-            calculatedTokenAmount,
+            exactTokenAmount,
             normalizeEthersOverrides(overrides)
           );
         }
@@ -2616,7 +2607,7 @@ export class EthereumTransactions<
 
         const txData = _contract.interface.encodeFunctionData('transfer', [
           receiver,
-          resolveTokenAmount(),
+          exactTokenAmount,
         ]);
 
         // Use fallback gas limit if not provided (for auto-estimation)
@@ -2711,7 +2702,7 @@ export class EthereumTransactions<
 
         const txData = _contract.interface.encodeFunctionData('transfer', [
           receiver,
-          resolveTokenAmount(),
+          exactTokenAmount,
         ]);
 
         // Use fallback gas limit if not provided (for auto-estimation)

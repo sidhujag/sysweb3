@@ -489,15 +489,15 @@ export interface ISendSignedErcTransactionProps {
   tokenId?: bigint | number | string;
 }
 
-/** Pass the legacy decimal amount or canonical uint256 base units. */
+/** The amount is a canonical decimal string of uint256 base units. */
 export type ISendSignedErc20TransactionProps = Omit<
   ISendSignedErcTransactionProps,
-  'tokenAmount'
-> &
-  (
-    | { tokenAmount?: string; tokenAmountUnits?: never }
-    | { tokenAmount?: never; tokenAmountUnits: string }
-  );
+  'decimals' | 'tokenAmount' | 'tokenId'
+> & {
+  tokenAmountUnits: string;
+  tokenAmount?: never;
+  decimals?: never;
+};
 
 export interface IResponseFromSendErcSignedTransaction {
   accessList: any[];
