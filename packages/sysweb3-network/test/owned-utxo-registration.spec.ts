@@ -5,7 +5,6 @@ import {
   findUtxoCoinByRegistration,
   getNetworkConfig,
   getSysRpc,
-  validateSysRpc,
 } from '../src';
 import { observeFirstUseUtxoRpc } from '../src/ownedUtxoRpc';
 
@@ -430,7 +429,6 @@ it.each([legacy, modern])(
       {
         url,
         label: 'Custom name',
-        symbol: 'REGTEST',
         explorer: 'https://explorer.invalid/',
       },
       owner
@@ -578,9 +576,9 @@ it('refuses invalid registration, endpoints and asynchronous guards before readi
   ]) {
     await expect(getSysRpc({ url: endpoint }, owner)).rejects.toThrow(invalid);
   }
-  await expect(getSysRpc({ url, label: {} }, owner)).rejects.toThrow(
-    'Invalid UTXO registration draft'
-  );
+  await expect(
+    Reflect.apply(getSysRpc, undefined, [{ url, label: {} }, owner])
+  ).rejects.toThrow('Invalid UTXO registration draft');
   await expect(
     getSysRpc(
       { url },
@@ -652,21 +650,14 @@ it('cancels before dispatch, after status, and after an owner change during gene
   expect(duringGenesis.readJson).toHaveBeenCalledTimes(2);
 });
 
-it('never trusts ambient cached status or echoes an owned transport failure', async () => {
-  const oldStatus = jest.fn(async () => ({
-    ok: true,
-    json: async () => modern,
-  }));
-  global.fetch = oldStatus as unknown as typeof global.fetch;
-  await expect(validateSysRpc(url)).resolves.toMatchObject({ valid: true });
-  expect(oldStatus).toHaveBeenCalledTimes(1);
-  global.fetch = ambient;
+it('never uses ambient fetch or echoes an owned transport failure', async () => {
   const { owner, readJson } = verification(modern);
   readJson.mockRejectedValueOnce(new Error('private fixture diagnostic'));
   await expect(getSysRpc({ url }, owner)).rejects.toThrow(
     /^UTXO registration read failed$/
   );
   expect(readJson.mock.calls).toEqual([[statusUrl, owner.signal]]);
+  expect(ambient).not.toHaveBeenCalled();
 });
 
 it('captures the same draft, endpoint, profile and owned transport before awaiting status', async () => {

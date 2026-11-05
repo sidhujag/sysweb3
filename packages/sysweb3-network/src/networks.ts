@@ -138,6 +138,8 @@ export type INetwork = {
   label: string;
   slip44: number;
   url: string;
+  /** Blockbook chain token pinned during explicit endpoint registration. */
+  utxoBackendChain?: string;
 };
 
 export enum INetworkType {

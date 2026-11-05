@@ -2,15 +2,12 @@ import {
   CHAIN_ID_HEX,
   CHAIN_ID_NUMBER,
   RPC_URL,
-  VALID_SYS_BLOCKBOOK_RESPONSE,
   VALID_ETH_RPC_RESPONSE,
-  SYS_RPC_URL,
 } from './constants';
 import {
   isValidChainIdForEthNetworks,
   validateChainId,
   validateEthRpc,
-  validateSysRpc,
 } from '../src/rpc';
 import 'isomorphic-fetch';
 
@@ -32,11 +29,5 @@ describe('rpc tests', () => {
     const response = await validateEthRpc(RPC_URL, false);
 
     expect(response).toStrictEqual(VALID_ETH_RPC_RESPONSE);
-  });
-
-  it('should validate sys rpc', async () => {
-    const response = await validateSysRpc(SYS_RPC_URL);
-
-    expect(response).toStrictEqual(VALID_SYS_BLOCKBOOK_RESPONSE);
   });
 });
