@@ -160,7 +160,7 @@ export type {
   DeviceUnlockVaultPair,
   KeyringStoragePort,
 } from './keyring-core';
-export type { IKeyringAccountState } from './types';
+export type { IKeyringAccountState, SyscoinOwnedReadOptions } from './types';
 
 export type {
   PreparedEvmTransaction,
