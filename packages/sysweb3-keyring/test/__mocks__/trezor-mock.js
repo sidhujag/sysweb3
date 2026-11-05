@@ -33,6 +33,12 @@ const TrezorConnect = {
       success: true,
       payload: { signedTransaction: '0xsigned' },
     }),
+  async signTransactionOwned(request, { assertCurrent }) {
+    assertCurrent();
+    const response = await TrezorConnect.signTransaction(request);
+    assertCurrent();
+    return response;
+  },
   ethereumSignTypedData: () =>
     Promise.resolve({
       success: true,

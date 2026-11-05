@@ -102,8 +102,8 @@ beforeEach(() => {
       payload: { r: signature.r, s: signature.s, v: signature.v.toString(16) },
     };
   });
-  connect.ethereumSignTransactionOwned = jest.fn((request, assertCurrent) => {
-    assertCurrent();
+  connect.ethereumSignTransactionOwned = jest.fn((request, authority) => {
+    authority.assertCurrent();
     return connect.ethereumSignTransaction(request);
   });
   sdk = new EthereumTransactions(

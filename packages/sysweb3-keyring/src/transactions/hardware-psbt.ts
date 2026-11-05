@@ -197,7 +197,7 @@ export function createLedgerPsbtSigner(
 export function createTrezorPsbtSigner(
   trezor: TrezorKeyring
 ): ISyscoinHardwareSigner {
-  return async ({ psbt, network: activeNetwork, assertCurrent }) => {
+  return async ({ psbt, network: activeNetwork, assertCurrent, signal }) => {
     if (
       typeof trezor?.convertToTrezorFormat !== 'function' ||
       typeof trezor?.signUtxoTransaction !== 'function'
@@ -221,11 +221,10 @@ export function createTrezorPsbtSigner(
       network: bitcoinjsNetwork || undefined, // Pass network config for isScriptHash check
     });
     assertCurrent();
-    const signedPsbt = await trezor.signUtxoTransaction(
-      trezorTx,
-      psbt,
-      assertCurrent
-    );
+    const signedPsbt = await trezor.signUtxoTransaction(trezorTx, psbt, {
+      assertCurrent,
+      signal,
+    });
     assertCurrent();
     return signedPsbt;
   };

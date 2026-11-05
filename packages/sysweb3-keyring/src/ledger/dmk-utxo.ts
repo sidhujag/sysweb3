@@ -17,6 +17,7 @@ import { address, payments } from 'bitcoinjs-lib';
 import bs58check from 'bs58check';
 import * as syscoinjs from 'syscoinjs-lib';
 
+import { captureHardwareTransactionAuthority } from '../hardware-transaction-authority';
 import {
   AppClient,
   type BitcoinAppTransport,
@@ -413,7 +414,9 @@ export function createLedgerUtxoAdapter(
         },
         options
       ),
-    signPsbt: async (request, options) => {
+    signPsbt: async (request, authority) => {
+      const owner = captureHardwareTransactionAuthority(authority);
+      const options = { ...owner, onProgress: authority.onProgress };
       if (!request.psbtBase64 || request.psbtBase64.length > 4 * 1024 * 1024)
         return Promise.reject(
           ledgerHostError('LEDGER_INVALID_REQUEST', 'Invalid Ledger PSBT')
@@ -440,7 +443,7 @@ export function createLedgerUtxoAdapter(
       return run(
         request,
         UserInteractionRequired.SignTransaction,
-        async (client, _operation, approved) => {
+        async (client, operation, approved) => {
           const { fingerprint, policy } = await account(
             client,
             approved,
@@ -460,11 +463,10 @@ export function createLedgerUtxoAdapter(
             status: 'pending',
             requiredUserInteraction: 'sign-transaction',
           });
-          const signatures = await client.signPsbt(
-            new PsbtV2().fromBitcoinJS(psbt),
-            policy,
-            hmac
-          );
+          const devicePsbt = new PsbtV2().fromBitcoinJS(psbt);
+          operation.assertCurrent();
+          const signatures = await client.signPsbt(devicePsbt, policy, hmac);
+          operation.assertCurrent();
           return {
             fingerprint,
             signatures: signatures.map(([inputIndex, signature]) => ({

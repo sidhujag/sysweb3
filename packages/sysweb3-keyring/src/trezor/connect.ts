@@ -1,3 +1,6 @@
+import { captureHardwareTransactionAuthority } from '../hardware-transaction-authority';
+
+import type { HardwareTransactionAuthority } from '../hardware-transaction-authority';
 import type {
   ConnectDynamicSettings,
   TrezorConnectPublicAPI,
@@ -11,15 +14,15 @@ const methods = [
   'ethereumGetPublicKey',
   'getPublicKey',
   'getAddress',
-  'signTransaction',
-  'ethereumSignTransaction',
   'signMessage',
   'ethereumSignMessage',
   'ethereumSignTypedData',
   'verifyMessage',
   'ethereumVerifyMessage',
 ] as const;
-type Method = (typeof methods)[number];
+type ForwardedMethod = (typeof methods)[number];
+type TransactionMethod = 'ethereumSignTransaction' | 'signTransaction';
+type Method = ForwardedMethod | TransactionMethod;
 type Compatible<T> = T extends { success: false }
   ? T & { payload: { error: string; code?: string } }
   : T;
@@ -34,7 +37,7 @@ type CompatibleCall<FunctionType> = FunctionType extends {
       (...args: C): Promise<Compatible<Awaited<T>>>;
     }
   : never;
-type Calls = { [Name in Method]: CompatibleCall<Client[Name]> };
+type Calls = { [Name in ForwardedMethod]: CompatibleCall<Client[Name]> };
 type ConnectionEvent =
   | { type: 'disconnected' }
   | { type: 'model'; model: string };
@@ -196,24 +199,44 @@ const calls = Object.fromEntries(
   ])
 ) as Calls;
 
+async function signOwned<Result>(
+  method: TransactionMethod,
+  authority: HardwareTransactionAuthority,
+  call: (client: Client) => Promise<Result>
+) {
+  const { assertCurrent } = captureHardwareTransactionAuthority(authority);
+  const captured = generation;
+  const response = await withClient((client) => {
+    assertCurrent();
+    return call(client);
+  });
+  assertCurrent();
+  if (captured !== generation) throw interrupted();
+  return normalize(response, method);
+}
+
 const TrezorConnect: Calls & {
   ethereumSignTransactionOwned: (
     request: Parameters<Client['ethereumSignTransaction']>[0],
-    assertCurrent: () => void
-  ) => ReturnType<Calls['ethereumSignTransaction']>;
+    authority: HardwareTransactionAuthority
+  ) => ReturnType<CompatibleCall<Client['ethereumSignTransaction']>>;
+  signTransactionOwned: (
+    request: Parameters<Client['signTransaction']>[0],
+    authority: HardwareTransactionAuthority
+  ) => ReturnType<CompatibleCall<Client['signTransaction']>>;
   init: Client['init'];
   dispose: () => Promise<void>;
 } = {
   ...calls,
-  async ethereumSignTransactionOwned(request, assertCurrent) {
-    const captured = generation;
-    const response = await withClient((client) => {
-      assertCurrent();
-      return client.ethereumSignTransaction(request);
-    });
-    assertCurrent();
-    if (captured !== generation) throw interrupted();
-    return normalize(response, 'ethereumSignTransaction');
+  ethereumSignTransactionOwned(request, authority) {
+    return signOwned('ethereumSignTransaction', authority, (client) =>
+      client.ethereumSignTransaction(request)
+    );
+  },
+  signTransactionOwned(request, authority) {
+    return signOwned('signTransaction', authority, (client) =>
+      client.signTransaction(request)
+    );
   },
   async init(settings: Parameters<Client['init']>[0]): Promise<void> {
     if (cleanupPending) {

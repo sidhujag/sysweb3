@@ -260,6 +260,7 @@ describe('Ledger finalized external inputs with real PSBT data', () => {
     expect(signed.extractTransaction().ins).toHaveLength(2);
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(active.signPsbt).toHaveBeenCalledWith(expect.any(Object), {
+      assertCurrent: expect.any(Function),
       signal: owner.signal,
     });
 
