@@ -42,6 +42,7 @@ import {
   EvmGasLimitError,
   getEvmFeeData,
   parseEvmFeeQuantity,
+  planEvmCancellationFees,
 } from '../evm-fees';
 import { CustomJsonRpcProvider, wrapTransactionResponse } from '../providers';
 import {
@@ -1197,7 +1198,6 @@ export class EthereumTransactions<
           value: Zero,
           nonce: fallbackNonce,
           gasPrice: currentGasPrice,
-          gasLimit: BigNumber.from(42000),
           data: '0x',
         } as Deferrable<TransactionResponse>;
       } else {
@@ -1209,7 +1209,6 @@ export class EthereumTransactions<
           nonce: fallbackNonce,
           maxFeePerGas: feeData.maxFeePerGas,
           maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
-          gasLimit: BigNumber.from(42000),
           data: '0x',
         } as Deferrable<TransactionResponse>;
       }
@@ -1221,98 +1220,48 @@ export class EthereumTransactions<
       };
     }
 
-    // If the original tx has 0 or very low gas price, fetch current network gas prices
-    const oldTxsGasValues: IGasParams = {
-      maxFeePerGas: tx.maxFeePerGas as BigNumber,
-      maxPriorityFeePerGas: tx.maxPriorityFeePerGas as BigNumber,
-      gasPrice: tx.gasPrice as BigNumber,
-      gasLimit: tx.gasLimit as BigNumber,
-    };
-
+    const {
+      gasPrice: originalGasPrice,
+      maxFeePerGas: originalMaxFeePerGas,
+      maxPriorityFeePerGas: originalMaxPriorityFeePerGas,
+    } = tx;
+    let feePlan: ReturnType<typeof planEvmCancellationFees>;
     if (isLegacy) {
-      const currentGasPrice = nonNegativeFeeQuantity(
+      const currentGasPrice = parseEvmFeeQuantity(
         await provider.getGasPrice(),
         'cancellation gas price'
       );
       assertCurrent();
-      if (oldTxsGasValues.gasPrice != null) {
-        oldTxsGasValues.gasPrice = nonNegativeFeeQuantity(
-          oldTxsGasValues.gasPrice,
-          'original gas price'
-        );
-      }
-
-      if (
-        !oldTxsGasValues.gasPrice ||
-        oldTxsGasValues.gasPrice.isZero() ||
-        oldTxsGasValues.gasPrice.lt(currentGasPrice)
-      ) {
-        oldTxsGasValues.gasPrice = currentGasPrice;
-      }
+      feePlan = planEvmCancellationFees({
+        type: 0,
+        currentGasPrice,
+        originalGasPrice:
+          originalGasPrice == null
+            ? undefined
+            : parseEvmFeeQuantity(originalGasPrice, 'original gas price'),
+      });
     } else {
-      const {
-        maxFeePerGas: currentMaxFeePerGas,
-        maxPriorityFeePerGas: currentMaxPriorityFeePerGas,
-      } = await currentEip1559Fees();
-      if (oldTxsGasValues.maxFeePerGas != null) {
-        oldTxsGasValues.maxFeePerGas = nonNegativeFeeQuantity(
-          oldTxsGasValues.maxFeePerGas,
-          'original maximum fee'
-        );
-      }
-      if (oldTxsGasValues.maxPriorityFeePerGas != null) {
-        oldTxsGasValues.maxPriorityFeePerGas = nonNegativeFeeQuantity(
-          oldTxsGasValues.maxPriorityFeePerGas,
-          'original priority fee'
-        );
-      }
-
-      if (
-        !oldTxsGasValues.maxFeePerGas ||
-        oldTxsGasValues.maxFeePerGas.isZero() ||
-        oldTxsGasValues.maxFeePerGas.lt(currentMaxFeePerGas)
-      ) {
-        oldTxsGasValues.maxFeePerGas = currentMaxFeePerGas;
-      }
-
-      if (
-        !oldTxsGasValues.maxPriorityFeePerGas ||
-        oldTxsGasValues.maxPriorityFeePerGas.lt(currentMaxPriorityFeePerGas)
-      ) {
-        oldTxsGasValues.maxPriorityFeePerGas = currentMaxPriorityFeePerGas;
-      }
-
-      if (
-        oldTxsGasValues.maxFeePerGas.lt(oldTxsGasValues.maxPriorityFeePerGas)
-      ) {
-        oldTxsGasValues.maxFeePerGas = oldTxsGasValues.maxPriorityFeePerGas;
-      }
+      const currentFees = await currentEip1559Fees();
+      feePlan = planEvmCancellationFees({
+        type: 2,
+        currentMaxFeePerGas: currentFees.maxFeePerGas.toBigInt(),
+        currentMaxPriorityFeePerGas:
+          currentFees.maxPriorityFeePerGas.toBigInt(),
+        originalMaxFeePerGas:
+          originalMaxFeePerGas == null
+            ? undefined
+            : parseEvmFeeQuantity(originalMaxFeePerGas, 'original maximum fee'),
+        originalMaxPriorityFeePerGas:
+          originalMaxPriorityFeePerGas == null
+            ? undefined
+            : parseEvmFeeQuantity(
+                originalMaxPriorityFeePerGas,
+                'original priority fee'
+              ),
+      });
     }
 
-    // Preserve the existing 20% replacement policy with exact integer math.
-    // Nodes also require a strictly larger cap and tip than an old pending
-    // transaction; zero/small fees therefore need at least a one-wei bump.
-    // This is a replacement bump, not a fabricated network priority floor.
-    const bumpCancelFee = (fee: BigNumber) => {
-      const percentageBump = fee.mul(120).div(100);
-      const strictBump = fee.add(1);
-      return percentageBump.gt(strictBump) ? percentageBump : strictBump;
-    };
-    const newGasValues: IGasParams = {
-      gasLimit: BigNumber.from(42000),
-      ...(isLegacy
-        ? { gasPrice: bumpCancelFee(oldTxsGasValues.gasPrice!) }
-        : {
-            maxFeePerGas: bumpCancelFee(oldTxsGasValues.maxFeePerGas!),
-            maxPriorityFeePerGas: bumpCancelFee(
-              oldTxsGasValues.maxPriorityFeePerGas!
-            ),
-          }),
-    };
-
-    const maximumFee = newGasValues.gasLimit!.mul(
-      isLegacy ? newGasValues.gasPrice! : newGasValues.maxFeePerGas!
-    );
+    const maximumFee = BigNumber.from(feePlan.maximumFee);
     assertCurrent();
     if (previewOnly)
       return {
@@ -1331,7 +1280,7 @@ export class EthereumTransactions<
         isLegacy ? transaction.gasPrice : transaction.maxFeePerGas,
         'cancellation maximum fee'
       );
-      if (!gas.eq(42000) || gas.mul(cap).gt(approvedMaximumFee!))
+      if (!gas.eq(feePlan.gasLimit) || gas.mul(cap).gt(approvedMaximumFee!))
         throw new Error('Cancellation fee exceeds approval');
     };
 
@@ -1341,21 +1290,22 @@ export class EthereumTransactions<
       from: activeAccount.address,
       to: activeAccount.address,
       value: Zero,
-      gasLimit: newGasValues.gasLimit,
+      gasLimit: BigNumber.from(feePlan.gasLimit),
     };
 
-    const changedTxToCancel: Deferrable<TransactionRequest> = isLegacy
-      ? {
-          ...baseCancelTx,
-          gasPrice: newGasValues.gasPrice,
-          type: 0, // Force Type 0 for legacy cancel
-        }
-      : {
-          ...baseCancelTx,
-          maxFeePerGas: newGasValues.maxFeePerGas,
-          maxPriorityFeePerGas: newGasValues.maxPriorityFeePerGas,
-          // Don't set type - let ethers auto-detect
-        };
+    const changedTxToCancel: Deferrable<TransactionRequest> =
+      feePlan.type === 0
+        ? {
+            ...baseCancelTx,
+            gasPrice: BigNumber.from(feePlan.gasPrice),
+            type: 0, // Force Type 0 for legacy cancel
+          }
+        : {
+            ...baseCancelTx,
+            maxFeePerGas: BigNumber.from(feePlan.maxFeePerGas),
+            maxPriorityFeePerGas: BigNumber.from(feePlan.maxPriorityFeePerGas),
+            // Don't set type - let ethers auto-detect
+          };
 
     // Ledger cancel handler
     const cancelWithLedger = async () => {
