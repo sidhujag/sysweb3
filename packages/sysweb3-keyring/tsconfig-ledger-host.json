@@ -5,6 +5,11 @@
     "outDir": "dist/esm",
     "declarationDir": "dist/types"
   },
-  "include": ["src/ledger-host.ts", "src/ethers-subpaths.d.ts", "src/declare.d.ts"],
+  "include": [
+    "src/ledger-host.ts",
+    "src/ledger/dmk-selected-host.ts",
+    "src/ethers-subpaths.d.ts",
+    "src/declare.d.ts"
+  ],
   "exclude": []
 }
