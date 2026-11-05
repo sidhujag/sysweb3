@@ -22,7 +22,7 @@ type OwnedUtxoRpcReader = Pick<
 type UtxoRegistration = OwnedUtxoRpcVerification['registration'];
 
 export type OwnedUtxoRpcFirstUse = OwnedUtxoRpcReader &
-  Readonly<{ registration?: UtxoRegistration }>;
+  Readonly<{ registration?: UtxoRegistration; backendChain?: never }>;
 
 const INVALID = 'Invalid UTXO registration verification';
 const MISMATCH = 'UTXO registration does not match the selected coin';
@@ -282,7 +282,9 @@ export async function observeFirstUseUtxoRpc(
   url: string,
   owner: OwnedUtxoRpcFirstUse
 ) {
-  const registration = owner?.registration;
+  if (!owner || typeof owner !== 'object' || 'backendChain' in owner)
+    throw new Error(INVALID);
+  const registration = owner.registration;
   if (registration !== undefined && !registration) throw new Error(INVALID);
   const { assertCurrent, read } = captureReader(url, owner, true);
   const identities = captureIdentities();

@@ -87,7 +87,12 @@ it('formats the same verified and first-use display fields after status and gene
   );
   const draft = { url: endpoint, label: 'My test network' };
   const verified = await getSysRpc(draft, owner);
-  const observed = await observeSysRpc(draft, owner);
+  const observed = await observeSysRpc(draft, {
+    registration: owner.registration,
+    signal: owner.signal,
+    assertCurrent: owner.assertCurrent,
+    readJson: owner.readJson,
+  });
   expect(observed).toEqual(verified);
   expect(verified).toMatchObject({
     network: 'tSYS',
@@ -126,5 +131,17 @@ it('refuses an ambiguous canonical tuple before reading the endpoint', async () 
   await expect(getSysRpc({ url: endpoint }, owner)).rejects.toThrow(
     'Invalid UTXO registration verification'
   );
+  expect(owner.readJson).not.toHaveBeenCalled();
+});
+
+it('refuses to reinterpret a verification request as first-use observation', async () => {
+  const owner = ownedRead(
+    { chainId: 5700, slip44: 1 },
+    'Syscoin Testnet',
+    'test'
+  );
+  await expect(
+    Reflect.apply(observeSysRpc, undefined, [{ url: endpoint }, owner])
+  ).rejects.toThrow('Invalid UTXO registration verification');
   expect(owner.readJson).not.toHaveBeenCalled();
 });
