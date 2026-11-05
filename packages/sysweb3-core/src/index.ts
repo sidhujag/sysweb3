@@ -26,6 +26,15 @@ declare let window: any;
 const defaultStorage =
   typeof window !== 'undefined' ? window.localStorage : undefined;
 
+const isNativeLocalStorage = (client: unknown): boolean => {
+  const globals = globalThis as any;
+  return (
+    !!client &&
+    (client === globals.chrome?.storage?.local ||
+      client === globals.browser?.storage?.local)
+  );
+};
+
 const StateStorageDb = (
   storageClient: any | undefined = defaultStorage
 ): IKeyValueDb => {
@@ -96,12 +105,8 @@ const StateStorageDb = (
       return created;
     }
 
-    const globals = globalThis as any;
-    const nativeLocal =
-      client &&
-      (client === globals.chrome?.storage?.local ||
-        client === globals.browser?.storage?.local);
-    const locks = globals.navigator?.locks;
+    const nativeLocal = isNativeLocalStorage(client);
+    const locks = (globalThis as any).navigator?.locks;
     if (
       !nativeLocal ||
       typeof client.get !== 'function' ||
@@ -172,6 +177,41 @@ const StateStorageDb = (
     deleteItem,
   };
 };
+
+type BrowserLocalStorage = Readonly<{
+  get(keys: string[]): Promise<Record<string, unknown>>;
+  set(items: Record<string, unknown>): Promise<void>;
+  remove(key: string): Promise<void>;
+}>;
+
+/** The existing native storage namespace and atomic create, without rebinding. */
+export function createFixedBrowserStateStorage(client: BrowserLocalStorage) {
+  if (
+    !isNativeLocalStorage(client) ||
+    typeof client.get !== 'function' ||
+    typeof client.set !== 'function' ||
+    typeof client.remove !== 'function' ||
+    'createItemsIfAbsent' in client
+  ) {
+    throw new TypeError('Fixed wallet storage requires native browser storage');
+  }
+
+  const db = StateStorageDb(client);
+  return Object.freeze({
+    async get(key: string): Promise<unknown> {
+      return db.get(key);
+    },
+    async set(key: string, value: unknown): Promise<void> {
+      await db.set(key, value);
+    },
+    async deleteItem(key: string): Promise<void> {
+      await db.deleteItem(key);
+    },
+    createManyIfAbsent(items: Record<string, unknown>): Promise<boolean> {
+      return db.createManyIfAbsent(items);
+    },
+  });
+}
 
 const MemoryStorageClient = (): IStateStorageClient => {
   const memory: any = {};
