@@ -40,20 +40,12 @@ values; the built-in memory client provides this operation synchronously.
 There is no sequential or unlocked fallback. A backend shared across storage
 partitions needs its own atomic implementation or a single owner.
 
-### Release order for 1.0.613
-
-Publish `@sidhujag/sysweb3-core@1.0.29` before `@sidhujag/sysweb3-keyring@1.0.613`.
-The updated lock entry describes that intended dependency; its integrity is
-intentionally absent until publication. Regenerate and verify the lockfile from
-the published registry artifacts before a clean registry installation. Local
-validation uses the built package tarballs and does not establish publication.
-
 ## Installation
 
 ```bash
-npm install @sidhujag/sysweb3-keyring
+npm install @sidhujag/sysweb3-keyring syscoinjs-lib@1.0.279
 # or
-yarn add @sidhujag/sysweb3-keyring
+yarn add @sidhujag/sysweb3-keyring syscoinjs-lib@1.0.279
 ```
 
 ## Usage
@@ -118,38 +110,34 @@ const network = keyringManager.getNetwork();
 #### Syscoin (UTXO) Transactions
 
 ```javascript
-// Estimate transaction fee
-const feeEstimate =
-  await keyringManager.syscoinTransaction.getEstimateSysTransactionFee({
-    txOptions: {},
-    amount: 1.0,
-    receivingAddress: 'sys1q...',
-    feeRate: 0.00001,
-    token: null,
-  });
+const quote = await keyringManager.syscoinTransaction.getEstimateSysTransactionFee(
+  { amount: reviewedAmount, receivingAddress: reviewedRecipient },
+  draftUtxoRead
+);
 
-// Sign PSBT
-const signedPsbt = await keyringManager.syscoinTransaction.signPSBT({
-  psbt: psbtData,
-  isTrezor: false,
-  isLedger: false,
-});
+// Review the exact PSBT and capture its approval before signing.
+const signedPsbt = await keyringManager.syscoinTransaction.signPSBT(
+  { psbt: reviewedPsbt },
+  approvedUtxoRead
+);
 
-// Get addresses
-const receivingAddress = await keyringManager.updateReceivingAddress();
-const changeAddress = await keyringManager.getNewChangeAddress();
+const receivingAddress = await keyringManager.updateReceivingAddress(accountUtxoRead);
+const changeAddress = await keyringManager.getNewChangeAddress(accountUtxoRead);
 ```
+
+Each UTXO read owner supplies a bounded endpoint-specific `fetch`, an abort
+signal and a synchronous account, network and session guard. A signing owner
+also binds the approved PSBT to that context.
 
 #### Ethereum (EVM) Transactions
 
 ```javascript
-// Send transaction
-const txHash = await keyringManager.ethereumTransaction.sendTransaction({
-  to: '0x...',
-  value: '1000000000000000000', // 1 ETH in wei
-  gasLimit: '21000',
-  gasPrice: '20000000000', // 20 gwei
-});
+// Submit a fully specified transaction after approval.
+const submitted = await keyringManager.ethereumTransaction.sendFormattedTransaction(
+  reviewedTransaction,
+  undefined,
+  { mode: 'reviewed-native', assertCurrent: assertReviewCurrent }
+);
 
 // Sign message
 const signature = await keyringManager.ethereumTransaction.signPersonalMessage([
@@ -241,7 +229,7 @@ The stateless design means:
 
 Main class for keyring operations:
 
-- `createInitialized(seedPhrase, password, vaultStateGetter)` - Create and initialize keyring
+- `createInitialized(host, seedPhrase, password, vaultStateGetter, options)` - Create and initialize keyring
 - `addNewAccount(label?)` - Create new HD account
 - `setActiveAccount(id, type)` - Switch active account
 - `importAccount(privateKey, label?)` - Import account from private key
@@ -254,12 +242,11 @@ Main class for keyring operations:
 - `syscoinTransaction` - UTXO transaction operations
 - `ethereumTransaction` - EVM transaction operations
 
-For application-specific approval rules, pass an optional third argument to
-`ethereumTransaction.sendFormattedTransaction(params, isLegacy, { assertCurrent })`.
+The formatted-send options require an explicit mode and an approval guard.
 The guard must return `undefined` synchronously or throw to deny the operation.
-It supplements the SDK's account, network and session checks and is rechecked
-after asynchronous preparation, immediately before signing, and before broadcast.
-It is not called after a broadcast acknowledgement to reclassify a sent transaction.
+The SDK combines it with account, network and session checks at signing and
+broadcast. Once broadcast is acknowledged, the transaction remains recorded
+even if the approval has since expired.
 
 ### Hardware Wallet Support
 

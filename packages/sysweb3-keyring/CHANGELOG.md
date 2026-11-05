@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.4
+
+- Require a fixed keyring host with explicit storage and session authority. Device unlock remains an optional capability.
+- Require transaction approval, exact signed-envelope validation and durable submission boundaries for EVM and UTXO sends. Ledger and Trezor signing use the same approval boundary as software signing.
+- Use canonical base units for ERC-20 amounts and explicit owned endpoint verification for UTXO reads. Preserve existing vault readers and platform transports.
+
 ## 2.1.2
 
 - Preserve explicit hardware transaction nonces, including zero, instead of replacing them with the pending RPC nonce.
