@@ -433,9 +433,9 @@ export class KeyringCore<
     ): Promise<boolean> => {
       if (pending) throw new Error('Device unlock operation is busy');
       pending = true;
-      const revision = this.privateRecordSessionRevision;
-      const tracker = this.#sessionOwnership?.tracker;
-      const ownerEpoch = tracker?.epoch;
+      const assertOwnership = this.#captureSessionGuard(
+        'Device unlock session changed'
+      );
       const issuing = request !== null;
       const check = () => {
         const result: unknown = assertCurrent();
@@ -452,14 +452,11 @@ export class KeyringCore<
         }
         if (
           this.#deviceUnlockRetired ||
-          revision !== this.privateRecordSessionRevision ||
           (!issuing && (this.sessionPassword || this.sessionMnemonic))
         ) {
           throw new Error('Device unlock session changed');
         }
-        this.#assertSessionOwner();
-        if (tracker?.epoch !== ownerEpoch)
-          throw new Error('Device unlock session changed');
+        assertOwnership?.();
       };
       let key: Uint8Array | undefined;
       try {
@@ -718,6 +715,19 @@ export class KeyringCore<
     }
   }
 
+  #captureSessionGuard(message = 'Wallet unlock session changed') {
+    const ownership = this.#sessionOwnership;
+    if (!ownership) return undefined;
+    const revision = this.privateRecordSessionRevision;
+    const epoch = ownership.tracker.epoch;
+    return () => {
+      if (this.privateRecordSessionRevision !== revision)
+        throw new Error(message);
+      this.#assertSessionOwner();
+      if (ownership.tracker.epoch !== epoch) throw new Error(message);
+    };
+  }
+
   #replaceSessionBuffers(
     sessionPassword: SecureBuffer,
     sessionMnemonic: SecureBuffer,
@@ -811,9 +821,12 @@ export class KeyringCore<
     canLogin: boolean;
     needsAccountCreation?: boolean;
   }> {
+    let assertCurrent = this.#captureSessionGuard();
     let authenticated = false;
     try {
+      assertCurrent?.();
       const vaultKeys = await this.storage.get('vault-keys');
+      assertCurrent?.();
 
       if (!vaultKeys) {
         throw new Error(
@@ -830,6 +843,7 @@ export class KeyringCore<
         password,
         vaultKeys
       );
+      assertCurrent?.();
       // Handle migration from old vault format with currentSessionSalt
       if (vaultKeys.currentSessionSalt) {
         console.log(
@@ -850,6 +864,7 @@ export class KeyringCore<
           sessionPasswordKey,
           password
         );
+        assertCurrent?.();
         authenticated = true;
 
         const isValidSecret = (value: unknown): value is string => {
@@ -895,15 +910,20 @@ export class KeyringCore<
         // Do not change either stored record until a valid secret is recovered.
         await this.vaultPersistence.setEncryptedVault(
           { mnemonic: decryptedMnemonic },
-          sessionPasswordKey
+          sessionPasswordKey,
+          undefined,
+          assertCurrent
         );
+        assertCurrent?.();
         console.log('[KeyringManager] Vault mnemonic format normalized');
 
         // Remove currentSessionSalt from vault-keys (v4 keeps only the salt on disk)
         const migratedVaultKeys = {
           salt: vaultKeys.salt,
         };
+        assertCurrent?.();
         await this.storage.set('vault-keys', migratedVaultKeys);
+        assertCurrent?.();
         console.log('[KeyringManager] Old vault format migration completed');
       }
 
@@ -916,6 +936,7 @@ export class KeyringCore<
           sessionPasswordKey
         );
       } catch (error) {
+        assertCurrent?.();
         // Only the historical CBC fallback used the 20k key without metadata.
         // Never try it for GCM, malformed records, or platform/storage failures.
         const rawVault =
@@ -924,26 +945,34 @@ export class KeyringCore<
           !vaultKeys.currentSessionSalt
             ? await this.storage.get('vault')
             : undefined;
+        assertCurrent?.();
         if (typeof rawVault !== 'string' || rawVault.trim().startsWith('{')) {
           throw error;
         }
         const legacyKey = await this.deriveLegacySessionKey(password, salt);
+        assertCurrent?.();
         decryptedVault = await this.vaultPersistence.getDecryptedVault(
           legacyKey
         );
+        assertCurrent?.();
         authenticated = true;
         sessionPasswordKey = legacyKey;
         // Keep the historical account wrapping key. Persist its profile before
         // GCM rewrapping so either interrupted write remains recoverable.
-        await this.storage.set('vault-keys', {
+        const migratedVaultKeys = {
           ...vaultKeys,
           keyDerivation: LEGACY_ENCRYPTION_KDF,
-        });
+        };
+        assertCurrent?.();
+        await this.storage.set('vault-keys', migratedVaultKeys);
+        assertCurrent?.();
         legacyProfile = true;
       }
+      assertCurrent?.();
       authenticated = true;
       if (legacyProfile && this.hasWebCrypto()) {
         const storedVault = await this.storage.get('vault');
+        assertCurrent?.();
         if (
           typeof storedVault === 'string' &&
           !storedVault.trim().startsWith('{')
@@ -952,18 +981,33 @@ export class KeyringCore<
           // CBC. Retry that write without changing the account wrapping key.
           await this.vaultPersistence.setEncryptedVault(
             decryptedVault,
-            sessionPasswordKey
+            sessionPasswordKey,
+            undefined,
+            assertCurrent
           );
+          assertCurrent?.();
         }
       }
 
       // If session data missing or corrupted, recreate from vault
       if (!this.sessionMnemonic) {
-        await this.#recreateSessionFromVault(sessionPasswordKey);
+        assertCurrent = await this.#recreateSessionFromVault(
+          sessionPasswordKey,
+          assertCurrent
+        );
+        if (assertCurrent) {
+          assertCurrent();
+          console.log('[KeyringManager] Session data recreated from vault');
+        }
       }
 
-      return this.#finishUnlock();
+      assertCurrent?.();
+      const result = this.#finishUnlock();
+      assertCurrent?.();
+      return result;
     } catch (error) {
+      // A superseded attempt must not report authentication or clear its winner.
+      assertCurrent?.();
       if (!authenticated && error instanceof VaultAuthenticationError) {
         return { canLogin: false };
       }
@@ -3119,20 +3163,27 @@ export class KeyringCore<
     }
   }
 
-  async #recreateSessionFromVault(saltedHashPassword: string): Promise<void> {
+  async #recreateSessionFromVault(
+    saltedHashPassword: string,
+    assertCurrent?: () => void
+  ): Promise<(() => void) | undefined> {
     try {
       // v4 vault is encrypted with the derived session password key (PBKDF2 output)
       // `saltedHashPassword` is the derived session password key passed by caller.
       const { mnemonic } = await this.vaultPersistence.getDecryptedVault(
         saltedHashPassword
       );
+      assertCurrent?.();
 
       if (!mnemonic) {
         throw new Error('Mnemonic not found in vault');
       }
 
-      this.#installVaultSession(mnemonic, saltedHashPassword);
+      this.#installVaultSession(mnemonic, saltedHashPassword, assertCurrent);
+      // Capture the installed revision before returning to the async caller.
+      if (assertCurrent) return this.#captureSessionGuard();
       console.log('[KeyringManager] Session data recreated from vault');
+      return undefined;
     } catch (error) {
       console.error('ERROR recreateSessionFromVault', { error });
       throw error;

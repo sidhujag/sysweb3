@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash, webcrypto } from 'crypto';
 import CryptoJS from 'crypto-js';
 
 import {
@@ -28,6 +28,23 @@ function deferred<T>() {
     resolve = done;
   });
   return { promise, resolve };
+}
+
+function holdVaultRead(storage: KeyringStoragePort, readNumber: number) {
+  const started = deferred<void>();
+  const release = deferred<Error | undefined>();
+  const get = storage.get.bind(storage);
+  let reads = 0;
+  jest.spyOn(storage, 'get').mockImplementation(async (key) => {
+    const value = await get(key);
+    if (key === 'vault' && ++reads === readNumber) {
+      started.resolve();
+      const error = await release.promise;
+      if (error) throw error;
+    }
+    return value;
+  });
+  return { started: started.promise, release: release.resolve };
 }
 
 const rings: SoftwareKeyring[] = [];
@@ -449,6 +466,205 @@ it('keeps a device winner through a competing password unlock and loser cleanup'
   await device.ring.destroy();
   await expect(fresh.controls.resume(current)).resolves.toBe(true);
   expect(fresh.ring.isUnlocked()).toBe(true);
+});
+
+it.each([
+  ['first read', 1, undefined],
+  ['second read', 2, undefined],
+  ['second read rejection', 2, new Error('Vault temporarily unavailable')],
+] as const)(
+  'preserves the same-ring device winner after a held password %s',
+  async (_label, readNumber, failure) => {
+    const f = fixture();
+    const { ring, controls } = await f.create();
+    await expect(controls.issue(password, current)).resolves.toBe(true);
+    await ring.lockWallet();
+    const before = JSON.stringify([...f.records]);
+    const held = holdVaultRead(f.storage, readNumber);
+    const pending = ring.unlock(password);
+    await held.started;
+
+    await expect(controls.resume(current)).resolves.toBe(true);
+    const winner = (ring as any).sessionPassword;
+    const winnerMnemonic = (ring as any).sessionMnemonic;
+    held.release(failure);
+    const outcome = await pending.catch((error: unknown) => error);
+    expect(ring.isUnlocked()).toBe(true);
+    expect((ring as any).sessionPassword).toBe(winner);
+    expect((ring as any).sessionMnemonic).toBe(winnerMnemonic);
+    expect(winner.isCleared()).toBe(false);
+    expect(winnerMnemonic.isCleared()).toBe(false);
+    await expect(ring.getSeed(password)).resolves.toBe(mnemonic);
+    expect(JSON.stringify([...f.records])).toBe(before);
+    expect(outcome).toEqual(new Error('Wallet unlock session changed'));
+  }
+);
+
+it.each(['explicit lock', 'sibling unlock and lock'])(
+  'does not reopen a held password unlock after %s',
+  async (interruption) => {
+    const f = fixture();
+    const host = f.createHost();
+    const { ring, controls } = await f.create(password, host);
+    await expect(controls.issue(password, current)).resolves.toBe(true);
+    await ring.lockWallet();
+    const held = holdVaultRead(f.storage, 2);
+    const pending = ring.unlock(password);
+    await held.started;
+
+    if (interruption === 'explicit lock') {
+      await ring.lockWallet();
+    } else {
+      const sibling = f.open(host);
+      await expect(sibling.controls.resume(current)).resolves.toBe(true);
+      await sibling.ring.lockWallet();
+    }
+    held.release(undefined);
+    const outcome = await pending.catch((error: unknown) => error);
+    expect(ring.isUnlocked()).toBe(false);
+    expect(outcome).toEqual(new Error('Wallet unlock session changed'));
+    await expect(ring.unlock(password)).resolves.toEqual({ canLogin: true });
+  }
+);
+
+it.each(['newly installed', 'unchanged'])(
+  'completes a current held password read and clears %s buffers on operational failure',
+  async (sessionKind) => {
+    const f = fixture();
+    const { ring } = await f.create();
+    await ring.lockWallet();
+    const held = holdVaultRead(f.storage, 2);
+    const pending = ring.unlock(password);
+    await held.started;
+    held.release(undefined);
+    await expect(pending).resolves.toEqual({ canLogin: true });
+    if (sessionKind === 'newly installed') await ring.lockWallet();
+
+    let passwordBuffer: any;
+    let mnemonicBuffer: any;
+    const error = new Error('Account state unavailable');
+    ring.setVaultStateGetter(() => {
+      passwordBuffer = (ring as any).sessionPassword;
+      mnemonicBuffer = (ring as any).sessionMnemonic;
+      throw error;
+    });
+    await expect(ring.unlock(password)).rejects.toBe(error);
+    expect(passwordBuffer.isCleared()).toBe(true);
+    expect(mnemonicBuffer.isCleared()).toBe(true);
+    expect(ring.isUnlocked()).toBe(false);
+  }
+);
+
+it('rechecks password ownership after the session install continuation', async () => {
+  const f = fixture();
+  const { ring } = await f.create();
+  await ring.lockWallet();
+  const locked = deferred<boolean>();
+  const encrypt = CryptoJS.AES.encrypt.bind(CryptoJS.AES);
+  jest.spyOn(CryptoJS.AES, 'encrypt').mockImplementationOnce((...args) => {
+    queueMicrotask(() => {
+      const wasUnlocked = ring.isUnlocked();
+      void ring.lockWallet().then(() => locked.resolve(wasUnlocked));
+    });
+    return encrypt(...args);
+  });
+  await expect(ring.unlock(password)).rejects.toThrow(
+    'Wallet unlock session changed'
+  );
+  await expect(locked.promise).resolves.toBe(true);
+  expect(ring.isUnlocked()).toBe(false);
+});
+
+it('clears the installed password buffers if the restore diagnostic throws', async () => {
+  const f = fixture();
+  const { ring } = await f.create();
+  await ring.lockWallet();
+  const error = new Error('Restore diagnostic unavailable');
+  let passwordBuffer: any;
+  let mnemonicBuffer: any;
+  const log = jest.spyOn(console, 'log').mockImplementation((message) => {
+    if (message === '[KeyringManager] Session data recreated from vault') {
+      passwordBuffer = (ring as any).sessionPassword;
+      mnemonicBuffer = (ring as any).sessionMnemonic;
+      throw error;
+    }
+  });
+  const outcome = await ring.unlock(password).catch((error: unknown) => error);
+  expect(ring.isUnlocked()).toBe(false);
+  expect(outcome).toBe(error);
+  expect(passwordBuffer.isCleared()).toBe(true);
+  expect(mnemonicBuffer.isCleared()).toBe(true);
+  log.mockRestore();
+  await expect(ring.unlock(password)).resolves.toEqual({ canLogin: true });
+});
+
+it('rechecks legacy metadata admission after copying a host storage record', async () => {
+  const f = fixture();
+  const { ring } = await f.create();
+  await ring.lockWallet();
+  const { salt } = f.records.get('vault-keys');
+  const key = CryptoJS.PBKDF2(password, CryptoJS.enc.Hex.parse(salt), {
+    keySize: 256 / 32,
+    iterations: 20000,
+    hasher: CryptoJS.algo.SHA512,
+  }).toString();
+  const vault = CryptoJS.AES.encrypt(
+    JSON.stringify({ mnemonic }),
+    key
+  ).toString();
+  const vaultKeys = {
+    salt,
+    get metadata() {
+      void ring.lockWallet();
+      return 'fixture metadata';
+    },
+  };
+  f.records.set('vault-keys', vaultKeys);
+  f.records.set('vault', vault);
+  const writes = jest.spyOn(f.storage, 'set');
+  const outcome = await ring.unlock(password).catch((error: unknown) => error);
+  expect(writes).not.toHaveBeenCalled();
+  expect(f.records.get('vault-keys')).toBe(vaultKeys);
+  expect(f.records.get('vault')).toBe(vault);
+  expect(ring.isUnlocked()).toBe(false);
+  expect(outcome).toEqual(new Error('Wallet unlock session changed'));
+});
+
+it('refuses to dispatch an opted-in legacy migration after revocation during encryption', async () => {
+  const f = fixture();
+  const { ring } = await f.create();
+  await ring.lockWallet();
+  f.records.set('vault-keys', {
+    ...f.records.get('vault-keys'),
+    currentSessionSalt: '44'.repeat(16),
+  });
+  f.records.set(
+    'vault',
+    CryptoJS.AES.encrypt(JSON.stringify({ mnemonic }), password).toString()
+  );
+  const before = JSON.stringify([...f.records]);
+  const writes = jest.spyOn(f.storage, 'set');
+  const started = deferred<void>();
+  const release = deferred<void>();
+  const encrypt = webcrypto.subtle.encrypt.bind(webcrypto.subtle);
+  jest
+    .spyOn(webcrypto.subtle, 'encrypt')
+    .mockImplementationOnce(async (...args) => {
+      started.resolve();
+      await release.promise;
+      return encrypt(...args);
+    });
+  const pending = ring.unlock(password);
+  await started.promise;
+  await ring.lockWallet();
+  release.resolve();
+  const outcome = await pending.catch((error: unknown) => error);
+  expect(writes).not.toHaveBeenCalled();
+  expect(JSON.stringify([...f.records])).toBe(before);
+  expect(ring.isUnlocked()).toBe(false);
+  expect(outcome).toEqual(new Error('Wallet unlock session changed'));
+  await expect(ring.unlock(password)).resolves.toEqual({ canLogin: true });
+  await expect(ring.getSeed(password)).resolves.toBe(mnemonic);
 });
 
 it('revokes a held device resume when a sibling takes and releases ownership between checks', async () => {

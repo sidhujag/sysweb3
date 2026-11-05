@@ -12,7 +12,8 @@ export interface VaultPersistence {
   setEncryptedVault(
     decryptedVault: any,
     pwd: string,
-    freshVaultKeys?: { salt: string }
+    freshVaultKeys?: { salt: string },
+    assertCurrent?: () => void
   ): Promise<void>;
   getDecryptedVault(pwd: string, legacyPassword?: string): Promise<any>;
 }
@@ -233,9 +234,11 @@ export const createVaultPersistence = (
   const setEncryptedVault = async (
     decryptedVault: any,
     pwd: string,
-    freshVaultKeys?: { salt: string }
+    freshVaultKeys?: { salt: string },
+    assertCurrent?: () => void
   ) => {
     return vaultMutex.runExclusive(async () => {
+      assertCurrent?.();
       const plaintext = JSON.stringify(decryptedVault);
 
       // Writes never downgrade to unauthenticated passphrase AES. Legacy CBC
@@ -251,6 +254,7 @@ export const createVaultPersistence = (
       }
       const envelope = await encryptVaultWebCrypto(plaintext, pwd);
       const toStore = JSON.stringify(envelope);
+      assertCurrent?.();
 
       if (freshVaultKeys) {
         // The host primitive covers the absence check and batch commit
