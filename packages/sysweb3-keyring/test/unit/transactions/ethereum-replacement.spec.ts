@@ -1565,53 +1565,60 @@ describe('source SDK account-scoped replacement signing', () => {
   );
 
   it('passes the exact account to the actual keyring credential getter without replacing the vault getter', async () => {
-    const manager: any = new KeyringManager(createTestKeyringHost(), {
-      ...testHardware(),
-      captureEvmSubmission: createTestSubmissionCapture(),
-    });
-    const vault = {
-      activeNetwork: state.activeNetwork,
-      activeAccount: smart,
-      accounts: {
-        ...state.accounts,
-        [payer.type]: {
-          [payer.id]: { address: PAYER, xprv: 'synthetic-payer-ciphertext' },
+    const hardware = testHardware();
+    try {
+      const manager: any = new KeyringManager(createTestKeyringHost(), {
+        ...hardware,
+        captureEvmSubmission: createTestSubmissionCapture(),
+      });
+      const vault = {
+        activeNetwork: state.activeNetwork,
+        activeAccount: smart,
+        accounts: {
+          ...state.accounts,
+          [payer.type]: {
+            [payer.id]: { address: PAYER, xprv: 'synthetic-payer-ciphertext' },
+          },
+          [smart.type]: {
+            [smart.id]: { address: SMART, xprv: 'synthetic-smart-ciphertext' },
+          },
         },
-        [smart.type]: {
-          [smart.id]: { address: SMART, xprv: 'synthetic-smart-ciphertext' },
+      };
+      manager.setVaultStateGetter(() => vault);
+      const replaceGetter = jest.spyOn(manager, 'setVaultStateGetter');
+      manager.sessionPassword = { isCleared: () => false };
+      manager.withSecureData = (read: (password: string) => unknown) =>
+        read('synthetic-session-password');
+      mockAes.decrypt.mockImplementation((ciphertext: string) => ({
+        toString: () => {
+          return ciphertext === 'synthetic-smart-ciphertext'
+            ? ''
+            : 'mocked-private-key';
         },
-      },
-    };
-    manager.setVaultStateGetter(() => vault);
-    const replaceGetter = jest.spyOn(manager, 'setVaultStateGetter');
-    manager.sessionPassword = { isCleared: () => false };
-    manager.withSecureData = (read: (password: string) => unknown) =>
-      read('synthetic-session-password');
-    mockAes.decrypt.mockImplementation((ciphertext: string) => ({
-      toString: () => {
-        return ciphertext === 'synthetic-smart-ciphertext'
-          ? ''
-          : 'mocked-private-key';
-      },
-    }));
-    jest.mocked(privateKeyToAccount).mockReturnValue({ address: PAYER } as any);
-    Object.defineProperty(manager.ethereumTransaction, 'web3Provider', {
-      get: () => provider,
-    });
-    const result =
-      await manager.ethereumTransaction.sendTransactionWithEditedFee(
-        ORIGINAL,
-        false,
-        options()
+      }));
+      jest
+        .mocked(privateKeyToAccount)
+        .mockReturnValue({ address: PAYER } as any);
+      Object.defineProperty(manager.ethereumTransaction, 'web3Provider', {
+        get: () => provider,
+      });
+      const result =
+        await manager.ethereumTransaction.sendTransactionWithEditedFee(
+          ORIGINAL,
+          false,
+          options()
+        );
+      expect(mockAes.decrypt).toHaveBeenCalledWith(
+        'synthetic-payer-ciphertext',
+        'synthetic-session-password'
       );
-    expect(mockAes.decrypt).toHaveBeenCalledWith(
-      'synthetic-payer-ciphertext',
-      'synthetic-session-password'
-    );
-    expect(result).toMatchObject({ isSpeedUp: true, transaction: response });
-    expect(replaceGetter).not.toHaveBeenCalled();
-    expect(vault.activeAccount).toBe(smart);
-    expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ isSpeedUp: true, transaction: response });
+      expect(replaceGetter).not.toHaveBeenCalled();
+      expect(vault.activeAccount).toBe(smart);
+      expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
+    } finally {
+      await hardware.hardwareManager.destroy();
+    }
   });
 
   it.each([0, 1, 2])(
