@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.5
+
+- Normalize the signed PSBT bytes before comparing them with the approved transaction in browser hosts.
+- Report exact excluded native inputs from the existing funding response when a sweep has no eligible inputs. Preserve the same funding and signing rules.
+- Require SyscoinJS 1.0.280 or later for browser-compatible owned legacy input verification.
+
 ## 2.1.4
 
 - Require a fixed keyring host with explicit storage and session authority. Device unlock remains an optional capability.

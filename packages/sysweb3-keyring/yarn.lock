@@ -1975,10 +1975,10 @@ supports-color@^7.1.0:
   dependencies:
     has-flag "^4.0.0"
 
-syscoinjs-lib@^1.0.279:
-  version "1.0.279"
-  resolved "https://registry.npmjs.org/syscoinjs-lib/-/syscoinjs-lib-1.0.279.tgz#e07d89815e95717cd0be66df93c74e34611b50cc"
-  integrity sha512-vxqj9yoV9Fh+EWtgMPSddpLGfRVIrMR66rSLSC0gOwRFN+nyzEFL4af1IReiW5cLOttE5oobX4TvzlG7wX3Sag==
+syscoinjs-lib@^1.0.280:
+  version "1.0.280"
+  resolved "https://registry.npmjs.org/syscoinjs-lib/-/syscoinjs-lib-1.0.280.tgz#3771bf81ed07aa93b2140576bae617ec27f17502"
+  integrity sha512-ig88pEIPpn3oiOP6bmilzwDUVugXzStbc8jtSf4yeD3yqzuL98mIncLqoQ4NZaiuwjtT5f1AAcI9Gf+2bBUorg==
   dependencies:
     "@bitcoinerlab/secp256k1" "^1.2.0"
     axios "^1.18.1"
