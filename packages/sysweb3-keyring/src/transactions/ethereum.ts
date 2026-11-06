@@ -63,7 +63,10 @@ import {
   accountType,
   IGasParams,
 } from '../types';
-import { assertEvmCancellationEnvelope } from './evm-cancellation';
+import {
+  assertEvmCancellationEnvelope,
+  authenticateRetainedCancellation,
+} from './evm-cancellation';
 import {
   deriveEvmAccountFromMnemonic,
   parsePersonalMessage as parseLocalPersonalMessage,
@@ -445,7 +448,8 @@ export class EthereumTransactions<
     id: number,
     network: INetwork,
     assertCurrent: () => void,
-    originalHash?: string
+    originalHash?: string,
+    origin?: EvmSubmissionContext['origin']
   ) => {
     if (!this.captureSubmissionLifecycle)
       throw new TypeError('A durable EVM submission lifecycle is required');
@@ -460,6 +464,7 @@ export class EthereumTransactions<
           url: network.url,
         },
         ...(originalHash !== undefined ? { originalHash } : {}),
+        ...(origin !== undefined ? { origin } : {}),
       },
       assertCurrent,
       this.captureSubmissionLifecycle
@@ -1180,8 +1185,12 @@ export class EthereumTransactions<
     if (typeof options?.assertCurrentContext !== 'function') {
       throw new Error('Cancellation context required');
     }
-    if (typeof options.validateOriginal !== 'function') {
-      throw new Error('Cancellation original validator required');
+    const { assertCurrentContext, validateOriginal, origin } = options;
+    if (origin === undefined) {
+      if (typeof validateOriginal !== 'function')
+        throw new Error('Cancellation original validator required');
+    } else if (validateOriginal !== undefined || fallbackNonce !== undefined) {
+      throw new Error('Retained cancellation cannot use RPC fallback');
     }
     if (
       fallbackNonce !== undefined &&
@@ -1198,7 +1207,6 @@ export class EthereumTransactions<
     ) {
       throw new Error('Cancellation fee approval required');
     }
-    const { assertCurrentContext, validateOriginal } = options;
     const assertHostContext = () =>
       assertSynchronousOriginalValidation(
         assertCurrentContext(),
@@ -1258,6 +1266,24 @@ export class EthereumTransactions<
       assertKeyringContext();
     };
     assertSigningCurrent();
+    const retained =
+      origin === undefined
+        ? undefined
+        : authenticateRetainedCancellation(
+            origin,
+            txHash.toLowerCase(),
+            activeAccount.address,
+            activeNetwork.chainId
+          );
+    if (retained) {
+      const legacy = retained.feeFloor.type === 0;
+      if (
+        activeNetwork.kind !== INetworkType.Ethereum ||
+        (isLegacy !== undefined && isLegacy !== legacy)
+      )
+        throw new Error('Retained cancellation network or type changed');
+      isLegacy = legacy;
+    }
     const submission = previewOnly
       ? undefined
       : this.captureSubmission(
@@ -1267,7 +1293,8 @@ export class EthereumTransactions<
           activeAccountId,
           activeNetwork,
           assertSigningCurrent,
-          txHash
+          retained ? txHash.toLowerCase() : txHash,
+          retained
         );
     const assertCurrent = submission?.assertCurrent ?? assertSigningCurrent;
     const currentEip1559Fees = async () => {
@@ -1289,81 +1316,69 @@ export class EthereumTransactions<
       return { maxFeePerGas, maxPriorityFeePerGas };
     };
 
-    const response = await provider.getTransaction(txHash);
-    assertCurrent();
-    if (response?.blockNumber != null || response?.blockHash != null) {
-      throw new Error('Original transaction is already mined');
-    }
-    let tx: Deferrable<TransactionResponse> | null =
-      response === null
-        ? null
-        : authenticateReplacementOriginal(
-            response,
-            txHash.toLowerCase(),
-            activeAccount.address.toLowerCase(),
-            activeNetwork.chainId
-          );
-    const software =
-      activeAccountType !== KeyringAccountType.Ledger &&
-      activeAccountType !== KeyringAccountType.Trezor;
-    const softwareNonce = software ? tx?.nonce ?? fallbackNonce : undefined;
-    // The host validator may retain the wrapped response and its fee objects.
-    const softwareOriginalFees =
-      software && tx
-        ? {
-            gasPrice: tx.gasPrice.toBigInt(),
-            maxFeePerGas: tx.maxFeePerGas.toBigInt(),
-            maxPriorityFeePerGas: tx.maxPriorityFeePerGas.toBigInt(),
-          }
-        : undefined;
-    assertSynchronousOriginalValidation(
-      validateOriginal(tx as TransactionResponse | null)
-    );
-    assertCurrent();
-
-    // If transaction not found, create a minimal tx object with current gas prices
-    // This handles cases where tx with 0 gas never made it to the mempool
-    if (!tx && fallbackNonce !== undefined) {
-      // Fetch current network gas prices for the cancellation
-      if (isLegacy) {
-        const currentGasPrice = nonNegativeFeeQuantity(
-          await provider.getGasPrice(),
-          'cancellation gas price'
-        );
-        assertCurrent();
-        tx = {
-          from: activeAccount.address,
-          to: activeAccount.address,
-          value: Zero,
-          nonce: fallbackNonce,
-          gasPrice: currentGasPrice,
-          data: '0x',
-        } as Deferrable<TransactionResponse>;
-      } else {
-        const feeData = await currentEip1559Fees();
-        tx = {
-          from: activeAccount.address,
-          to: activeAccount.address,
-          value: Zero,
-          nonce: fallbackNonce,
-          maxFeePerGas: feeData.maxFeePerGas,
-          maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
-          data: '0x',
-        } as Deferrable<TransactionResponse>;
+    let cancellationNonce: number | undefined;
+    let originalFees: {
+      gasPrice?: unknown;
+      maxFeePerGas?: unknown;
+      maxPriorityFeePerGas?: unknown;
+    };
+    if (retained) {
+      cancellationNonce = retained.nonce;
+      originalFees = retained.feeFloor;
+    } else {
+      const response = await provider.getTransaction(txHash);
+      assertCurrent();
+      if (response?.blockNumber != null || response?.blockHash != null) {
+        throw new Error('Original transaction is already mined');
       }
-    } else if (!tx) {
-      // No fallback nonce provided and tx not found
-      return {
-        isCanceled: false,
-        error: true,
-      };
+      const tx =
+        response === null
+          ? null
+          : authenticateReplacementOriginal(
+              response,
+              txHash.toLowerCase(),
+              activeAccount.address.toLowerCase(),
+              activeNetwork.chainId
+            );
+      const software =
+        activeAccountType !== KeyringAccountType.Ledger &&
+        activeAccountType !== KeyringAccountType.Trezor;
+      // The host validator may retain the wrapped response and its fee objects.
+      const softwareNonce = software ? tx?.nonce ?? fallbackNonce : undefined;
+      const softwareOriginalFees =
+        software && tx
+          ? {
+              gasPrice: tx.gasPrice.toBigInt(),
+              maxFeePerGas: tx.maxFeePerGas.toBigInt(),
+              maxPriorityFeePerGas: tx.maxPriorityFeePerGas.toBigInt(),
+            }
+          : undefined;
+      assertSynchronousOriginalValidation(validateOriginal!(tx));
+      assertCurrent();
+      if (tx) {
+        cancellationNonce = software ? softwareNonce : tx.nonce;
+        originalFees = softwareOriginalFees ?? tx;
+      } else {
+        if (fallbackNonce === undefined)
+          return { isCanceled: false, error: true };
+        cancellationNonce = fallbackNonce;
+        // Preserve the ordinary host's explicitly admitted missing-RPC path.
+        if (isLegacy) {
+          const gasPrice = nonNegativeFeeQuantity(
+            await provider.getGasPrice(),
+            'cancellation gas price'
+          );
+          assertCurrent();
+          originalFees = { gasPrice };
+        } else originalFees = await currentEip1559Fees();
+      }
     }
 
     const {
       gasPrice: originalGasPrice,
       maxFeePerGas: originalMaxFeePerGas,
       maxPriorityFeePerGas: originalMaxPriorityFeePerGas,
-    } = softwareOriginalFees ?? tx;
+    } = originalFees;
     let feePlan: ReturnType<typeof planEvmCancellationFees>;
     if (isLegacy) {
       const currentGasPrice = parseEvmFeeQuantity(
@@ -1410,6 +1425,16 @@ export class EthereumTransactions<
       };
     if (maximumFee.gt(approvedMaximumFee!))
       throw new Error('Cancellation fee exceeds approval');
+    const assertCancellationEnvelope = (unsigned: string) => {
+      if (cancellationNonce === undefined)
+        throw new Error('Cancellation nonce required');
+      assertEvmCancellationEnvelope(unsigned, {
+        payer: activeAccount.address,
+        chainId: activeNetwork.chainId,
+        nonce: cancellationNonce,
+        feePlan,
+      });
+    };
     const assertApprovedEnvelope = (transaction: TransactionRequest) => {
       const gas = nonNegativeFeeQuantity(
         transaction.gasLimit,
@@ -1425,7 +1450,7 @@ export class EthereumTransactions<
 
     // Base cancel transaction parameters (same for all wallet types)
     const baseCancelTx = {
-      nonce: software ? softwareNonce : tx.nonce,
+      nonce: cancellationNonce,
       from: activeAccount.address,
       to: activeAccount.address,
       value: Zero,
@@ -1456,9 +1481,10 @@ export class EthereumTransactions<
         assertCurrent();
         const formatParams = {
           ...resolvedParams,
-          nonce: resolvedParams.nonce
-            ? Number(resolvedParams.nonce.toString())
-            : undefined,
+          nonce:
+            resolvedParams.nonce != null
+              ? Number(resolvedParams.nonce.toString())
+              : undefined,
         };
         const txFormattedForEthers = isLegacy
           ? {
@@ -1474,6 +1500,7 @@ export class EthereumTransactions<
 
         assertApprovedEnvelope(txFormattedForEthers);
         const rawTx = serializeTransaction(txFormattedForEthers);
+        if (retained) assertCancellationEnvelope(rawTx);
         const signature =
           await this.requireLedgerSigner().evm.signEVMTransaction(
             {
@@ -1574,6 +1601,7 @@ export class EthereumTransactions<
         assertTransactionGasLimit(txFormattedForTrezor);
         const expectedUnsignedTransaction =
           serializeTransaction(txFormattedForTrezor);
+        if (retained) assertCancellationEnvelope(expectedUnsignedTransaction);
         const signature = await this.requireTrezorSigner().signEthTransaction(
           {
             coin: trezorCoin,
@@ -1639,12 +1667,7 @@ export class EthereumTransactions<
           assertCurrent,
           (transaction) => {
             assertApprovedEnvelope(transaction);
-            assertEvmCancellationEnvelope(serializeTransaction(transaction), {
-              payer: activeAccount.address,
-              chainId: activeNetwork.chainId,
-              nonce: softwareNonce,
-              feePlan,
-            });
+            assertCancellationEnvelope(serializeTransaction(transaction));
           },
           submission
         );

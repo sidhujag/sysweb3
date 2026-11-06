@@ -12,7 +12,10 @@ import { Wallet } from 'ethers/wallet';
 import { BigNumber, serializeTransaction } from '../../../src/ethers-v6';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import { KeyringAccountType } from '../../../src/types';
-import { createTestSubmissionCapture } from '../../helpers/evm-submission';
+import {
+  admitTestSignedDispatch,
+  createTestSubmissionCapture,
+} from '../../helpers/evm-submission';
 const tokenApproval = {
   assertCurrent: () => undefined,
   signal: new AbortController().signal,
@@ -1564,6 +1567,7 @@ describe('EVM cancellation signing context', () => {
     (sdk as any).captureSubmissionLifecycle = () => ({
       assertCurrent: () => undefined,
       persistSigned,
+      dispatchSigned: admitTestSignedDispatch,
     });
     trezor.signEthTransaction.mockImplementationOnce(async ({ tx }: any) => {
       tx.value = '0x1';

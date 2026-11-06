@@ -1,6 +1,9 @@
 import { Transaction } from 'ethers/transaction';
 
-import type { KeyringAccountType } from '../types';
+import type {
+  EvmRetainedCancellationOrigin,
+  KeyringAccountType,
+} from '../types';
 
 export type EvmSubmissionContext = Readonly<{
   account: Readonly<{ id: number; type: string; address: string }>;
@@ -12,6 +15,7 @@ export type EvmSubmissionContext = Readonly<{
   }>;
   operation: 'send' | 'cancel' | 'speed-up' | 'erc20' | 'erc721' | 'erc1155';
   originalHash?: string;
+  origin?: EvmRetainedCancellationOrigin;
 }>;
 
 /** Signed wire bytes only; never a key, password or mutable transaction request. */
@@ -83,12 +87,21 @@ export function captureEvmSubmission(
   assertCurrent: () => void,
   capture: CaptureEvmSubmission
 ): EvmSubmissionBoundary {
+  const origin = input.origin;
   const context: EvmSubmissionContext = Object.freeze({
     account: Object.freeze({ ...input.account }),
     network: Object.freeze({ ...input.network }),
     operation: input.operation,
     ...(input.originalHash !== undefined
       ? { originalHash: input.originalHash }
+      : {}),
+    ...(origin
+      ? {
+          origin: Object.freeze({
+            ...origin,
+            feeFloor: Object.freeze({ ...origin.feeFloor }),
+          }),
+        }
       : {}),
   });
   assertSynchronous(assertCurrent);
