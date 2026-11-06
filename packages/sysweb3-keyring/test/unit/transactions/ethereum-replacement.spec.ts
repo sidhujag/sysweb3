@@ -374,6 +374,70 @@ describe('source SDK account-scoped replacement signing', () => {
       expectNoFeeRpc();
     });
 
+    it.each([
+      { type: 0, originalRate: 1n, replacementRate: 2n },
+      { type: 2, originalRate: 1n, replacementRate: 2n },
+      {
+        type: 0,
+        originalRate: 9007199254740993n,
+        replacementRate: 10808639105689191n,
+      },
+      {
+        type: 2,
+        originalRate: 9007199254740993n,
+        replacementRate: 10808639105689191n,
+      },
+    ])(
+      'quotes and enforces the exact type $type replacement of a $originalRate wei fee',
+      async ({ type, originalRate, replacementRate }) => {
+        const hash = useOriginal(
+          transaction({
+            type,
+            ...(type === 0
+              ? { gasPrice: BigNumber.from(originalRate) }
+              : {
+                  maxFeePerGas: BigNumber.from(originalRate),
+                  maxPriorityFeePerGas: BigNumber.from(originalRate),
+                }),
+          })
+        );
+        provider.getBalance.mockResolvedValue(BigNumber.from(10n ** 30n));
+        const maximumFee = 25200n * replacementRate;
+        await expect(
+          sdk.sendTransactionWithEditedFee(hash, type === 0, {
+            ...options(),
+            previewOnly: true,
+          })
+        ).resolves.toEqual({
+          isSpeedUp: false,
+          maximumFee: maximumFee.toString(),
+        });
+        await expect(
+          sdk.sendTransactionWithEditedFee(hash, type === 0, {
+            ...options(),
+            approvedMaximumFee: (maximumFee - 1n).toString(),
+          })
+        ).rejects.toThrow('Replacement fee exceeds approval');
+        expectNoSigning();
+
+        await expect(
+          sdk.sendTransactionWithEditedFee(hash, type === 0, {
+            ...options(),
+            approvedMaximumFee: maximumFee.toString(),
+          })
+        ).resolves.toMatchObject({ isSpeedUp: true });
+        const tx = unsignedTransaction(
+          jest.mocked(sendLocalEvmTransaction).mock.calls[0][2]
+        );
+        expect(tx.gasLimit).toBe(25200n);
+        expect(type === 0 ? tx.gasPrice : tx.maxFeePerGas).toBe(
+          replacementRate
+        );
+        if (type === 2) expect(tx.maxPriorityFeePerGas).toBe(replacementRate);
+        expectNoFeeRpc();
+      }
+    );
+
     it.each([0, 2])(
       'keeps signed type%s zero fees at zero under a zero cap',
       async (type) => {
@@ -410,6 +474,21 @@ describe('source SDK account-scoped replacement signing', () => {
         expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
       }
     );
+
+    it('rejects a replacement above the chain gas cap before preview or signing', async () => {
+      state.activeNetwork.chainId = 1;
+      const hash = useOriginal(
+        transaction({ type: 0, chainId: 1, gasLimit: BigNumber.from(14000000) })
+      );
+      provider.getBalance.mockResolvedValue(BigNumber.from(10n ** 15n));
+      await expect(
+        sdk.sendTransactionWithEditedFee(hash, true, {
+          ...options(),
+          previewOnly: true,
+        })
+      ).rejects.toThrow('EVM gas limit exceeds the network limit');
+      expectNoSigning();
+    });
 
     it.each([
       { target: payer, type: 0 },

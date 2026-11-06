@@ -3,6 +3,7 @@ import {
   getEvmFeeData,
   parseEvmFeeQuantity,
   planEvmCancellationFees,
+  planEvmSpeedUpFees,
   EvmFeeReader,
 } from '../../src/evm-fees';
 
@@ -10,6 +11,107 @@ const fixture = () => ({
   getGasPrice: jest.fn().mockResolvedValue('0x7'),
   getBlock: jest.fn().mockResolvedValue({ baseFeePerGas: '0x5' }),
   send: jest.fn().mockResolvedValue('0x0'),
+});
+
+describe('shared Speed Up fee-only policy', () => {
+  const originalGas = 21000n;
+  const uint64 = (1n << 64n) - 1n;
+  const uint256 = (1n << 256n) - 1n;
+
+  it.each([
+    [0n, 0n],
+    [1n, 2n],
+    [4n, 5n],
+    [5n, 6n],
+    [101n, 121n],
+    [9007199254740993n, 10808639105689191n],
+  ])(
+    'keeps the exact legacy rate and maximum fee for %s wei',
+    (gasPrice, bumped) => {
+      const plan = planEvmSpeedUpFees({
+        type: 0,
+        gasLimit: originalGas,
+        gasPrice,
+      });
+      expect(plan).toEqual({
+        type: 0,
+        gasLimit: 25200n,
+        gasPrice: bumped,
+        maximumFee: 25200n * bumped,
+      });
+      expect(Object.isFrozen(plan)).toBe(true);
+    }
+  );
+
+  it('preserves a zero dynamic tip while increasing the positive cap', () => {
+    expect(
+      planEvmSpeedUpFees({
+        type: 2,
+        gasLimit: originalGas,
+        maxFeePerGas: 5n,
+        maxPriorityFeePerGas: 0n,
+      })
+    ).toEqual({
+      type: 2,
+      gasLimit: 25200n,
+      maxFeePerGas: 6n,
+      maxPriorityFeePerGas: 0n,
+      maximumFee: 151200n,
+    });
+    expect(() =>
+      planEvmSpeedUpFees({
+        type: 2,
+        gasLimit: originalGas,
+        maxFeePerGas: 1n,
+        maxPriorityFeePerGas: 2n,
+      })
+    ).toThrow('Invalid replacement fee');
+  });
+
+  it('rejects the first buffered gas limit outside uint64', () => {
+    const largest = ((uint64 + 1n) * 100n - 1n) / 120n;
+    expect(
+      planEvmSpeedUpFees({ type: 0, gasLimit: largest, gasPrice: 0n }).gasLimit
+    ).toBe(uint64);
+    expect(() =>
+      planEvmSpeedUpFees({ type: 0, gasLimit: largest + 1n, gasPrice: 0n })
+    ).toThrow('Invalid replacement gas limit');
+    expect(() =>
+      planEvmSpeedUpFees({ type: 0, gasLimit: 0n, gasPrice: 0n })
+    ).toThrow('Invalid replacement gas limit');
+  });
+
+  it('checks the uint256 maximum fee even when both factors fit individually', () => {
+    const rateCap = uint256 / 25200n;
+    const largest = ((rateCap + 1n) * 100n - 1n) / 120n;
+    expect(
+      planEvmSpeedUpFees({ type: 0, gasLimit: originalGas, gasPrice: largest })
+        .maximumFee
+    ).toBeLessThanOrEqual(uint256);
+    expect(() =>
+      planEvmSpeedUpFees({
+        type: 0,
+        gasLimit: originalGas,
+        gasPrice: largest + 1n,
+      })
+    ).toThrow('Invalid replacement maximum fee');
+    expect(() =>
+      planEvmSpeedUpFees({ type: 0, gasLimit: originalGas, gasPrice: uint256 })
+    ).toThrow('Invalid replacement fee');
+  });
+
+  it('rejects non-bigint and negative rates without coercing values', () => {
+    const toString = jest.fn(() => '1');
+    for (const rate of [1, -1n, { toString }])
+      expect(() =>
+        planEvmSpeedUpFees({
+          type: 0,
+          gasLimit: originalGas,
+          gasPrice: rate as bigint,
+        })
+      ).toThrow('Invalid replacement fee');
+    expect(toString).not.toHaveBeenCalled();
+  });
 });
 
 describe('restricted shared EVM fee discovery', () => {

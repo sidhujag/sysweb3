@@ -29,6 +29,7 @@ export type EvmFeeData = Readonly<{
 }>;
 
 const MAX_FEE = (1n << 256n) - 1n;
+const MAX_REPLACEMENT_GAS = (1n << 64n) - 1n;
 
 /** A validated limit failed its wire bounds or an activated protocol bound. */
 export class EvmGasLimitError extends Error {
@@ -171,6 +172,69 @@ export function planEvmCancellationFees(input: EvmCancellationFeeInput) {
     maxFeePerGas,
     maxPriorityFeePerGas: bump(priority),
     maximumFee: gasLimit * maxFeePerGas,
+  });
+}
+
+export type EvmSpeedUpFeeInput = Readonly<
+  {
+    gasLimit: bigint;
+  } & (
+    | { type: 0; gasPrice: bigint }
+    | { type: 2; maxFeePerGas: bigint; maxPriorityFeePerGas: bigint }
+  )
+>;
+
+function speedUpRate(rate: bigint): bigint {
+  if (typeof rate !== 'bigint' || rate < 0n || rate > MAX_FEE)
+    throw new Error('Invalid replacement fee');
+  // Preserve fee-free networks and explicit zero priority fees.
+  if (rate === 0n) return 0n;
+  const buffered = (rate * 120n) / 100n;
+  const bumped = buffered > rate ? buffered : rate + 1n;
+  if (bumped > MAX_FEE) throw new Error('Invalid replacement fee');
+  return bumped;
+}
+
+/** Fee-only Speed Up policy. Hosts authenticate the original, own any zero-fee
+ * fallback read, and enforce chain and sampled block gas limits. Type 0
+ * describes legacy fee fields, including those of an admitted type 1 envelope.
+ */
+export function planEvmSpeedUpFees(input: EvmSpeedUpFeeInput) {
+  const originalGasLimit = input.gasLimit;
+  if (
+    typeof originalGasLimit !== 'bigint' ||
+    originalGasLimit <= 0n ||
+    originalGasLimit > MAX_REPLACEMENT_GAS
+  )
+    throw new Error('Invalid replacement gas limit');
+  const gasLimit = bufferedEvmGasLimit(originalGasLimit);
+  if (gasLimit > MAX_REPLACEMENT_GAS)
+    throw new Error('Invalid replacement gas limit');
+  const maximum = (rate: bigint) => {
+    const fee = gasLimit * rate;
+    if (fee > MAX_FEE) throw new Error('Invalid replacement maximum fee');
+    return fee;
+  };
+  if (input.type === 0) {
+    const gasPrice = speedUpRate(input.gasPrice);
+    return Object.freeze({
+      type: 0 as const,
+      gasLimit,
+      gasPrice,
+      maximumFee: maximum(gasPrice),
+    });
+  }
+  if (input.type !== 2) throw new Error('Invalid replacement fee type');
+  const maxFeePerGas = speedUpRate(input.maxFeePerGas);
+  const maxPriorityFeePerGas = speedUpRate(input.maxPriorityFeePerGas);
+  if (maxPriorityFeePerGas > maxFeePerGas)
+    throw new Error('Invalid replacement fee');
+  return Object.freeze({
+    type: 2 as const,
+    gasLimit,
+    maxFeePerGas,
+    maxPriorityFeePerGas,
+    maximumFee: maximum(maxFeePerGas),
   });
 }
 

@@ -42,6 +42,7 @@ import {
   getEvmFeeData,
   parseEvmFeeQuantity,
   planEvmCancellationFees,
+  planEvmSpeedUpFees,
 } from '../evm-fees';
 import { CustomJsonRpcProvider, wrapTransactionResponse } from '../providers';
 import {
@@ -1073,8 +1074,44 @@ export class EthereumTransactions<
     const { maxFeePerGas, maxPriorityFeePerGas, gasLimit, gasPrice } =
       oldTxsParams;
 
+    if (!isForCancel) {
+      const originalGasLimit = parseEvmFeeQuantity(
+        gasLimit,
+        'replacement gas limit'
+      );
+      const plan = isLegacy
+        ? planEvmSpeedUpFees({
+            type: 0,
+            gasLimit: originalGasLimit,
+            gasPrice: parseEvmFeeQuantity(gasPrice, 'replacement gas price'),
+          })
+        : planEvmSpeedUpFees({
+            type: 2,
+            gasLimit: originalGasLimit,
+            maxFeePerGas: parseEvmFeeQuantity(
+              maxFeePerGas,
+              'replacement fee cap'
+            ),
+            maxPriorityFeePerGas: parseEvmFeeQuantity(
+              maxPriorityFeePerGas,
+              'replacement priority fee'
+            ),
+          });
+      newGasValues.gasLimit = BigNumber.from(plan.gasLimit);
+      if (plan.type === 0)
+        newGasValues.gasPrice = BigNumber.from(plan.gasPrice);
+      else {
+        newGasValues.maxFeePerGas = BigNumber.from(plan.maxFeePerGas);
+        newGasValues.maxPriorityFeePerGas = BigNumber.from(
+          plan.maxPriorityFeePerGas
+        );
+      }
+      return newGasValues;
+    }
+
+    // Keep the legacy direct cancellation helper. The guarded cancellation
+    // transaction path already uses planEvmCancellationFees.
     const calculateAndConvertNewValue = (feeValue: number) => {
-      // Apply multiplier for replacement transaction (cancel or speedup)
       const newValue = feeValue * multiplierToUse;
 
       const calculateValue = String(newValue);
@@ -1087,7 +1124,6 @@ export class EthereumTransactions<
 
     const maxFeePerGasToNumber = maxFeePerGas?.toNumber();
     const maxPriorityFeePerGasToNumber = maxPriorityFeePerGas?.toNumber();
-    const gasLimitToNumber = gasLimit?.toNumber();
     const gasPriceToNumber = gasPrice?.toNumber();
 
     const multiplierToUse = 1.2; //The same calculation we used in the edit fee modal, always using the 0.2 multiplier
@@ -1108,21 +1144,7 @@ export class EthereumTransactions<
       );
     }
 
-    if (isForCancel) {
-      const DEFAULT_GAS_LIMIT_VALUE = '42000';
-
-      const convertToHex =
-        '0x' + parseInt(DEFAULT_GAS_LIMIT_VALUE, 10).toString(16);
-
-      newGasValues.gasLimit = BigNumber.from(convertToHex);
-    }
-
-    if (!isForCancel) {
-      newGasValues.gasLimit = calculateAndConvertNewValue(
-        gasLimitToNumber as number
-      );
-    }
-
+    newGasValues.gasLimit = BigNumber.from(42000);
     return newGasValues;
   };
   cancelSentTransaction = async (
@@ -2343,6 +2365,10 @@ export class EthereumTransactions<
     );
     if (!newGasValues.gasLimit!.gt(0))
       throw new Error('Invalid replacement gas limit');
+    assertTransactionGasLimit({
+      gasLimit: newGasValues.gasLimit,
+      chainId: activeNetwork.chainId,
+    });
     if (
       !isLegacy &&
       newGasValues.maxPriorityFeePerGas!.gt(newGasValues.maxFeePerGas!)
