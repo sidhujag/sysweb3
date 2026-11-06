@@ -5,6 +5,7 @@ jest.resetModules();
 import { BigNumber, JsonRpcProvider } from '../../src/ethers-v6';
 import { LedgerKeyring } from '../../src/ledger';
 import { KeyringAccountType } from '../../src/types';
+import { admitTestSignedDispatch } from '../helpers/evm-submission';
 
 import type { LedgerHost } from '../../src/ledger/host-types';
 import type { EvmSignedSubmission } from '../../src/transactions/evm-submission';
@@ -236,6 +237,7 @@ describe('JSON-RPC response correlation', () => {
         () => () => undefined,
         () => ({
           assertCurrent: () => undefined,
+          dispatchSigned: admitTestSignedDispatch,
           async persistSigned(record: EvmSignedSubmission) {
             events.push('persist');
             stored = record;
