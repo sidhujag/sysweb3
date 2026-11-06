@@ -210,9 +210,10 @@ describe('source SDK account-scoped replacement signing', () => {
       verifyConfiguredChainId: jest.fn().mockResolvedValue(undefined),
       getBalance: jest.fn().mockResolvedValue(BigNumber.from('1000000000')),
       getGasPrice: jest.fn().mockResolvedValue(BigNumber.from(1000)),
-      getBlock: jest
-        .fn()
-        .mockResolvedValue({ baseFeePerGas: BigNumber.from(50) }),
+      getBlock: jest.fn().mockResolvedValue({
+        baseFeePerGas: BigNumber.from(50),
+        gasLimit: BigNumber.from(30000000),
+      }),
       send: jest.fn().mockResolvedValue('0x2'),
       sendTransaction: jest.fn().mockResolvedValue(response),
     };
@@ -314,10 +315,58 @@ describe('source SDK account-scoped replacement signing', () => {
       expect(beforeBroadcast).not.toHaveBeenCalled();
       expect(provider.sendTransaction).not.toHaveBeenCalled();
     };
-    const expectNoFeeRpc = () => {
-      expect(provider.getBlock).not.toHaveBeenCalled();
+    const expectNoFeeRateRpc = () => {
       expect(provider.getGasPrice).not.toHaveBeenCalled();
     };
+
+    it.each([0, 2])(
+      'requires a current sampled block cap for type %s',
+      async (type) => {
+        const hash = useOriginal(
+          transaction({ type, gasLimit: BigNumber.from(25000000) })
+        );
+        provider.getBalance.mockResolvedValue(BigNumber.from(10n ** 30n));
+        await expect(
+          sdk.sendTransactionWithEditedFee(hash, type === 0, {
+            ...options(),
+            previewOnly: true,
+          })
+        ).resolves.toMatchObject({ maximumFee: '3600000000' });
+        expect(provider.getBlock).toHaveBeenCalledTimes(1);
+        for (const gasLimit of [
+          BigNumber.from(29999999),
+          undefined,
+          BigNumber.from(0),
+        ]) {
+          provider.getBlock.mockResolvedValue({ gasLimit });
+          await expect(
+            sdk.sendTransactionWithEditedFee(hash, type === 0, {
+              ...options(),
+              previewOnly: true,
+            })
+          ).rejects.toThrow();
+        }
+        expectNoSigning();
+      }
+    );
+
+    it('rejects a block read completing after replacement authority retires', async () => {
+      const started = deferred<void>();
+      const block = deferred<any>();
+      provider.getBlock.mockImplementationOnce(() => {
+        started.resolve();
+        return block.promise;
+      });
+      const pending = sdk.sendTransactionWithEditedFee(ORIGINAL, false, {
+        ...options(),
+        previewOnly: true,
+      });
+      await started.promise;
+      current = false;
+      block.resolve({ gasLimit: BigNumber.from(30000000) });
+      await expect(pending).rejects.toThrow('PALI_TRANSACTION_CONTEXT_CHANGED');
+      expectNoSigning();
+    });
     const zeroFeeOriginal = (type: number) =>
       transaction({
         type,
@@ -355,7 +404,7 @@ describe('source SDK account-scoped replacement signing', () => {
           type === 0 ? tx.gasPrice.toString() : tx.maxFeePerGas.toString()
         ).toBe('120');
         if (type === 2) expect(tx.accessList).toEqual(ACCESS_LIST);
-        expectNoFeeRpc();
+        expectNoFeeRateRpc();
         expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
       }
     );
@@ -371,7 +420,7 @@ describe('source SDK account-scoped replacement signing', () => {
       expect(tx.maxFeePerGas.toString()).toBe('120');
       expect(tx.maxPriorityFeePerGas.toString()).toBe('120');
       expect(tx.accessList).toEqual(ACCESS_LIST);
-      expectNoFeeRpc();
+      expectNoFeeRateRpc();
     });
 
     it.each([
@@ -434,7 +483,7 @@ describe('source SDK account-scoped replacement signing', () => {
           replacementRate
         );
         if (type === 2) expect(tx.maxPriorityFeePerGas).toBe(replacementRate);
-        expectNoFeeRpc();
+        expectNoFeeRateRpc();
       }
     );
 
@@ -460,7 +509,7 @@ describe('source SDK account-scoped replacement signing', () => {
       );
       expect(tx.maxFeePerGas).toBe(120n);
       expect(tx.maxPriorityFeePerGas).toBe(1n);
-      expectNoFeeRpc();
+      expectNoFeeRateRpc();
     });
 
     it.each([0, 2])(
@@ -494,8 +543,14 @@ describe('source SDK account-scoped replacement signing', () => {
           expect(dynamicQuote).not.toHaveBeenCalled();
         } else {
           expect(dynamicQuote).toHaveBeenCalledTimes(2);
-          expect(dynamicQuote).toHaveBeenCalledWith(provider);
+          for (const [reader] of dynamicQuote.mock.calls) {
+            expect(await reader!.getBlock('latest')).toEqual({
+              baseFeePerGas: BigNumber.from(50),
+              gasLimit: BigNumber.from(30000000),
+            });
+          }
         }
+        expect(provider.getBlock).toHaveBeenCalledTimes(2);
         expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
       }
     );
@@ -563,7 +618,6 @@ describe('source SDK account-scoped replacement signing', () => {
         expect(tx.gasLimit).toBe(BigInt(25200));
         if (type === 0) {
           expect(tx.gasPrice).toBe(BigInt(120));
-          expect(provider.getBlock).not.toHaveBeenCalled();
         } else {
           expect(tx.maxFeePerGas).toBe(BigInt(180));
           expect(tx.maxPriorityFeePerGas).toBe(BigInt(30));
@@ -732,7 +786,7 @@ describe('source SDK account-scoped replacement signing', () => {
       const maximumFee = tx.gasLimit * (tx.maxFeePerGas ?? tx.gasPrice!);
       expect(maximumFee.toString()).toBe(APPROVED_MAXIMUM_FEE);
       expect(maximumFee <= BigInt(APPROVED_MAXIMUM_FEE)).toBe(true);
-      expectNoFeeRpc();
+      expectNoFeeRateRpc();
       expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
     });
 
@@ -761,7 +815,7 @@ describe('source SDK account-scoped replacement signing', () => {
           maximumFee: APPROVED_MAXIMUM_FEE,
         });
         expectNoSigning();
-        expectNoFeeRpc();
+        expectNoFeeRateRpc();
       }
     );
 
@@ -771,7 +825,7 @@ describe('source SDK account-scoped replacement signing', () => {
         sdk.sendTransactionWithEditedFee(hash, false, options())
       ).rejects.toThrow();
       expectNoSigning();
-      expectNoFeeRpc();
+      expectNoFeeRateRpc();
     });
 
     it.each(['3023999', APPROVED_MAXIMUM_FEE])(

@@ -177,7 +177,9 @@ export function planEvmCancellationFees(input: EvmCancellationFeeInput) {
 
 export type EvmSpeedUpFeeInput = Readonly<
   {
+    chainId: bigint;
     gasLimit: bigint;
+    sampledBlockGasLimit: bigint;
   } & (
     | { type: 0; gasPrice: bigint }
     | { type: 2; maxFeePerGas: bigint; maxPriorityFeePerGas: bigint }
@@ -195,7 +197,7 @@ function speedUpRate(rate: bigint, preserveZero = true): bigint {
 }
 
 /** Fee-only Speed Up policy. Hosts authenticate the original, own any zero-fee
- * fallback read, and enforce chain and sampled block gas limits. Type 0
+ * fallback read, and supply the current sampled block limit. Type 0
  * describes legacy fee fields, including those of an admitted type 1 envelope.
  */
 export function planEvmSpeedUpFees(input: EvmSpeedUpFeeInput) {
@@ -209,6 +211,10 @@ export function planEvmSpeedUpFees(input: EvmSpeedUpFeeInput) {
   const gasLimit = bufferedEvmGasLimit(originalGasLimit);
   if (gasLimit > MAX_REPLACEMENT_GAS)
     throw new Error('Invalid replacement gas limit');
+  // Bounds are mandatory even on chains without a protocol-specific ceiling.
+  if (input.sampledBlockGasLimit === undefined)
+    throw new Error('Replacement block gas limit required');
+  assertEvmGasLimit(gasLimit, input.chainId, input.sampledBlockGasLimit);
   const maximum = (rate: bigint) => {
     const fee = gasLimit * rate;
     if (fee > MAX_FEE) throw new Error('Invalid replacement maximum fee');

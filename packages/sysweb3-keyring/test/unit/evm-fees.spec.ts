@@ -17,6 +17,7 @@ describe('shared Speed Up fee-only policy', () => {
   const originalGas = 21000n;
   const uint64 = (1n << 64n) - 1n;
   const uint256 = (1n << 256n) - 1n;
+  const bounds = { chainId: 743211n, sampledBlockGasLimit: uint64 };
 
   it.each([
     [0n, 0n],
@@ -29,6 +30,7 @@ describe('shared Speed Up fee-only policy', () => {
     'keeps the exact legacy rate and maximum fee for %s wei',
     (gasPrice, bumped) => {
       const plan = planEvmSpeedUpFees({
+        ...bounds,
         type: 0,
         gasLimit: originalGas,
         gasPrice,
@@ -46,6 +48,7 @@ describe('shared Speed Up fee-only policy', () => {
   it('strictly increases both dynamic fee fields with a positive cap', () => {
     expect(
       planEvmSpeedUpFees({
+        ...bounds,
         type: 2,
         gasLimit: originalGas,
         maxFeePerGas: 5n,
@@ -60,6 +63,7 @@ describe('shared Speed Up fee-only policy', () => {
     });
     expect(() =>
       planEvmSpeedUpFees({
+        ...bounds,
         type: 2,
         gasLimit: originalGas,
         maxFeePerGas: 1n,
@@ -71,32 +75,89 @@ describe('shared Speed Up fee-only policy', () => {
   it('rejects the first buffered gas limit outside uint64', () => {
     const largest = ((uint64 + 1n) * 100n - 1n) / 120n;
     expect(
-      planEvmSpeedUpFees({ type: 0, gasLimit: largest, gasPrice: 0n }).gasLimit
+      planEvmSpeedUpFees({
+        ...bounds,
+        type: 0,
+        gasLimit: largest,
+        gasPrice: 0n,
+      }).gasLimit
     ).toBe(uint64);
     expect(() =>
-      planEvmSpeedUpFees({ type: 0, gasLimit: largest + 1n, gasPrice: 0n })
+      planEvmSpeedUpFees({
+        ...bounds,
+        type: 0,
+        gasLimit: largest + 1n,
+        gasPrice: 0n,
+      })
     ).toThrow('Invalid replacement gas limit');
     expect(() =>
-      planEvmSpeedUpFees({ type: 0, gasLimit: 0n, gasPrice: 0n })
+      planEvmSpeedUpFees({ ...bounds, type: 0, gasLimit: 0n, gasPrice: 0n })
     ).toThrow('Invalid replacement gas limit');
+  });
+
+  it('requires sampled bounds and enforces both block and protocol ceilings', () => {
+    const input = { type: 0 as const, gasLimit: 25000000n, gasPrice: 1n };
+    // @ts-expect-error A current sampled block limit is required.
+    expect(() => planEvmSpeedUpFees({ ...input, chainId: 743211n })).toThrow();
+    expect(
+      planEvmSpeedUpFees({
+        ...input,
+        chainId: 743211n,
+        sampledBlockGasLimit: 30000000n,
+      }).gasLimit
+    ).toBe(30000000n);
+    expect(() =>
+      planEvmSpeedUpFees({
+        ...input,
+        chainId: 743211n,
+        sampledBlockGasLimit: 29999999n,
+      })
+    ).toThrow('network limit');
+    expect(() =>
+      planEvmSpeedUpFees({
+        ...input,
+        chainId: 1n,
+        gasLimit: 14000000n,
+        sampledBlockGasLimit: 30000000n,
+      })
+    ).toThrow('network limit');
+    for (const block of [0n, -1n, undefined, 30000000]) {
+      expect(() =>
+        planEvmSpeedUpFees({
+          ...input,
+          chainId: 743211n,
+          sampledBlockGasLimit: block as bigint,
+        })
+      ).toThrow();
+    }
   });
 
   it('checks the uint256 maximum fee even when both factors fit individually', () => {
     const rateCap = uint256 / 25200n;
     const largest = ((rateCap + 1n) * 100n - 1n) / 120n;
     expect(
-      planEvmSpeedUpFees({ type: 0, gasLimit: originalGas, gasPrice: largest })
-        .maximumFee
+      planEvmSpeedUpFees({
+        ...bounds,
+        type: 0,
+        gasLimit: originalGas,
+        gasPrice: largest,
+      }).maximumFee
     ).toBeLessThanOrEqual(uint256);
     expect(() =>
       planEvmSpeedUpFees({
+        ...bounds,
         type: 0,
         gasLimit: originalGas,
         gasPrice: largest + 1n,
       })
     ).toThrow('Invalid replacement maximum fee');
     expect(() =>
-      planEvmSpeedUpFees({ type: 0, gasLimit: originalGas, gasPrice: uint256 })
+      planEvmSpeedUpFees({
+        ...bounds,
+        type: 0,
+        gasLimit: originalGas,
+        gasPrice: uint256,
+      })
     ).toThrow('Invalid replacement fee');
   });
 
@@ -105,6 +166,7 @@ describe('shared Speed Up fee-only policy', () => {
     for (const rate of [1, -1n, { toString }])
       expect(() =>
         planEvmSpeedUpFees({
+          ...bounds,
           type: 0,
           gasLimit: originalGas,
           gasPrice: rate as bigint,

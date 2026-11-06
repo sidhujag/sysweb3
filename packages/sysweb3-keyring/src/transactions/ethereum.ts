@@ -43,6 +43,7 @@ import {
   parseEvmFeeQuantity,
   planEvmCancellationFees,
   planEvmSpeedUpFees,
+  type EvmFeeReader,
 } from '../evm-fees';
 import { CustomJsonRpcProvider, wrapTransactionResponse } from '../providers';
 import {
@@ -1041,7 +1042,7 @@ export class EthereumTransactions<
   };
 
   getFeeDataWithDynamicMaxPriorityFeePerGas = async (
-    provider = this.web3Provider
+    provider: EvmFeeReader = this.web3Provider
   ) => {
     const fee = await getEvmFeeData(provider, {
       signal: this.abortController.signal,
@@ -1062,7 +1063,8 @@ export class EthereumTransactions<
   calculateNewGasValues = (
     oldTxsParams: IGasParams,
     isForCancel: boolean,
-    isLegacy: boolean
+    isLegacy: boolean,
+    bounds: Readonly<{ chainId: bigint; sampledBlockGasLimit: bigint }>
   ): IGasParams => {
     const newGasValues: IGasParams = {
       maxFeePerGas: undefined,
@@ -1081,11 +1083,13 @@ export class EthereumTransactions<
       );
       const plan = isLegacy
         ? planEvmSpeedUpFees({
+            ...bounds,
             type: 0,
             gasLimit: originalGasLimit,
             gasPrice: parseEvmFeeQuantity(gasPrice, 'replacement gas price'),
           })
         : planEvmSpeedUpFees({
+            ...bounds,
             type: 2,
             gasLimit: originalGasLimit,
             maxFeePerGas: parseEvmFeeQuantity(
@@ -1145,6 +1149,11 @@ export class EthereumTransactions<
     }
 
     newGasValues.gasLimit = BigNumber.from(42000);
+    assertEvmGasLimit(
+      newGasValues.gasLimit.toBigInt(),
+      bounds.chainId,
+      bounds.sampledBlockGasLimit
+    );
     return newGasValues;
   };
   cancelSentTransaction = async (
@@ -2315,6 +2324,15 @@ export class EthereumTransactions<
     }
     const currentBalance = await provider.getBalance(activeAccount.address);
     assertCurrent();
+    const sampledBlock = await provider.getBlock('latest');
+    assertCurrent();
+    const bounds = Object.freeze({
+      chainId: BigInt(activeNetwork.chainId),
+      sampledBlockGasLimit: parseEvmFeeQuantity(
+        sampledBlock?.gasLimit,
+        'replacement block gas limit'
+      ),
+    });
     // Ensure all transaction values are resolved from promises
     const gasLimit = await Promise.resolve(tx.gasLimit);
     const gasPrice = await Promise.resolve(tx.gasPrice || 0);
@@ -2339,9 +2357,11 @@ export class EthereumTransactions<
       oldTxsGasValues.gasPrice = await provider.getGasPrice();
       assertCurrent();
     } else if (!isLegacy && oldTxsGasValues.maxFeePerGas.isZero()) {
-      const feeData = await this.getFeeDataWithDynamicMaxPriorityFeePerGas(
-        provider
-      );
+      const feeData = await this.getFeeDataWithDynamicMaxPriorityFeePerGas({
+        getGasPrice: () => provider.getGasPrice(),
+        getBlock: async () => sampledBlock,
+        send: (method, params) => provider.send(method, params),
+      });
       assertCurrent();
       oldTxsGasValues.maxFeePerGas = BigNumber.from(feeData.maxFeePerGas || 0);
       oldTxsGasValues.maxPriorityFeePerGas = BigNumber.from(
@@ -2351,7 +2371,8 @@ export class EthereumTransactions<
     const newGasValues = this.calculateNewGasValues(
       oldTxsGasValues,
       false,
-      isLegacy
+      isLegacy,
+      bounds
     );
     if (!newGasValues.gasLimit!.gt(0))
       throw new Error('Invalid replacement gas limit');
