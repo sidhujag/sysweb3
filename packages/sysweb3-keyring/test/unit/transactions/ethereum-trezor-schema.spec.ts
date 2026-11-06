@@ -1,4 +1,5 @@
 import { execFileSync } from 'child_process';
+import { admitTestSignedDispatch } from '../../helpers/evm-submission';
 import { Transaction } from 'ethers/transaction';
 import { Wallet } from 'ethers/wallet';
 import path from 'path';
@@ -124,6 +125,7 @@ beforeEach(() => {
   persistSigned = jest.fn(async () => undefined);
   (sdk as any).captureSubmissionLifecycle = () => ({
     assertCurrent: () => undefined,
+    dispatchSigned: admitTestSignedDispatch,
     persistSigned,
   });
 });

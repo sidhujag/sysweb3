@@ -7,6 +7,7 @@ import {
   captureEvmSubmission,
   submitSignedEvmTransaction,
 } from '../../../src/transactions/evm-submission';
+import { admitTestSignedDispatch } from '../../helpers/evm-submission';
 
 const wallet = new Wallet(`0x${'11'.repeat(32)}`);
 const recipient = `0x${'22'.repeat(20)}`;
@@ -77,7 +78,11 @@ it.each([
     const boundary = captureEvmSubmission(
       context,
       () => undefined,
-      () => ({ assertCurrent: () => undefined, persistSigned })
+      () => ({
+        assertCurrent: () => undefined,
+        dispatchSigned: admitTestSignedDispatch,
+        persistSigned,
+      })
     );
     await expect(
       submitSignedEvmTransaction(
@@ -119,6 +124,7 @@ it.each([0, 1, 2])(
       () => undefined,
       () => ({
         assertCurrent: () => undefined,
+        dispatchSigned: admitTestSignedDispatch,
         async persistSigned(record) {
           events.push('persist');
           expect(

@@ -8,6 +8,7 @@ import { signTransaction } from '../../../src/transactions/evm-local-signer';
 import { KeyringAccountType } from '../../../src/types';
 import { createTestSubmissionCapture } from '../../helpers/evm-submission';
 const tokenApproval = {
+  nonce: 7,
   assertCurrent: () => undefined,
   signal: new AbortController().signal,
 };

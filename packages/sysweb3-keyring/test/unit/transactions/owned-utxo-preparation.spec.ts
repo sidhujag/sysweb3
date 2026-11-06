@@ -68,6 +68,7 @@ async function fixture() {
       label: 'Syscoin Testnet',
       currency: 'tsys',
       url: endpoint,
+      utxoBackendChain: 'test',
     },
     accounts: {
       HDAccount: {},
@@ -701,9 +702,9 @@ async function signedOwnedFixture() {
 
 const submitUrl = `${base}/api/v2/sendtx/`;
 
-function acknowledgment(txid: string): Response {
+function acknowledgment(txid: string, url = submitUrl): Response {
   const response = Response.json({ result: txid });
-  Object.defineProperty(response, 'url', { value: submitUrl });
+  Object.defineProperty(response, 'url', { value: url });
   return response;
 }
 
@@ -811,5 +812,223 @@ it('classifies lost authority before POST separately from a lost acknowledgment 
     txid,
   });
   expect(fetch).toHaveBeenCalledTimes(1);
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
+const replacementEndpoint = 'https://replacement.invalid/other-wallet';
+const testnetGenesis =
+  '0000066e1a6b9cfeac8295dce0cc8d9170690a74bc4878cf8a0b412554f5c222';
+const statusUrl = `${base}/api/v2/`;
+const genesisUrl = `${base}/api/v2/block-index/0`;
+const testnetStatus = {
+  blockbook: { coin: 'Syscoin Testnet', network: 'tSYS', decimals: 8 },
+  backend: { chain: 'test' },
+};
+
+async function retainedReplayFixture(originalBase = base) {
+  const fixture = await signedOwnedFixture();
+  const { ring, state, txid, raw } = fixture;
+  state.activeNetwork.url = replacementEndpoint;
+  const api = `${originalBase.replace(/\/$/, '')}/api/v2/`;
+  const retained = {
+    owner: {
+      account: { id: 0, type: hd, xpub: state.accounts.HDAccount[0].xpub },
+      chainId: 5700,
+      slip44: 1,
+      genesisHash: testnetGenesis,
+    },
+    txid,
+    rawTransaction: raw,
+    url: `${api}sendtx/`,
+  };
+  const signal = new AbortController().signal;
+  const authority = {
+    assertCurrent: () => undefined,
+    fetch: jest.fn(async () => acknowledgment(txid, retained.url)),
+    prepare: jest.fn(async () => undefined),
+    readRetained: jest.fn(async () => retained),
+    readJson: jest.fn(async (url: string, ownerSignal: AbortSignal) => {
+      expect(ownerSignal).toBe(signal);
+      if (url === api) return testnetStatus;
+      if (url === `${api}block-index/0`) return { blockHash: testnetGenesis };
+      throw new Error('Unexpected retained route');
+    }),
+    signal,
+  };
+  return {
+    ...fixture,
+    retained,
+    authority,
+    replay: ring.syscoinTransaction.replayRetainedTransaction,
+  };
+}
+
+it('replays authenticated bytes only to their original verified endpoint after durable admission', async () => {
+  const { ring, state, raw, txid, retained, authority, replay } =
+    await retainedReplayFixture();
+  const sign = jest.spyOn(ring.syscoinTransaction, 'signPSBT');
+  const hold = deferred();
+  const preparing = deferred();
+  authority.prepare.mockImplementation(async () => {
+    preparing.resolve();
+    await hold.promise;
+    return undefined;
+  });
+  const pending = replay(txid, authority);
+  await Promise.race([preparing.promise, pending]);
+  expect(authority.readRetained).toHaveBeenCalledWith(retained.owner, txid);
+  expect(authority.readJson.mock.calls).toEqual([
+    [statusUrl, authority.signal],
+    [genesisUrl, authority.signal],
+  ]);
+  expect(authority.prepare).toHaveBeenCalledWith({
+    url: submitUrl,
+    rawTransaction: raw,
+    txid,
+  });
+  expect(authority.fetch).not.toHaveBeenCalled();
+  expect(state.activeNetwork.url).toBe(replacementEndpoint);
+  hold.resolve();
+  await expect(pending).resolves.toEqual({ txid });
+  expect(authority.fetch).toHaveBeenCalledTimes(1);
+  expect(authority.fetch).toHaveBeenCalledWith(
+    submitUrl,
+    expect.objectContaining({
+      method: 'POST',
+      body: raw,
+      signal: authority.signal,
+      credentials: 'omit',
+      redirect: 'error',
+    })
+  );
+  expect(state.activeNetwork.url).toBe(replacementEndpoint);
+  expect(sign).not.toHaveBeenCalled();
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
+it.each(['', '//'])(
+  'replays from a maximum-length base with ending %p',
+  async (ending) => {
+    const prefix = 'https://offline-original.invalid/wallet/';
+    const originalBase = prefix.padEnd(2048 - ending.length, 'a') + ending;
+    const { txid, retained, authority, replay } = await retainedReplayFixture(
+      originalBase
+    );
+    const api = `${originalBase.replace(/\/$/, '')}/api/v2/`;
+    expect(originalBase).toHaveLength(2048);
+    expect(retained.url).toBe(`${api}sendtx/`);
+    await expect(replay(txid, authority)).resolves.toEqual({ txid });
+    expect(authority.readJson.mock.calls.map(([url]) => url)).toEqual([
+      api,
+      `${api}block-index/0`,
+    ]);
+    expect(authority.fetch).toHaveBeenCalledTimes(1);
+    expect(authority.fetch).toHaveBeenCalledWith(
+      retained.url,
+      expect.objectContaining({ method: 'POST' })
+    );
+  }
+);
+
+it('rejects an oversized reconstructed base even when the complete route meets its ceiling', async () => {
+  const originalBase =
+    'https://offline-original.invalid/wallet/'.padEnd(2047, 'a') + '//';
+  const { txid, retained, authority, replay } = await retainedReplayFixture(
+    originalBase
+  );
+  expect(originalBase).toHaveLength(2049);
+  expect(retained.url).toHaveLength(2048 + '/api/v2/sendtx/'.length);
+  await expect(replay(txid, authority)).rejects.toMatchObject({
+    code: 'UTXO_SUBMISSION_NOT_DISPATCHED',
+    transactionNotBroadcast: true,
+  });
+  expect(authority.readJson).not.toHaveBeenCalled();
+  expect(authority.prepare).not.toHaveBeenCalled();
+  expect(authority.fetch).not.toHaveBeenCalled();
+});
+
+it.each(['account', 'chain', 'genesis', 'txid', 'route', 'bytes', 'pin'])(
+  'refuses a mismatched retained %s before identity reads or POST',
+  async (field) => {
+    const { retained, state, raw, txid, authority, replay } =
+      await retainedReplayFixture();
+    if (field === 'account') retained.owner.account.id++;
+    if (field === 'chain') retained.owner.slip44++;
+    if (field === 'genesis') retained.owner.genesisHash = '0'.repeat(64);
+    if (field === 'txid') retained.txid = '0'.repeat(64);
+    if (field === 'route')
+      retained.url = `${submitUrl}?redirect=${replacementEndpoint}`;
+    if (field === 'bytes') {
+      const transaction = bitcoin.Transaction.fromHex(raw);
+      transaction.locktime++;
+      retained.rawTransaction = transaction.toHex();
+    }
+    if (field === 'pin') state.activeNetwork.utxoBackendChain = '';
+    await expect(replay(txid, authority)).rejects.toMatchObject({
+      code: 'UTXO_SUBMISSION_NOT_DISPATCHED',
+      transactionNotBroadcast: true,
+    });
+    if (field === 'pin') expect(authority.readRetained).not.toHaveBeenCalled();
+    expect(authority.readJson).not.toHaveBeenCalled();
+    expect(authority.prepare).not.toHaveBeenCalled();
+    expect(authority.fetch).not.toHaveBeenCalled();
+  }
+);
+
+it('requires the original endpoint genesis and the live wallet owner after admission', async () => {
+  const { state, txid, authority, replay } = await retainedReplayFixture();
+  const notDispatched = {
+    code: 'UTXO_SUBMISSION_NOT_DISPATCHED',
+    transactionNotBroadcast: true,
+  };
+  authority.readJson
+    .mockResolvedValueOnce(testnetStatus)
+    .mockResolvedValueOnce({ blockHash: '0'.repeat(64) });
+  await expect(replay(txid, authority)).rejects.toMatchObject(notDispatched);
+  expect(authority.prepare).not.toHaveBeenCalled();
+  expect(authority.fetch).not.toHaveBeenCalled();
+
+  const hold = deferred();
+  const preparing = deferred();
+  authority.prepare.mockImplementation(async () => {
+    preparing.resolve();
+    await hold.promise;
+    return undefined;
+  });
+  const pending = replay(txid, authority);
+  const checked = expect(pending).rejects.toMatchObject(notDispatched);
+  await Promise.race([preparing.promise, pending]);
+  state.activeNetwork.utxoBackendChain = 'wrong';
+  hold.resolve();
+  await checked;
+  expect(authority.fetch).not.toHaveBeenCalled();
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
+it('requires the retained journal port and preserves a lost ACK after the original POST', async () => {
+  const { txid, authority, replay } = await retainedReplayFixture();
+  await expect(
+    Reflect.apply(replay, undefined, [
+      txid,
+      { ...authority, readRetained: undefined },
+    ])
+  ).rejects.toMatchObject({
+    code: 'UTXO_SUBMISSION_NOT_DISPATCHED',
+    transactionNotBroadcast: true,
+  });
+  expect(authority.readJson).not.toHaveBeenCalled();
+  expect(authority.fetch).not.toHaveBeenCalled();
+
+  authority.fetch.mockRejectedValueOnce(new Error('Response lost'));
+  await expect(replay(txid, authority)).rejects.toMatchObject({
+    code: 'UTXO_SUBMISSION_UNKNOWN',
+    transactionNotBroadcast: false,
+    txid,
+  });
+  expect(authority.fetch).toHaveBeenCalledTimes(1);
+  expect(authority.fetch).toHaveBeenCalledWith(
+    submitUrl,
+    expect.objectContaining({ method: 'POST' })
+  );
   expect(globalThis.fetch).not.toHaveBeenCalled();
 });

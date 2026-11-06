@@ -3,6 +3,7 @@ import {
   getEvmFeeData,
   parseEvmFeeQuantity,
   planEvmCancellationFees,
+  planEvmSpeedUpFees,
   EvmFeeReader,
 } from '../../src/evm-fees';
 
@@ -10,6 +11,225 @@ const fixture = () => ({
   getGasPrice: jest.fn().mockResolvedValue('0x7'),
   getBlock: jest.fn().mockResolvedValue({ baseFeePerGas: '0x5' }),
   send: jest.fn().mockResolvedValue('0x0'),
+});
+
+describe('shared Speed Up fee-only policy', () => {
+  const originalGas = 21000n;
+  const uint64 = (1n << 64n) - 1n;
+  const uint256 = (1n << 256n) - 1n;
+  const bounds = {
+    chainId: 743211n,
+    sampledBlockGasLimit: uint64,
+    sampledBaseFeePerGas: null,
+  };
+
+  it.each([
+    [0n, 0n],
+    [1n, 2n],
+    [4n, 5n],
+    [5n, 6n],
+    [101n, 121n],
+    [9007199254740993n, 10808639105689191n],
+  ])(
+    'keeps the exact legacy rate and maximum fee for %s wei',
+    (gasPrice, bumped) => {
+      const plan = planEvmSpeedUpFees({
+        ...bounds,
+        type: 0,
+        gasLimit: originalGas,
+        gasPrice,
+      });
+      expect(plan).toEqual({
+        type: 0,
+        gasLimit: 25200n,
+        gasPrice: bumped,
+        maximumFee: 25200n * bumped,
+      });
+      expect(Object.isFrozen(plan)).toBe(true);
+    }
+  );
+
+  it('strictly increases both dynamic fee fields with a positive cap', () => {
+    expect(
+      planEvmSpeedUpFees({
+        ...bounds,
+        type: 2,
+        gasLimit: originalGas,
+        maxFeePerGas: 5n,
+        maxPriorityFeePerGas: 0n,
+      })
+    ).toEqual({
+      type: 2,
+      gasLimit: 25200n,
+      maxFeePerGas: 6n,
+      maxPriorityFeePerGas: 1n,
+      maximumFee: 151200n,
+    });
+    expect(() =>
+      planEvmSpeedUpFees({
+        ...bounds,
+        type: 2,
+        gasLimit: originalGas,
+        maxFeePerGas: 1n,
+        maxPriorityFeePerGas: 2n,
+      })
+    ).toThrow('Invalid replacement fee');
+  });
+
+  it('raises a fresh fee quote to the sampled market without changing gas', () => {
+    const market = {
+      ...bounds,
+      gasLimit: originalGas,
+      sampledBaseFeePerGas: 1000n,
+    };
+    expect(
+      planEvmSpeedUpFees({ ...market, type: 0, gasPrice: 3n })
+    ).toMatchObject({
+      gasPrice: 1000n,
+      gasLimit: 25200n,
+      maximumFee: 25200000n,
+    });
+    expect(
+      planEvmSpeedUpFees({
+        ...market,
+        type: 2,
+        maxFeePerGas: 3n,
+        maxPriorityFeePerGas: 1n,
+      })
+    ).toMatchObject({
+      maxFeePerGas: 1002n,
+      maxPriorityFeePerGas: 2n,
+      gasLimit: 25200n,
+      maximumFee: 25250400n,
+    });
+    expect(
+      planEvmSpeedUpFees({
+        ...market,
+        type: 2,
+        maxFeePerGas: 1000n,
+        maxPriorityFeePerGas: 1000n,
+      })
+    ).toMatchObject({
+      maxFeePerGas: 1200n,
+      maxPriorityFeePerGas: 1200n,
+    });
+    expect(() =>
+      planEvmSpeedUpFees({
+        ...market,
+        type: 0,
+        gasPrice: 3n,
+        sampledBaseFeePerGas: undefined as unknown as null,
+      })
+    ).toThrow('Invalid replacement base fee');
+  });
+
+  it('rejects the first buffered gas limit outside uint64', () => {
+    const largest = ((uint64 + 1n) * 100n - 1n) / 120n;
+    expect(
+      planEvmSpeedUpFees({
+        ...bounds,
+        type: 0,
+        gasLimit: largest,
+        gasPrice: 0n,
+      }).gasLimit
+    ).toBe(uint64);
+    expect(() =>
+      planEvmSpeedUpFees({
+        ...bounds,
+        type: 0,
+        gasLimit: largest + 1n,
+        gasPrice: 0n,
+      })
+    ).toThrow('Invalid replacement gas limit');
+    expect(() =>
+      planEvmSpeedUpFees({ ...bounds, type: 0, gasLimit: 0n, gasPrice: 0n })
+    ).toThrow('Invalid replacement gas limit');
+  });
+
+  it('requires sampled bounds and enforces both block and protocol ceilings', () => {
+    const input = {
+      type: 0 as const,
+      gasLimit: 25000000n,
+      gasPrice: 1n,
+      sampledBaseFeePerGas: null,
+    };
+    // @ts-expect-error A current sampled block limit is required.
+    expect(() => planEvmSpeedUpFees({ ...input, chainId: 743211n })).toThrow();
+    expect(
+      planEvmSpeedUpFees({
+        ...input,
+        chainId: 743211n,
+        sampledBlockGasLimit: 30000000n,
+      }).gasLimit
+    ).toBe(30000000n);
+    expect(() =>
+      planEvmSpeedUpFees({
+        ...input,
+        chainId: 743211n,
+        sampledBlockGasLimit: 29999999n,
+      })
+    ).toThrow('network limit');
+    expect(() =>
+      planEvmSpeedUpFees({
+        ...input,
+        chainId: 1n,
+        gasLimit: 14000000n,
+        sampledBlockGasLimit: 30000000n,
+      })
+    ).toThrow('network limit');
+    for (const block of [0n, -1n, undefined, 30000000]) {
+      expect(() =>
+        planEvmSpeedUpFees({
+          ...input,
+          chainId: 743211n,
+          sampledBlockGasLimit: block as bigint,
+        })
+      ).toThrow();
+    }
+  });
+
+  it('checks the uint256 maximum fee even when both factors fit individually', () => {
+    const rateCap = uint256 / 25200n;
+    const largest = ((rateCap + 1n) * 100n - 1n) / 120n;
+    expect(
+      planEvmSpeedUpFees({
+        ...bounds,
+        type: 0,
+        gasLimit: originalGas,
+        gasPrice: largest,
+      }).maximumFee
+    ).toBeLessThanOrEqual(uint256);
+    expect(() =>
+      planEvmSpeedUpFees({
+        ...bounds,
+        type: 0,
+        gasLimit: originalGas,
+        gasPrice: largest + 1n,
+      })
+    ).toThrow('Invalid replacement maximum fee');
+    expect(() =>
+      planEvmSpeedUpFees({
+        ...bounds,
+        type: 0,
+        gasLimit: originalGas,
+        gasPrice: uint256,
+      })
+    ).toThrow('Invalid replacement fee');
+  });
+
+  it('rejects non-bigint and negative rates without coercing values', () => {
+    const toString = jest.fn(() => '1');
+    for (const rate of [1, -1n, { toString }])
+      expect(() =>
+        planEvmSpeedUpFees({
+          ...bounds,
+          type: 0,
+          gasLimit: originalGas,
+          gasPrice: rate as bigint,
+        })
+      ).toThrow('Invalid replacement fee');
+    expect(toString).not.toHaveBeenCalled();
+  });
 });
 
 describe('restricted shared EVM fee discovery', () => {

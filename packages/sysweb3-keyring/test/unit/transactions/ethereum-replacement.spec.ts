@@ -210,9 +210,10 @@ describe('source SDK account-scoped replacement signing', () => {
       verifyConfiguredChainId: jest.fn().mockResolvedValue(undefined),
       getBalance: jest.fn().mockResolvedValue(BigNumber.from('1000000000')),
       getGasPrice: jest.fn().mockResolvedValue(BigNumber.from(1000)),
-      getBlock: jest
-        .fn()
-        .mockResolvedValue({ baseFeePerGas: BigNumber.from(50) }),
+      getBlock: jest.fn().mockResolvedValue({
+        baseFeePerGas: BigNumber.from(50),
+        gasLimit: BigNumber.from(30000000),
+      }),
       send: jest.fn().mockResolvedValue('0x2'),
       sendTransaction: jest.fn().mockResolvedValue(response),
     };
@@ -267,6 +268,79 @@ describe('source SDK account-scoped replacement signing', () => {
   });
   afterEach(() => jest.restoreAllMocks());
 
+  it.each([0, 2])(
+    'reprices a verified retained type %s cancellation without changing gas',
+    async (type) => {
+      const fields = { type, to: PAYER, value: 0, data: '0x', gasLimit: 42000 };
+      const hash = useOriginal(transaction(fields));
+      const retainedCancellation = await hardwareWallet.signTransaction({
+        ...fields,
+        chainId: CHAIN,
+        nonce: 8,
+        ...(type === 0
+          ? { gasPrice: 100 }
+          : { maxFeePerGas: 100, maxPriorityFeePerGas: 10 }),
+      });
+      expect(Transaction.from(retainedCancellation).hash).toBe(hash);
+      const preview = {
+        ...options(),
+        previewOnly: true as const,
+        approvedMaximumFee: undefined,
+      };
+      await expect(
+        sdk.sendTransactionWithEditedFee(hash, type === 0, preview)
+      ).resolves.toMatchObject({ maximumFee: '6048000' });
+      await expect(
+        sdk.sendTransactionWithEditedFee(hash, type === 0, {
+          ...preview,
+          retainedCancellation,
+        })
+      ).resolves.toMatchObject({ maximumFee: '5040000' });
+      const wrongEnvelope = await hardwareWallet.signTransaction({
+        ...fields,
+        chainId: CHAIN,
+        nonce: 9,
+        ...(type === 0
+          ? { gasPrice: 100 }
+          : { maxFeePerGas: 100, maxPriorityFeePerGas: 10 }),
+      });
+      await expect(
+        sdk.sendTransactionWithEditedFee(hash, type === 0, {
+          ...preview,
+          retainedCancellation: wrongEnvelope,
+        })
+      ).rejects.toThrow('Invalid retained cancellation');
+      const signer = jest.requireActual(
+        '../../../src/transactions/evm-local-signer'
+      );
+      jest
+        .mocked(sendLocalEvmTransaction)
+        .mockImplementation((rpc, _key, ...args) =>
+          signer.sendLocalEvmTransaction(
+            rpc,
+            hardwareWallet.privateKey,
+            ...args
+          )
+        );
+      await expect(
+        sdk.sendTransactionWithEditedFee(hash, type === 0, {
+          ...options(),
+          approvedMaximumFee: '5040000',
+          retainedCancellation,
+        })
+      ).resolves.toMatchObject({ isSpeedUp: true });
+      const sent = Transaction.from(provider.sendTransaction.mock.calls[0][0]);
+      expect(sent).toMatchObject({
+        type,
+        nonce: 8,
+        gasLimit: 42000n,
+        to: PAYER,
+        value: 0n,
+        data: '0x',
+      });
+    }
+  );
+
   it.each([false, true])(
     'signs through the explicit outer payer without changing the active SmartAccount (legacy=%s)',
     async (legacy) => {
@@ -314,10 +388,58 @@ describe('source SDK account-scoped replacement signing', () => {
       expect(beforeBroadcast).not.toHaveBeenCalled();
       expect(provider.sendTransaction).not.toHaveBeenCalled();
     };
-    const expectNoFeeRpc = () => {
-      expect(provider.getBlock).not.toHaveBeenCalled();
+    const expectNoFeeRateRpc = () => {
       expect(provider.getGasPrice).not.toHaveBeenCalled();
     };
+
+    it.each([0, 2])(
+      'requires a current sampled block cap for type %s',
+      async (type) => {
+        const hash = useOriginal(
+          transaction({ type, gasLimit: BigNumber.from(25000000) })
+        );
+        provider.getBalance.mockResolvedValue(BigNumber.from(10n ** 30n));
+        await expect(
+          sdk.sendTransactionWithEditedFee(hash, type === 0, {
+            ...options(),
+            previewOnly: true,
+          })
+        ).resolves.toMatchObject({ maximumFee: '3600000000' });
+        expect(provider.getBlock).toHaveBeenCalledTimes(1);
+        for (const gasLimit of [
+          BigNumber.from(29999999),
+          undefined,
+          BigNumber.from(0),
+        ]) {
+          provider.getBlock.mockResolvedValue({ gasLimit });
+          await expect(
+            sdk.sendTransactionWithEditedFee(hash, type === 0, {
+              ...options(),
+              previewOnly: true,
+            })
+          ).rejects.toThrow();
+        }
+        expectNoSigning();
+      }
+    );
+
+    it('rejects a block read completing after replacement authority retires', async () => {
+      const started = deferred<void>();
+      const block = deferred<any>();
+      provider.getBlock.mockImplementationOnce(() => {
+        started.resolve();
+        return block.promise;
+      });
+      const pending = sdk.sendTransactionWithEditedFee(ORIGINAL, false, {
+        ...options(),
+        previewOnly: true,
+      });
+      await started.promise;
+      current = false;
+      block.resolve({ gasLimit: BigNumber.from(30000000) });
+      await expect(pending).rejects.toThrow('PALI_TRANSACTION_CONTEXT_CHANGED');
+      expectNoSigning();
+    });
     const zeroFeeOriginal = (type: number) =>
       transaction({
         type,
@@ -355,7 +477,7 @@ describe('source SDK account-scoped replacement signing', () => {
           type === 0 ? tx.gasPrice.toString() : tx.maxFeePerGas.toString()
         ).toBe('120');
         if (type === 2) expect(tx.accessList).toEqual(ACCESS_LIST);
-        expectNoFeeRpc();
+        expectNoFeeRateRpc();
         expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
       }
     );
@@ -371,13 +493,110 @@ describe('source SDK account-scoped replacement signing', () => {
       expect(tx.maxFeePerGas.toString()).toBe('120');
       expect(tx.maxPriorityFeePerGas.toString()).toBe('120');
       expect(tx.accessList).toEqual(ACCESS_LIST);
-      expectNoFeeRpc();
+      expectNoFeeRateRpc();
+    });
+
+    it.each([
+      { type: 0, originalRate: 1n, replacementRate: 2n },
+      { type: 2, originalRate: 1n, replacementRate: 2n },
+      {
+        type: 0,
+        originalRate: 9007199254740993n,
+        replacementRate: 10808639105689191n,
+      },
+      {
+        type: 2,
+        originalRate: 9007199254740993n,
+        replacementRate: 10808639105689191n,
+      },
+    ])(
+      'quotes and enforces the exact type $type replacement of a $originalRate wei fee',
+      async ({ type, originalRate, replacementRate }) => {
+        provider.getBlock.mockResolvedValue({
+          baseFeePerGas: BigNumber.from(0),
+          gasLimit: BigNumber.from(30_000_000),
+        });
+        const hash = useOriginal(
+          transaction({
+            type,
+            ...(type === 0
+              ? { gasPrice: BigNumber.from(originalRate) }
+              : {
+                  maxFeePerGas: BigNumber.from(originalRate),
+                  maxPriorityFeePerGas: BigNumber.from(originalRate),
+                }),
+          })
+        );
+        provider.getBalance.mockResolvedValue(BigNumber.from(10n ** 30n));
+        const maximumFee = 25200n * replacementRate;
+        await expect(
+          sdk.sendTransactionWithEditedFee(hash, type === 0, {
+            ...options(),
+            previewOnly: true,
+          })
+        ).resolves.toEqual({
+          isSpeedUp: false,
+          maximumFee: maximumFee.toString(),
+        });
+        await expect(
+          sdk.sendTransactionWithEditedFee(hash, type === 0, {
+            ...options(),
+            approvedMaximumFee: (maximumFee - 1n).toString(),
+          })
+        ).rejects.toThrow('Replacement fee exceeds approval');
+        expectNoSigning();
+
+        await expect(
+          sdk.sendTransactionWithEditedFee(hash, type === 0, {
+            ...options(),
+            approvedMaximumFee: maximumFee.toString(),
+          })
+        ).resolves.toMatchObject({ isSpeedUp: true });
+        const tx = unsignedTransaction(
+          jest.mocked(sendLocalEvmTransaction).mock.calls[0][2]
+        );
+        expect(tx.gasLimit).toBe(25200n);
+        expect(type === 0 ? tx.gasPrice : tx.maxFeePerGas).toBe(
+          replacementRate
+        );
+        if (type === 2) expect(tx.maxPriorityFeePerGas).toBe(replacementRate);
+        expectNoFeeRateRpc();
+      }
+    );
+
+    it('signs a strictly higher tip for a signed zero-tip original with a positive cap', async () => {
+      const hash = useOriginal(
+        transaction({ maxPriorityFeePerGas: BigNumber.from(0) })
+      );
+      await expect(
+        sdk.sendTransactionWithEditedFee(hash, false, {
+          ...options(),
+          previewOnly: true,
+        })
+      ).resolves.toEqual({
+        isSpeedUp: false,
+        maximumFee: APPROVED_MAXIMUM_FEE,
+      });
+      expectNoSigning();
+      await expect(
+        sdk.sendTransactionWithEditedFee(hash, false, options())
+      ).resolves.toMatchObject({ isSpeedUp: true });
+      const tx = unsignedTransaction(
+        jest.mocked(sendLocalEvmTransaction).mock.calls[0][2]
+      );
+      expect(tx.maxFeePerGas).toBe(120n);
+      expect(tx.maxPriorityFeePerGas).toBe(1n);
+      expectNoFeeRateRpc();
     });
 
     it.each([0, 2])(
       'keeps signed type%s zero fees at zero under a zero cap',
       async (type) => {
         const hash = useOriginal(zeroFeeOriginal(type));
+        provider.getBlock.mockResolvedValue({
+          baseFeePerGas: BigNumber.from(0),
+          gasLimit: BigNumber.from(30_000_000),
+        });
         provider.getGasPrice.mockResolvedValue(BigNumber.from(0));
         const dynamicQuote = jest
           .spyOn(sdk, 'getFeeDataWithDynamicMaxPriorityFeePerGas')
@@ -405,11 +624,32 @@ describe('source SDK account-scoped replacement signing', () => {
           expect(dynamicQuote).not.toHaveBeenCalled();
         } else {
           expect(dynamicQuote).toHaveBeenCalledTimes(2);
-          expect(dynamicQuote).toHaveBeenCalledWith(provider);
+          for (const [reader] of dynamicQuote.mock.calls) {
+            expect(await reader!.getBlock('latest')).toEqual({
+              baseFeePerGas: BigNumber.from(0),
+              gasLimit: BigNumber.from(30000000),
+            });
+          }
         }
+        expect(provider.getBlock).toHaveBeenCalledTimes(2);
         expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
       }
     );
+
+    it('rejects a replacement above the chain gas cap before preview or signing', async () => {
+      state.activeNetwork.chainId = 1;
+      const hash = useOriginal(
+        transaction({ type: 0, chainId: 1, gasLimit: BigNumber.from(14000000) })
+      );
+      provider.getBalance.mockResolvedValue(BigNumber.from(10n ** 15n));
+      await expect(
+        sdk.sendTransactionWithEditedFee(hash, true, {
+          ...options(),
+          previewOnly: true,
+        })
+      ).rejects.toThrow('EVM gas limit exceeds the network limit');
+      expectNoSigning();
+    });
 
     it.each([
       { target: payer, type: 0 },
@@ -459,7 +699,6 @@ describe('source SDK account-scoped replacement signing', () => {
         expect(tx.gasLimit).toBe(BigInt(25200));
         if (type === 0) {
           expect(tx.gasPrice).toBe(BigInt(120));
-          expect(provider.getBlock).not.toHaveBeenCalled();
         } else {
           expect(tx.maxFeePerGas).toBe(BigInt(180));
           expect(tx.maxPriorityFeePerGas).toBe(BigInt(30));
@@ -628,7 +867,7 @@ describe('source SDK account-scoped replacement signing', () => {
       const maximumFee = tx.gasLimit * (tx.maxFeePerGas ?? tx.gasPrice!);
       expect(maximumFee.toString()).toBe(APPROVED_MAXIMUM_FEE);
       expect(maximumFee <= BigInt(APPROVED_MAXIMUM_FEE)).toBe(true);
-      expectNoFeeRpc();
+      expectNoFeeRateRpc();
       expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
     });
 
@@ -657,7 +896,7 @@ describe('source SDK account-scoped replacement signing', () => {
           maximumFee: APPROVED_MAXIMUM_FEE,
         });
         expectNoSigning();
-        expectNoFeeRpc();
+        expectNoFeeRateRpc();
       }
     );
 
@@ -667,7 +906,7 @@ describe('source SDK account-scoped replacement signing', () => {
         sdk.sendTransactionWithEditedFee(hash, false, options())
       ).rejects.toThrow();
       expectNoSigning();
-      expectNoFeeRpc();
+      expectNoFeeRateRpc();
     });
 
     it.each(['3023999', APPROVED_MAXIMUM_FEE])(
@@ -1407,53 +1646,60 @@ describe('source SDK account-scoped replacement signing', () => {
   );
 
   it('passes the exact account to the actual keyring credential getter without replacing the vault getter', async () => {
-    const manager: any = new KeyringManager(createTestKeyringHost(), {
-      ...testHardware(),
-      captureEvmSubmission: createTestSubmissionCapture(),
-    });
-    const vault = {
-      activeNetwork: state.activeNetwork,
-      activeAccount: smart,
-      accounts: {
-        ...state.accounts,
-        [payer.type]: {
-          [payer.id]: { address: PAYER, xprv: 'synthetic-payer-ciphertext' },
+    const hardware = testHardware();
+    try {
+      const manager: any = new KeyringManager(createTestKeyringHost(), {
+        ...hardware,
+        captureEvmSubmission: createTestSubmissionCapture(),
+      });
+      const vault = {
+        activeNetwork: state.activeNetwork,
+        activeAccount: smart,
+        accounts: {
+          ...state.accounts,
+          [payer.type]: {
+            [payer.id]: { address: PAYER, xprv: 'synthetic-payer-ciphertext' },
+          },
+          [smart.type]: {
+            [smart.id]: { address: SMART, xprv: 'synthetic-smart-ciphertext' },
+          },
         },
-        [smart.type]: {
-          [smart.id]: { address: SMART, xprv: 'synthetic-smart-ciphertext' },
+      };
+      manager.setVaultStateGetter(() => vault);
+      const replaceGetter = jest.spyOn(manager, 'setVaultStateGetter');
+      manager.sessionPassword = { isCleared: () => false };
+      manager.withSecureData = (read: (password: string) => unknown) =>
+        read('synthetic-session-password');
+      mockAes.decrypt.mockImplementation((ciphertext: string) => ({
+        toString: () => {
+          return ciphertext === 'synthetic-smart-ciphertext'
+            ? ''
+            : 'mocked-private-key';
         },
-      },
-    };
-    manager.setVaultStateGetter(() => vault);
-    const replaceGetter = jest.spyOn(manager, 'setVaultStateGetter');
-    manager.sessionPassword = { isCleared: () => false };
-    manager.withSecureData = (read: (password: string) => unknown) =>
-      read('synthetic-session-password');
-    mockAes.decrypt.mockImplementation((ciphertext: string) => ({
-      toString: () => {
-        return ciphertext === 'synthetic-smart-ciphertext'
-          ? ''
-          : 'mocked-private-key';
-      },
-    }));
-    jest.mocked(privateKeyToAccount).mockReturnValue({ address: PAYER } as any);
-    Object.defineProperty(manager.ethereumTransaction, 'web3Provider', {
-      get: () => provider,
-    });
-    const result =
-      await manager.ethereumTransaction.sendTransactionWithEditedFee(
-        ORIGINAL,
-        false,
-        options()
+      }));
+      jest
+        .mocked(privateKeyToAccount)
+        .mockReturnValue({ address: PAYER } as any);
+      Object.defineProperty(manager.ethereumTransaction, 'web3Provider', {
+        get: () => provider,
+      });
+      const result =
+        await manager.ethereumTransaction.sendTransactionWithEditedFee(
+          ORIGINAL,
+          false,
+          options()
+        );
+      expect(mockAes.decrypt).toHaveBeenCalledWith(
+        'synthetic-payer-ciphertext',
+        'synthetic-session-password'
       );
-    expect(mockAes.decrypt).toHaveBeenCalledWith(
-      'synthetic-payer-ciphertext',
-      'synthetic-session-password'
-    );
-    expect(result).toMatchObject({ isSpeedUp: true, transaction: response });
-    expect(replaceGetter).not.toHaveBeenCalled();
-    expect(vault.activeAccount).toBe(smart);
-    expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ isSpeedUp: true, transaction: response });
+      expect(replaceGetter).not.toHaveBeenCalled();
+      expect(vault.activeAccount).toBe(smart);
+      expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
+    } finally {
+      await hardware.hardwareManager.destroy();
+    }
   });
 
   it.each([0, 1, 2])(
@@ -1601,7 +1847,7 @@ describe('source SDK account-scoped replacement signing', () => {
     expect(provider.sendTransaction).not.toHaveBeenCalled();
   });
 
-  describe('native MAX replacement value preservation', () => {
+  describe('replacement affordability and value preservation', () => {
     const targets = [
       { type: KeyringAccountType.HDAccount, id: 3 },
       { type: KeyringAccountType.Ledger, id: 4 },
@@ -1641,6 +1887,50 @@ describe('source SDK account-scoped replacement signing', () => {
         expect(sendLocalEvmTransaction).not.toHaveBeenCalled();
         expect(ledger.evm.signEVMTransaction).not.toHaveBeenCalled();
         expect(trezor.signEthTransaction).not.toHaveBeenCalled();
+        expect(provider.sendTransaction).not.toHaveBeenCalled();
+      }
+    );
+    it.each([
+      {
+        type: 0,
+        data: '0x',
+        code: 'REPLACEMENT_VALUE_WOULD_CHANGE',
+      },
+      { type: 2, data: '0x1234', code: 'CONTRACT_CALL_MAX_SEND' },
+    ])(
+      'rejects an unaffordable type $type replacement even when the original used well below 95% of balance',
+      async ({ type, data, code }) => {
+        const hash = useOriginal(transaction({ type, data }));
+        // The original costs 2,100,007 wei. The replacement costs 3,024,007.
+        provider.getBalance.mockResolvedValueOnce(BigNumber.from(3024007));
+        const preview = await sdk.sendTransactionWithEditedFee(
+          hash,
+          type === 0,
+          { ...options(), previewOnly: true }
+        );
+        expect(preview).toEqual({
+          isSpeedUp: false,
+          maximumFee: APPROVED_MAXIMUM_FEE,
+        });
+
+        // An exact prior approval does not authorize an unaffordable send.
+        provider.getBalance.mockResolvedValue(BigNumber.from(3024006));
+        const unavailable = { isSpeedUp: false, error: true, code };
+        await expect(
+          sdk.sendTransactionWithEditedFee(hash, type === 0, {
+            ...options(),
+            approvedMaximumFee: preview.maximumFee,
+          })
+        ).resolves.toMatchObject(unavailable);
+        await expect(
+          sdk.sendTransactionWithEditedFee(hash, type === 0, {
+            ...options(),
+            previewOnly: true,
+          })
+        ).resolves.toMatchObject(unavailable);
+        expect(getKey).not.toHaveBeenCalled();
+        expect(sendLocalEvmTransaction).not.toHaveBeenCalled();
+        expect(beforeBroadcast).not.toHaveBeenCalled();
         expect(provider.sendTransaction).not.toHaveBeenCalled();
       }
     );

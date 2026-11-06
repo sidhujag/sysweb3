@@ -75,6 +75,7 @@ export type {
   KeyringStoragePort,
 } from './keyring-core';
 export type {
+  EvmRetainedCancellationOrigin,
   IKeyringAccountState,
   SyscoinOwnedReadOptions,
   SyscoinOwnedSubmissionOptions,

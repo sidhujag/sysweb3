@@ -1,6 +1,10 @@
 import { Transaction } from 'ethers/transaction';
 
-import type { KeyringAccountType } from '../types';
+import type {
+  EvmRetainedCancellationOrigin,
+  EvmWalletNonce,
+  KeyringAccountType,
+} from '../types';
 
 export type EvmSubmissionContext = Readonly<{
   account: Readonly<{ id: number; type: string; address: string }>;
@@ -12,6 +16,8 @@ export type EvmSubmissionContext = Readonly<{
   }>;
   operation: 'send' | 'cancel' | 'speed-up' | 'erc20' | 'erc721' | 'erc1155';
   originalHash?: string;
+  origin?: EvmRetainedCancellationOrigin;
+  walletNonce?: EvmWalletNonce;
 }>;
 
 /** Signed wire bytes only; never a key, password or mutable transaction request. */
@@ -25,11 +31,29 @@ export type EvmSignedSubmission = Readonly<{
   type: number | null;
 }>;
 
+/** The transport calls this after preflight, immediately around synchronous wire initiation. */
+export type AdmitEvmSignedDispatch<T> = (
+  initiate: () => Promise<T>,
+  preflight?: () => Promise<void>
+) => Promise<T>;
+export type EvmSignedBroadcast<T> = (
+  request: Readonly<{
+    rawTransaction: string;
+    admit: AdmitEvmSignedDispatch<T>;
+  }>
+) => Promise<T>;
+
 export type EvmSubmissionLifecycle = Readonly<{
   /** Synchronous host wallet/session/revision check, including A -> B -> A. */
   assertCurrent: () => void;
   /** Resolve only after durable acknowledgement. A rejection never dispatches. */
   persistSigned: (record: EvmSignedSubmission) => Promise<void>;
+  /** Admit the exact retained record, releasing the owner before the remote response. */
+  dispatchSigned: <T>(
+    record: EvmSignedSubmission,
+    initiate: () => Promise<T>,
+    preflight: () => Promise<void>
+  ) => Promise<T>;
 }>;
 export type CaptureEvmSubmission = (
   context: EvmSubmissionContext
@@ -41,6 +65,7 @@ export type EvmSubmissionBoundary = Readonly<{
   context: EvmSubmissionContext;
   assertCurrent: () => void;
   persistSigned: (record: EvmSignedSubmission) => Promise<void>;
+  dispatchSigned: EvmSubmissionLifecycle['dispatchSigned'];
 }>;
 
 const capturedBoundaries = new WeakSet<EvmSubmissionBoundary>();
@@ -64,12 +89,39 @@ export function captureEvmSubmission(
   assertCurrent: () => void,
   capture: CaptureEvmSubmission
 ): EvmSubmissionBoundary {
+  const { origin, walletNonce } = input;
+  let approvedWalletNonce: EvmWalletNonce | undefined;
+  if (walletNonce !== undefined) {
+    if (
+      !walletNonce ||
+      typeof walletNonce !== 'object' ||
+      Array.isArray(walletNonce)
+    )
+      throw new TypeError('Invalid wallet EVM nonce approval');
+    const { nonce, source } = walletNonce;
+    if (
+      !Number.isSafeInteger(nonce) ||
+      nonce < 0 ||
+      (source !== 'automatic' && source !== 'manual')
+    )
+      throw new TypeError('Invalid wallet EVM nonce approval');
+    approvedWalletNonce = Object.freeze({ nonce, source });
+  }
   const context: EvmSubmissionContext = Object.freeze({
     account: Object.freeze({ ...input.account }),
     network: Object.freeze({ ...input.network }),
     operation: input.operation,
+    ...(approvedWalletNonce ? { walletNonce: approvedWalletNonce } : {}),
     ...(input.originalHash !== undefined
       ? { originalHash: input.originalHash }
+      : {}),
+    ...(origin
+      ? {
+          origin: Object.freeze({
+            ...origin,
+            feeFloor: Object.freeze({ ...origin.feeFloor }),
+          }),
+        }
       : {}),
   });
   assertSynchronous(assertCurrent);
@@ -78,11 +130,13 @@ export function captureEvmSubmission(
   const lifecycle = capture(context);
   const hostGuard = lifecycle?.assertCurrent;
   const persistSigned = lifecycle?.persistSigned;
+  const dispatchSigned = lifecycle?.dispatchSigned;
   if (
     !lifecycle ||
     typeof lifecycle !== 'object' ||
     typeof hostGuard !== 'function' ||
-    typeof persistSigned !== 'function'
+    typeof persistSigned !== 'function' ||
+    typeof dispatchSigned !== 'function'
   ) {
     if (lifecycle && typeof (lifecycle as any).then === 'function') {
       void Promise.resolve(lifecycle).catch(() => undefined);
@@ -100,6 +154,7 @@ export function captureEvmSubmission(
     context,
     assertCurrent: guard,
     persistSigned,
+    dispatchSigned,
   }) as EvmSubmissionBoundary;
   capturedBoundaries.add(boundary);
   return boundary;
@@ -173,7 +228,7 @@ export function assertSignedEvmTransactionMatches(
 /** Submit software-signed bytes through the captured durable boundary. */
 export function submitSignedEvmTransaction<T>(
   rawTransaction: string,
-  broadcast: (rawTransaction: string) => Promise<T>,
+  broadcast: EvmSignedBroadcast<T>,
   boundary: EvmSubmissionBoundary,
   beforeBroadcast: (() => void) | undefined,
   expectedUnsignedTransaction: string
@@ -191,7 +246,7 @@ export function submitSignedEvmTransaction<T>(
 /** @internal Device signatures always require a fresh live chain probe after persistence. */
 export function submitSignedHardwareEvmTransaction<T>(
   rawTransaction: string,
-  broadcast: (rawTransaction: string) => Promise<T>,
+  broadcast: EvmSignedBroadcast<T>,
   boundary: EvmSubmissionBoundary,
   beforeBroadcast: (() => void) | undefined,
   expectedUnsignedTransaction: string,
@@ -214,7 +269,7 @@ const hardwareAccountTypes = ['Ledger', 'Trezor'] satisfies readonly `${
 /** The common signed-byte dispatch boundary. No nonce/fee selection or retry. */
 async function submit<T>(
   rawTransaction: string,
-  broadcast: (rawTransaction: string) => Promise<T>,
+  broadcast: EvmSignedBroadcast<T>,
   boundary: EvmSubmissionBoundary,
   beforeBroadcast: (() => void) | undefined,
   expectedUnsignedTransaction: string,
@@ -243,6 +298,9 @@ async function submit<T>(
     );
     if (tx.chainId !== BigInt(boundary.context.network.chainId))
       throw new Error('Signed EVM submission does not match captured context');
+    const approvedNonce = boundary.context.walletNonce?.nonce;
+    if (approvedNonce !== undefined && tx.nonce !== approvedNonce)
+      throw new Error('Signed EVM nonce does not match wallet approval');
     hash = tx.hash!;
     const record: EvmSignedSubmission = Object.freeze({
       context: boundary.context,
@@ -260,14 +318,63 @@ async function submit<T>(
       );
     await acknowledgement;
     check();
-    if (admission.mode === 'hardware') {
-      await admission.verifyCurrentChain();
+    let open = true;
+    let requested = false;
+    const assertDispatchOpen = () => {
+      if (!open || dispatched)
+        throw new Error('Invalid EVM dispatch admission');
       check();
+    };
+    try {
+      const result = await broadcast(
+        Object.freeze({
+          rawTransaction,
+          admit: (
+            initiate: () => Promise<T>,
+            preflight?: () => Promise<void>
+          ) => {
+            if (
+              !open ||
+              requested ||
+              typeof initiate !== 'function' ||
+              (preflight !== undefined && typeof preflight !== 'function')
+            )
+              throw new Error('Invalid EVM dispatch admission');
+            requested = true;
+            let preflightStarted = false;
+            let preflightComplete = false;
+            return boundary.dispatchSigned(
+              record,
+              () => {
+                assertDispatchOpen();
+                if (!preflightComplete)
+                  throw new Error('EVM dispatch preflight was not completed');
+                if (beforeBroadcast) assertSynchronous(beforeBroadcast);
+                check();
+                dispatched = true;
+                return initiate();
+              },
+              async () => {
+                assertDispatchOpen();
+                if (preflightStarted)
+                  throw new Error('EVM dispatch preflight already started');
+                preflightStarted = true;
+                if (admission.mode === 'hardware')
+                  await admission.verifyCurrentChain();
+                assertDispatchOpen();
+                if (preflight) await preflight();
+                assertDispatchOpen();
+                preflightComplete = true;
+              }
+            );
+          },
+        })
+      );
+      if (!dispatched) throw new Error('EVM dispatch admission was not used');
+      return result;
+    } finally {
+      open = false;
     }
-    if (beforeBroadcast) assertSynchronous(beforeBroadcast);
-    check();
-    dispatched = true;
-    return await broadcast(rawTransaction);
   } catch (cause) {
     const failure = Object.freeze({
       transactionNotBroadcast: !dispatched,

@@ -24,6 +24,7 @@ import { TrezorKeyring } from './trezor';
 
 import type { KeyringCore } from './keyring-core';
 import type { PreparedEvmTransaction } from './transactions/prepared-evm';
+import type { OwnedUtxoRpcVerification } from '@sidhujag/sysweb3-network';
 
 export type AccessListish =
   | Array<{ address: string; storageKeys: string[] }>
@@ -60,10 +61,16 @@ export type EvmLocalAccount = {
   publicKey: string;
 };
 
+export type EvmWalletNonce = Readonly<{
+  nonce: number;
+  source: 'automatic' | 'manual';
+}>;
+
 export interface IEvmSendOptions {
   /** Synchronous host admission, rechecked immediately before signing and broadcast. */
   assertCurrent: () => void;
   mode: 'reviewed-native' | 'specialized';
+  walletNonce?: EvmWalletNonce;
 }
 
 export type EvmFormattedSendArguments =
@@ -94,10 +101,30 @@ type EvmOriginalAdmission<Original> = {
 export type IEvmReplacementOptions = EvmReplacementFeeApproval &
   EvmOriginalAdmission<TransactionResponse> & {
     beforeBroadcast?: () => void;
+    /** Exact signed original obtained from the host's protected cancellation lineage. */
+    retainedCancellation?: string;
   };
 
+export type EvmRetainedCancellationOrigin = Readonly<{
+  kind: 'retained';
+  rawTransaction: string;
+  nonce: number;
+  tipHash: string;
+  feeFloor: Readonly<
+    | { type: 0; gasPrice: bigint }
+    | { type: 2; maxFeePerGas: bigint; maxPriorityFeePerGas: bigint }
+  >;
+}>;
+
 export type IEvmCancellationOptions = EvmReplacementFeeApproval &
-  EvmOriginalAdmission<TransactionResponse | null>;
+  (
+    | (EvmOriginalAdmission<TransactionResponse | null> & { origin?: never })
+    | (Omit<EvmOriginalAdmission<never>, 'validateOriginal'> & {
+        /** The host owns the protected journal lineage and its live admission. */
+        origin: EvmRetainedCancellationOrigin;
+        validateOriginal?: never;
+      })
+  );
 
 // Version type is now replaced by SignTypedDataVersion from @metamask/eth-sig-util
 
@@ -222,6 +249,26 @@ export type SyscoinOwnedSubmissionOptions = SyscoinOwnedReadOptions &
     prepare: (descriptor: SyscoinSubmissionDescriptor) => Promise<void>;
   }>;
 
+export type SyscoinRetainedSubmissionOwner = Readonly<{
+  account: Readonly<{ id: number; type: string; xpub: string }>;
+  chainId: number;
+  genesisHash: string;
+  slip44: number;
+}>;
+
+export type SyscoinRetainedSubmission = SyscoinSubmissionDescriptor &
+  Readonly<{ owner: SyscoinRetainedSubmissionOwner }>;
+
+/** The trusted wallet host reads the authenticated journal, not a UI payload. */
+export type SyscoinRetainedSubmissionOptions = SyscoinOwnedSubmissionOptions &
+  Pick<OwnedUtxoRpcVerification, 'readJson'> &
+  Readonly<{
+    readRetained: (
+      owner: SyscoinRetainedSubmissionOwner,
+      txid: string
+    ) => Promise<SyscoinRetainedSubmission | undefined>;
+  }>;
+
 export interface ISyscoinTransactions {
   getEstimateSysTransactionFee: (
     {
@@ -256,6 +303,10 @@ export interface ISyscoinTransactions {
   sendTransaction: (
     rawTransaction: string,
     authority: SyscoinOwnedSubmissionOptions
+  ) => Promise<ITxid>;
+  replayRetainedTransaction: (
+    txid: string,
+    authority: SyscoinRetainedSubmissionOptions
   ) => Promise<ITxid>;
   signPSBT: (
     {
@@ -499,6 +550,8 @@ export interface ILatestUpdateForSysAccount {
 }
 
 export type IReviewedEvmTokenApproval = Readonly<{
+  /** Nonce selected by the host's ordinary wallet policy before signing. */
+  nonce: number;
   assertCurrent: () => void;
   signal: AbortSignal;
 }>;
