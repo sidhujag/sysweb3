@@ -4,17 +4,18 @@ jest.resetModules();
 
 import { Interface, Wallet, Transaction } from 'ethers';
 
-import { admitTestSignedDispatch } from '../../helpers/evm-submission';
 import { BigNumber, serializeTransaction } from '../../../src/ethers-v6';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import { evmSubmissionFailure } from '../../../src/transactions/evm-submission';
 import { KeyringAccountType } from '../../../src/types';
+import { admitTestSignedDispatch } from '../../helpers/evm-submission';
 
 import type {
   CaptureEvmSubmission,
   EvmSignedSubmission,
 } from '../../../src/transactions/evm-submission';
 const tokenApproval = {
+  nonce: 0,
   assertCurrent: () => undefined,
   signal: new AbortController().signal,
 };
@@ -218,7 +219,10 @@ function fixture(kind: KeyringAccountType, capture?: CaptureEvmSubmission) {
           maxPriorityFeePerGas: 1,
         } as any,
         false,
-        specializedApproval
+        {
+          ...specializedApproval,
+          walletNonce: { nonce: 7, source: 'automatic' },
+        }
       );
     const request = {
       networkUrl: network.url,
@@ -312,6 +316,19 @@ for (const kind of kinds)
           expect(authority.signal).toBe(tokenApproval.signal);
       }
       expect(saved.context.operation).toBe(operation);
+      if (operation.startsWith('erc') || operation === 'send') {
+        const nonce = operation === 'send' ? 7 : 0;
+        expect(saved.context.walletNonce).toEqual({
+          nonce,
+          source: 'automatic',
+        });
+        expect(Object.isFrozen(saved.context.walletNonce)).toBe(true);
+        expect(saved.nonce).toBe(nonce);
+        expect(Transaction.from(saved.rawTransaction).nonce).toBe(nonce);
+        if (hardware)
+          expect(Transaction.from(f.device.mock.calls[0][0]).nonce).toBe(nonce);
+        expect(f.provider.getTransactionCount).not.toHaveBeenCalled();
+      }
       expect(saved.context.account.type).toBe(kind);
       expect(saved.context.account.address).toBe(wallet.address);
       expect(saved.rawTransaction).not.toContain(key);
@@ -362,9 +379,114 @@ for (const kind of kinds)
     });
   }
 
+it('preserves the reviewed native nonce through capture when the caller object changes', async () => {
+  const persistSigned = jest.fn(async () => undefined);
+  const capture = jest.fn(() => ({
+    assertCurrent: () => undefined,
+    dispatchSigned: admitTestSignedDispatch,
+    persistSigned,
+  }));
+  const { sdk, network, provider } = fixture(
+    KeyringAccountType.HDAccount,
+    capture
+  );
+  const nonceApproval = { nonce: 0, source: 'manual' as const };
+  await sdk.sendFormattedTransaction(
+    {
+      from: wallet.address,
+      to,
+      chainId: String(network.chainId),
+      nonce: '0',
+      value: '123',
+      gasLimit: '42000',
+      data: '0x',
+      type: 2,
+      maxFeePerGas: '3',
+      maxPriorityFeePerGas: '1',
+    },
+    false,
+    {
+      mode: 'reviewed-native',
+      assertCurrent() {
+        nonceApproval.nonce = 99;
+      },
+      walletNonce: nonceApproval,
+    }
+  );
+  const expected = { nonce: 0, source: 'manual' };
+  expect(capture).toHaveBeenCalledWith(
+    expect.objectContaining({ walletNonce: expected })
+  );
+  expect(persistSigned).toHaveBeenCalledWith(
+    expect.objectContaining({
+      nonce: 0,
+      context: expect.objectContaining({ walletNonce: expected }),
+    })
+  );
+  expect(
+    Transaction.from(provider.sendTransaction.mock.calls[0][0]).nonce
+  ).toBe(0);
+  expect(provider.getTransactionCount).not.toHaveBeenCalled();
+});
+
+it.each([undefined, 1])(
+  'rejects a missing or substituted formatted nonce %s before hardware signing',
+  async (nonce) => {
+    const persistSigned = jest.fn(async () => undefined);
+    const f = fixture(KeyringAccountType.Ledger, () => ({
+      assertCurrent: () => undefined,
+      dispatchSigned: admitTestSignedDispatch,
+      persistSigned,
+    }));
+    await expect(
+      f.sdk.sendFormattedTransaction(
+        {
+          from: wallet.address,
+          to,
+          chainId: f.network.chainId,
+          value: 123,
+          nonce,
+          gasLimit: 42000,
+          maxFeePerGas: 3,
+          maxPriorityFeePerGas: 1,
+        } as any,
+        false,
+        { ...specializedApproval, walletNonce: { nonce: 0, source: 'manual' } }
+      )
+    ).rejects.toThrow('EVM transaction nonce does not match wallet approval');
+    expect(f.provider.getTransactionCount).not.toHaveBeenCalled();
+    expect(f.device).not.toHaveBeenCalled();
+    expect(persistSigned).not.toHaveBeenCalled();
+    expect(f.provider.sendTransaction).not.toHaveBeenCalled();
+  }
+);
+
+it('lets the owning dispatch reject the exact approved token candidate after persistence', async () => {
+  const persistSigned = jest.fn(async () => undefined);
+  const dispatchSigned = jest.fn(async (_record, _initiate, preflight) => {
+    await preflight();
+    throw Error('approved nonce became stale');
+  });
+  const f = fixture(KeyringAccountType.Trezor, () => ({
+    assertCurrent: () => undefined,
+    dispatchSigned,
+    persistSigned,
+  }));
+  await expect(f.submit('erc1155')).rejects.toMatchObject({
+    message: 'approved nonce became stale',
+    transactionNotBroadcast: true,
+  });
+  expect(dispatchSigned.mock.calls[0][0]).toBe(persistSigned.mock.calls[0][0]);
+  expect(dispatchSigned.mock.calls[0][0]).toMatchObject({
+    nonce: 0,
+    context: { walletNonce: { nonce: 0, source: 'automatic' } },
+  });
+  expect(f.provider.sendTransaction).not.toHaveBeenCalled();
+});
+
 it('keeps exact ERC20 amounts on the ERC20 capture and persistence route', async () => {
-  const nonceRead = deferred();
-  const nonceReady = deferred();
+  const chainRead = deferred();
+  const chainReady = deferred();
   const stored = deferred();
   const acknowledged = deferred();
   let saved!: EvmSignedSubmission;
@@ -381,10 +503,9 @@ it('keeps exact ERC20 amounts on the ERC20 capture and persistence route', async
     KeyringAccountType.HDAccount,
     capture
   );
-  provider.getTransactionCount.mockImplementationOnce(async () => {
-    nonceRead.resolve();
-    await nonceReady.promise;
-    return 7;
+  provider.verifyConfiguredChainId.mockImplementationOnce(async () => {
+    chainRead.resolve();
+    await chainReady.promise;
   });
   const sending = sdk.sendSignedErc20Transaction(
     {
@@ -399,14 +520,15 @@ it('keeps exact ERC20 amounts on the ERC20 capture and persistence route', async
     },
     tokenApproval
   );
-  await Promise.race([nonceRead.promise, sending]);
+  await Promise.race([chainRead.promise, sending]);
   expect(capture).toHaveBeenCalledWith(
     expect.objectContaining({ operation: 'erc20' })
   );
   expect(provider.sendTransaction).not.toHaveBeenCalled();
-  nonceReady.resolve();
+  chainReady.resolve();
   await Promise.race([stored.promise, sending]);
   expect(saved.context.operation).toBe('erc20');
+  expect(provider.getTransactionCount).not.toHaveBeenCalled();
   const tx = Transaction.from(saved.rawTransaction);
   const transfer = new Interface(['function transfer(address,uint256)']);
   expect(Array.from(transfer.decodeFunctionData('transfer', tx.data))).toEqual([
@@ -439,6 +561,14 @@ it('rejects absent or async review, a different RPC and missing reviewed fees be
   await expect(
     (f.sdk.sendSignedErc20Transaction as any)(approved)
   ).rejects.toThrow('approval required');
+  for (const nonce of [undefined, -1, 1.25, '0', Number.MAX_SAFE_INTEGER + 1]) {
+    await expect(
+      f.sdk.sendSignedErc20Transaction(approved, {
+        ...tokenApproval,
+        nonce: nonce as number,
+      })
+    ).rejects.toThrow('Invalid ERC20 transaction approval nonce');
+  }
   await expect(
     f.sdk.sendSignedErc20Transaction(approved, {
       ...tokenApproval,

@@ -60,6 +60,32 @@ const capture = () =>
     createTestSubmissionCapture()
   );
 
+it('rejects a valid signed envelope that changes the captured wallet nonce', async () => {
+  const persistSigned = jest.fn(async () => undefined);
+  const dispatchSigned = jest.fn(admitTestSignedDispatch);
+  const boundary = captureEvmSubmission(
+    { ...context(), walletNonce: { nonce: 0, source: 'automatic' } },
+    () => undefined,
+    () => ({ assertCurrent: () => undefined, persistSigned, dispatchSigned })
+  );
+  const broadcast = jest.fn(async () => undefined);
+  await expect(
+    submitSignedEvmTransaction(
+      await raw(),
+      broadcast,
+      boundary,
+      undefined,
+      expected()
+    )
+  ).rejects.toMatchObject({
+    message: 'Signed EVM nonce does not match wallet approval',
+    transactionNotBroadcast: true,
+  });
+  expect(persistSigned).not.toHaveBeenCalled();
+  expect(dispatchSigned).not.toHaveBeenCalled();
+  expect(broadcast).not.toHaveBeenCalled();
+});
+
 it.each(['Ledger', 'Trezor'])(
   'requires the internal chain-verified dispatcher for a captured %s account',
   async (type) => {

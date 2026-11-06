@@ -13,6 +13,7 @@ import { EthereumTransactions } from '../../../src/transactions/ethereum';
 
 import type { KeyringStoragePort } from '../../../src/software';
 const tokenApproval = {
+  nonce: 7,
   assertCurrent: () => undefined,
   signal: new AbortController().signal,
 };

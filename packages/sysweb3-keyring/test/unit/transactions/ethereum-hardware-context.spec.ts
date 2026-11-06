@@ -17,6 +17,7 @@ import {
   createTestSubmissionCapture,
 } from '../../helpers/evm-submission';
 const tokenApproval = {
+  nonce: 7,
   assertCurrent: () => undefined,
   signal: new AbortController().signal,
 };
@@ -878,12 +879,12 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
           }
         );
 
-        it('stops before hardware when selection changes during pending nonce read', async () => {
+        it('stops before hardware when selection changes during chain verification', async () => {
           const entered = deferred<void>();
-          const nonce = deferred<number>();
-          provider.getTransactionCount.mockImplementationOnce(() => {
+          const reply = deferred<void>();
+          provider.verifyConfiguredChainId.mockImplementationOnce(() => {
             entered.resolve();
-            return nonce.promise;
+            return reply.promise;
           });
           const signing = sendToken();
           const rejection = expect(signing).rejects.toThrow(
@@ -891,7 +892,7 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
           );
           await entered.promise;
           state.activeAccountId = 1;
-          nonce.resolve(7);
+          reply.resolve();
           await rejection;
           expect(device).not.toHaveBeenCalled();
           expect(provider.sendTransaction).not.toHaveBeenCalled();
@@ -920,29 +921,26 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
               expect(response.hash).toBe(tx.hash);
             });
 
-            it.each(['getTransactionCount', 'verifyConfiguredChainId'])(
-              'refuses a stale software result after %s is pending',
-              async (method) => {
-                const entered = deferred<void>();
-                const reply = deferred<any>();
-                provider[method].mockImplementationOnce(() => {
-                  entered.resolve();
-                  return reply.promise;
-                });
-                const signing = sendToken();
-                const rejection = expect(signing).rejects.toThrow(
-                  'Wallet signing context changed'
-                );
-                await entered.promise;
-                state.activeAccountId = 1;
-                reply.resolve(method === 'getTransactionCount' ? 7 : undefined);
-                await rejection;
-                expect(getKey).toHaveBeenCalledTimes(1);
-                expect(device).not.toHaveBeenCalled();
-                expect(provider.sendTransaction).not.toHaveBeenCalled();
-                expect(otherProvider.sendTransaction).not.toHaveBeenCalled();
-              }
-            );
+            it('refuses a stale software result while chain verification is pending', async () => {
+              const entered = deferred<void>();
+              const reply = deferred<void>();
+              provider.verifyConfiguredChainId.mockImplementationOnce(() => {
+                entered.resolve();
+                return reply.promise;
+              });
+              const signing = sendToken();
+              const rejection = expect(signing).rejects.toThrow(
+                'Wallet signing context changed'
+              );
+              await entered.promise;
+              state.activeAccountId = 1;
+              reply.resolve(method === 'getTransactionCount' ? 7 : undefined);
+              await rejection;
+              expect(getKey).toHaveBeenCalledTimes(1);
+              expect(device).not.toHaveBeenCalled();
+              expect(provider.sendTransaction).not.toHaveBeenCalled();
+              expect(otherProvider.sendTransaction).not.toHaveBeenCalled();
+            });
           });
       }
     );
