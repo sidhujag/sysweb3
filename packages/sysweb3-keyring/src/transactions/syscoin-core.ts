@@ -1,4 +1,8 @@
-import { INetworkType } from '@sidhujag/sysweb3-network';
+import {
+  findUtxoCoinByRegistration,
+  INetworkType,
+} from '@sidhujag/sysweb3-network';
+import { verifyOwnedUtxoRpc } from '@sidhujag/sysweb3-network/cjs/ownedUtxoRpc.js';
 import { ITxid } from '@sidhujag/sysweb3-utils';
 import { Psbt } from 'bitcoinjs-lib';
 import * as syscoinjs from 'syscoinjs-lib';
@@ -12,6 +16,7 @@ import {
   accountType,
   type SyscoinOwnedReadOptions,
   type SyscoinOwnedSubmissionOptions,
+  type SyscoinRetainedSubmissionOptions,
 } from '../types';
 import {
   ExcludedOutpoint,
@@ -58,6 +63,55 @@ export const createHardwareSignerUnavailableError = (hardware: string) =>
   Object.assign(new Error(`${hardware} signer is unavailable in this host`), {
     code: 'HARDWARE_SIGNER_UNAVAILABLE',
   });
+
+const notDispatched = () =>
+  Object.assign(new Error('UTXO submission was not dispatched'), {
+    code: 'UTXO_SUBMISSION_NOT_DISPATCHED',
+    transactionNotBroadcast: true,
+  });
+
+function retainedBlockbookBase(url: string): string {
+  const path = '/api/v2/sendtx/';
+  const maxBaseLength = 2048;
+  if (
+    typeof url !== 'string' ||
+    url.length > maxBaseLength + path.length ||
+    /[\s\\?#]/.test(url)
+  )
+    throw notDispatched();
+  const target = new URL(url);
+  if (
+    target.href !== url ||
+    !['https:', 'http:'].includes(target.protocol) ||
+    target.username ||
+    target.password ||
+    /[?#]/.test(target.href) ||
+    !target.pathname.endsWith(path)
+  )
+    throw notDispatched();
+  const prefix = target.pathname.slice(0, -path.length);
+  // The owned dispatcher strips one trailing slash from the base.
+  target.pathname = prefix.endsWith('/') ? `${prefix}/` : prefix || '/';
+  const base = target.href;
+  target.pathname = target.pathname.replace(/\/$/, '') + path;
+  if (base.length > maxBaseLength || target.href !== url) throw notDispatched();
+  return base;
+}
+
+async function dispatchOwnedUtxo(
+  backend: string,
+  rawTransaction: string,
+  authority: SyscoinOwnedSubmissionOptions
+): Promise<ITxid> {
+  // Keep the exact admission, synchronous POST guard and ACK in SyscoinJS.
+  const { result: txid } = await syscoinjs.utils.sendRawTransaction(
+    backend,
+    rawTransaction,
+    undefined,
+    authority
+  );
+  return { txid };
+}
 
 const sweepError = (code: string, message: string) => ({
   error: true,
@@ -1123,21 +1177,121 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
         throw new Error('Missing UTXO submission admission');
       ({ read } = this.captureOwnedRead({ assertCurrent, fetch, signal }));
     } catch {
-      throw Object.assign(new Error('UTXO submission was not dispatched'), {
-        code: 'UTXO_SUBMISSION_NOT_DISPATCHED',
-        transactionNotBroadcast: true,
-      });
+      throw notDispatched();
     }
 
     // SyscoinJS owns the admission, final synchronous guard and exact ACK.
     // The POST uses the captured transport directly so a matching ACK can
     // still be observed after a host context change without a signal abort.
-    const { result: txid } = await syscoinjs.utils.sendRawTransaction(
-      read.network.url,
-      rawTransaction,
-      undefined,
-      { assertCurrent: read.assertCurrent, fetch, prepare, signal }
-    );
-    return { txid };
+    return dispatchOwnedUtxo(read.network.url, rawTransaction, {
+      assertCurrent: read.assertCurrent,
+      fetch,
+      prepare,
+      signal,
+    });
+  };
+
+  /** Replay only the bytes and destination authenticated by the selected wallet. */
+  public replayRetainedTransaction = async (
+    txid: string,
+    authority: SyscoinRetainedSubmissionOptions
+  ): Promise<ITxid> => {
+    try {
+      if (
+        typeof txid !== 'string' ||
+        !/^[0-9a-f]{64}$/.test(txid) ||
+        !authority
+      )
+        throw notDispatched();
+      const { assertCurrent, fetch, signal, prepare, readJson, readRetained } =
+        authority;
+      if (
+        typeof prepare !== 'function' ||
+        typeof readJson !== 'function' ||
+        typeof readRetained !== 'function'
+      )
+        throw notDispatched();
+
+      const { account, accountId, accountType, read } = this.captureOwnedRead({
+        assertCurrent,
+        fetch,
+        signal,
+      });
+      const { chainId, slip44, utxoBackendChain: backendChain } = read.network;
+      const registration = Object.freeze({ chainId, slip44 });
+      const coin = findUtxoCoinByRegistration(registration);
+      if (
+        !coin ||
+        !/^[0-9a-f]{64}$/.test(coin.hashGenesisBlock) ||
+        typeof backendChain !== 'string' ||
+        !/^[a-z0-9_-]{1,32}$/i.test(backendChain) ||
+        !account.xpub
+      )
+        throw notDispatched();
+      const { hashGenesisBlock: genesisHash } = coin;
+      const owner = Object.freeze({
+        ...registration,
+        genesisHash,
+        account: Object.freeze({
+          id: accountId,
+          type: accountType,
+          xpub: account.xpub,
+        }),
+      });
+      const check = () => {
+        read.assertCurrent();
+        if (this.getState().activeNetwork.utxoBackendChain !== backendChain)
+          throw notDispatched();
+      };
+      check();
+      const retained = await readRetained(owner, txid);
+      check();
+      if (
+        !retained ||
+        retained.txid !== txid ||
+        retained.owner?.chainId !== chainId ||
+        retained.owner.slip44 !== slip44 ||
+        retained.owner.genesisHash !== genesisHash ||
+        retained.owner.account?.id !== accountId ||
+        retained.owner.account.type !== accountType ||
+        retained.owner.account.xpub !== account.xpub
+      )
+        throw notDispatched();
+      const { url, rawTransaction } = retained;
+      const backend = retainedBlockbookBase(url);
+      // Return the dispatch promise directly so a lost ACK remains unknown.
+      return dispatchOwnedUtxo(backend, rawTransaction, {
+        assertCurrent: check,
+        fetch,
+        signal,
+        async prepare(descriptor) {
+          if (
+            descriptor.txid !== txid ||
+            descriptor.url !== url ||
+            descriptor.rawTransaction !== rawTransaction
+          )
+            throw notDispatched();
+          const verified = await verifyOwnedUtxoRpc(backend, {
+            registration,
+            backendChain,
+            assertCurrent: check,
+            signal,
+            readJson,
+          });
+          if (verified.coin.hashGenesisBlock !== genesisHash)
+            throw notDispatched();
+          verified.assertCurrent();
+          const admitted = prepare(descriptor);
+          if (
+            typeof admitted?.then !== 'function' ||
+            (await admitted) !== undefined
+          )
+            throw notDispatched();
+          verified.assertCurrent();
+        },
+      });
+    } catch {
+      throw notDispatched();
+    }
   };
 }

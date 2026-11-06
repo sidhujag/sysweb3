@@ -10,6 +10,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./classical-public-key": {
+      "types": "./dist/classical-public-key.d.ts",
+      "import": "./dist/classical-public-key.js"
     }
   },
   "files": [
