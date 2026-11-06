@@ -29,6 +29,7 @@ export type EvmFeeData = Readonly<{
 }>;
 
 const MAX_FEE = (1n << 256n) - 1n;
+const MAX_REPLACEMENT_GAS = (1n << 64n) - 1n;
 
 /** A validated limit failed its wire bounds or an activated protocol bound. */
 export class EvmGasLimitError extends Error {
@@ -171,6 +172,96 @@ export function planEvmCancellationFees(input: EvmCancellationFeeInput) {
     maxFeePerGas,
     maxPriorityFeePerGas: bump(priority),
     maximumFee: gasLimit * maxFeePerGas,
+  });
+}
+
+export type EvmSpeedUpFeeInput = Readonly<
+  {
+    chainId: bigint;
+    gasLimit: bigint;
+    /** Present only after authenticating the retained signed cancellation. */
+    retainedCancellationGasLimit?: bigint;
+    sampledBlockGasLimit: bigint;
+    sampledBaseFeePerGas: bigint | null;
+  } & (
+    | { type: 0; gasPrice: bigint }
+    | { type: 2; maxFeePerGas: bigint; maxPriorityFeePerGas: bigint }
+  )
+>;
+
+function speedUpRate(rate: bigint, preserveZero = true): bigint {
+  if (typeof rate !== 'bigint' || rate < 0n || rate > MAX_FEE)
+    throw new Error('Invalid replacement fee');
+  if (rate === 0n && preserveZero) return 0n;
+  const buffered = (rate * 120n) / 100n;
+  const bumped = buffered > rate ? buffered : rate + 1n;
+  if (bumped > MAX_FEE) throw new Error('Invalid replacement fee');
+  return bumped;
+}
+
+/** Fee-only Speed Up policy. Hosts authenticate the original, own any zero-fee
+ * fallback read, and supply the current sampled block limit and base fee. Type 0
+ * describes legacy fee fields, including those of an admitted type 1 envelope.
+ */
+export function planEvmSpeedUpFees(input: EvmSpeedUpFeeInput) {
+  const originalGasLimit = input.gasLimit;
+  if (
+    typeof originalGasLimit !== 'bigint' ||
+    originalGasLimit <= 0n ||
+    originalGasLimit > MAX_REPLACEMENT_GAS
+  )
+    throw new Error('Invalid replacement gas limit');
+  const retained = input.retainedCancellationGasLimit;
+  if (retained !== undefined && retained !== originalGasLimit)
+    throw new Error('Retained cancellation gas limit does not match original');
+  const gasLimit = retained ?? bufferedEvmGasLimit(originalGasLimit);
+  if (gasLimit > MAX_REPLACEMENT_GAS)
+    throw new Error('Invalid replacement gas limit');
+  // Bounds are mandatory even on chains without a protocol-specific ceiling.
+  if (input.sampledBlockGasLimit === undefined)
+    throw new Error('Replacement block gas limit required');
+  assertEvmGasLimit(gasLimit, input.chainId, input.sampledBlockGasLimit);
+  const baseFee =
+    input.sampledBaseFeePerGas === null ? 0n : input.sampledBaseFeePerGas;
+  if (typeof baseFee !== 'bigint' || baseFee < 0n || baseFee > MAX_FEE)
+    throw new Error('Invalid replacement base fee');
+  const maximum = (rate: bigint) => {
+    const fee = gasLimit * rate;
+    if (fee > MAX_FEE) throw new Error('Invalid replacement maximum fee');
+    return fee;
+  };
+  if (input.type === 0) {
+    const bumped = speedUpRate(input.gasPrice);
+    const gasPrice = bumped > baseFee ? bumped : baseFee;
+    return Object.freeze({
+      type: 0 as const,
+      gasLimit,
+      gasPrice,
+      maximumFee: maximum(gasPrice),
+    });
+  }
+  if (input.type !== 2) throw new Error('Invalid replacement fee type');
+  const bumped = speedUpRate(input.maxFeePerGas);
+  if (input.maxPriorityFeePerGas > input.maxFeePerGas)
+    throw new Error('Invalid replacement fee');
+  // A paid replacement must strictly increase both rates. Keep a wholly free
+  // quote free so the host's zero-fee policy and approved ceiling still apply.
+  const maxPriorityFeePerGas = speedUpRate(
+    input.maxPriorityFeePerGas,
+    bumped === 0n && baseFee === 0n
+  );
+  // A valid cap may clip the effective tip. Preserve the reviewed replacement
+  // policy unless the cap would be below the sampled base fee.
+  const maxFeePerGas =
+    bumped < baseFee ? baseFee + maxPriorityFeePerGas : bumped;
+  if (maxPriorityFeePerGas > maxFeePerGas)
+    throw new Error('Invalid replacement fee');
+  return Object.freeze({
+    type: 2 as const,
+    gasLimit,
+    maxFeePerGas,
+    maxPriorityFeePerGas,
+    maximumFee: maximum(maxFeePerGas),
   });
 }
 

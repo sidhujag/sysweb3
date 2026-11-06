@@ -12,6 +12,8 @@ import * as localSigner from '../../../src/transactions/evm-local-signer';
 import { KeyringAccountType } from '../../../src/types';
 import { createTestSubmissionCapture } from '../../helpers/evm-submission';
 
+import type { CaptureEvmSubmission } from '../../../src/transactions/evm-submission';
+
 // Keep real signed-response normalization; the shared fixture omits it.
 jest.mock('../../../src/providers', () => ({
   ...jest.requireActual('../../../src/providers'),
@@ -146,6 +148,8 @@ function fixture(
       };
     }),
   };
+  const capture: CaptureEvmSubmission = createTestSubmissionCapture();
+  const captureSubmission = jest.fn(capture);
   const sdk = new EthereumTransactions(
     () => state.activeNetwork,
     getKey,
@@ -158,7 +162,7 @@ function fixture(
         if (generation !== captured) throw new Error('Session changed');
       };
     },
-    createTestSubmissionCapture()
+    captureSubmission
   );
   const providerAccess = jest.fn(() => currentProvider);
   Object.defineProperty(sdk, 'web3Provider', { get: providerAccess });
@@ -189,6 +193,8 @@ function fixture(
   };
   return {
     sdk,
+    original,
+    captureSubmission,
     state,
     provider,
     providerAccess,
@@ -209,6 +215,186 @@ function fixture(
 }
 
 afterEach(() => jest.restoreAllMocks());
+
+describe.each([true, false])('retained cancellation (legacy=%s)', (legacy) => {
+  it.each(routes)(
+    'uses the journal fee floor and nonce zero for $type',
+    async (targetAccount) => {
+      const f = fixture(legacy, true, { nonce: 0 });
+      f.provider.getTransaction.mockResolvedValue(null);
+      const origin = {
+        kind: 'retained' as const,
+        rawTransaction: f.original.serialized,
+        nonce: 0,
+        tipHash: `0x${'ab'.repeat(32)}`,
+        feeFloor: legacy
+          ? { type: 0 as const, gasPrice: 250n }
+          : { type: 2 as const, maxFeePerGas: 250n, maxPriorityFeePerGas: 30n },
+      };
+      const expected = { ...origin, feeFloor: { ...origin.feeFloor } };
+      const approval = {
+        targetAccount,
+        origin,
+        assertCurrentContext: () => undefined,
+      };
+      const hash = f.original.hash!;
+      const maximumFee = (42_000n * 300n).toString();
+      await expect(
+        f.sdk.cancelSentTransaction(hash, undefined, undefined, {
+          ...approval,
+          previewOnly: true,
+        })
+      ).resolves.toMatchObject({ maximumFee });
+      f.noSigning();
+      expect(f.captureSubmission).not.toHaveBeenCalled();
+      const pending = f.sdk.cancelSentTransaction(hash, undefined, undefined, {
+        ...approval,
+        approvedMaximumFee: maximumFee,
+      });
+      origin.tipHash = `0x${'cd'.repeat(32)}`;
+      if (origin.feeFloor.type === 0) origin.feeFloor.gasPrice = 1000n;
+      else origin.feeFloor.maxFeePerGas = 1000n;
+      await expect(pending).resolves.toMatchObject({ isCanceled: true });
+      expect(f.provider.getTransaction).not.toHaveBeenCalled();
+      expect(f.provider.getGasPrice).toHaveBeenCalledTimes(legacy ? 2 : 0);
+      expect(
+        f.sdk.getFeeDataWithDynamicMaxPriorityFeePerGas
+      ).toHaveBeenCalledTimes(legacy ? 0 : 2);
+      expect(f.sent).toHaveLength(1);
+      expect(f.sent[0]).toMatchObject({
+        type: legacy ? 0 : 2,
+        chainId: BigInt(CHAIN),
+        nonce: 0,
+        from: PAYER,
+        to: PAYER,
+        value: 0n,
+        data: '0x',
+        gasLimit: 42_000n,
+        ...(legacy
+          ? { gasPrice: 300n }
+          : { maxFeePerGas: 300n, maxPriorityFeePerGas: 36n }),
+      });
+      const [context] = f.captureSubmission.mock.calls[0];
+      expect(context).toMatchObject({
+        operation: 'cancel',
+        originalHash: hash,
+        origin: expected,
+      });
+      expect(Object.isFrozen(context.origin)).toBe(true);
+      expect(Object.isFrozen(context.origin?.feeFloor)).toBe(true);
+      if (targetAccount.type === KeyringAccountType.Ledger) {
+        const [{ rawTx }] = f.ledger.evm.signEVMTransaction.mock.calls[0];
+        expect(Transaction.from(`0x${rawTx}`).nonce).toBe(0);
+      }
+    }
+  );
+});
+
+it('refuses a mixed fallback or invalid retained original before fees or signing', async () => {
+  const f = fixture(false, true, { nonce: 0 });
+  const origin = {
+    kind: 'retained' as const,
+    rawTransaction: f.original.serialized,
+    nonce: 0,
+    tipHash: `0x${'ab'.repeat(32)}`,
+    feeFloor: {
+      type: 2 as const,
+      maxFeePerGas: 100n,
+      maxPriorityFeePerGas: 10n,
+    },
+  };
+  const hash = f.original.hash!;
+  const options = {
+    origin,
+    targetAccount: routes[0],
+    assertCurrentContext: () => undefined,
+    approvedMaximumFee: MAXIMUM_FEE,
+  };
+  const invalid = 'Invalid retained cancellation original';
+  for (const bad of [
+    { ...origin, rawTransaction: '0x00' },
+    { ...origin, rawTransaction: f.original.unsignedSerialized },
+    { ...origin, rawTransaction: f.original.serialized.toUpperCase() },
+    { ...origin, nonce: 1 },
+    { ...origin, tipHash: '0x1' },
+    { ...origin, feeFloor: { ...origin.feeFloor, maxFeePerGas: 99n } },
+    { ...origin, feeFloor: { ...origin.feeFloor, maxPriorityFeePerGas: 9n } },
+    { ...origin, feeFloor: { ...origin.feeFloor, maxPriorityFeePerGas: 101n } },
+    { ...origin, feeFloor: { type: 0 as const, gasPrice: 100n } },
+  ])
+    await expect(
+      f.sdk.cancelSentTransaction(hash, false, undefined, {
+        ...options,
+        origin: bad,
+      })
+    ).rejects.toThrow(invalid);
+  await expect(
+    f.sdk.cancelSentTransaction(
+      `0x${'cd'.repeat(32)}`,
+      false,
+      undefined,
+      options
+    )
+  ).rejects.toThrow(invalid);
+  const accessListOriginal = Transaction.from({
+    type: 1,
+    chainId: CHAIN,
+    nonce: 0,
+    to: OTHER,
+    value: 7,
+    gasLimit: 21_000,
+    gasPrice: 100,
+    accessList: [],
+  });
+  accessListOriginal.signature = wallet.signingKey.sign(
+    accessListOriginal.unsignedHash
+  );
+  await expect(
+    f.sdk.cancelSentTransaction(
+      accessListOriginal.hash!,
+      undefined,
+      undefined,
+      {
+        ...options,
+        origin: {
+          ...origin,
+          rawTransaction: accessListOriginal.serialized,
+          feeFloor: { type: 0, gasPrice: 100n },
+        },
+      }
+    )
+  ).rejects.toThrow(invalid);
+  await expect(
+    f.sdk.cancelSentTransaction(hash, false, undefined, {
+      ...options,
+      targetAccount: { id: 9, type: KeyringAccountType.HDAccount },
+    })
+  ).rejects.toThrow(invalid);
+  f.state.activeNetwork.chainId = CHAIN + 1;
+  await expect(
+    f.sdk.cancelSentTransaction(hash, false, undefined, options)
+  ).rejects.toThrow(invalid);
+  f.state.activeNetwork.chainId = CHAIN;
+  await expect(
+    f.sdk.cancelSentTransaction(hash, true, undefined, options)
+  ).rejects.toThrow('network or type changed');
+  await expect(
+    f.sdk.cancelSentTransaction(hash, false, 0, options)
+  ).rejects.toThrow('cannot use RPC fallback');
+  await expect(
+    f.sdk.cancelSentTransaction(hash, false, undefined, {
+      ...options,
+      validateOriginal: () => undefined,
+    } as any)
+  ).rejects.toThrow('cannot use RPC fallback');
+  expect(f.provider.getTransaction).not.toHaveBeenCalled();
+  expect(f.provider.getGasPrice).not.toHaveBeenCalled();
+  expect(
+    f.sdk.getFeeDataWithDynamicMaxPriorityFeePerGas
+  ).not.toHaveBeenCalled();
+  expect(f.captureSubmission).not.toHaveBeenCalled();
+  f.noSigning();
+});
 
 describe.each([true, false])(
   'cancellation fee consent (legacy=%s)',

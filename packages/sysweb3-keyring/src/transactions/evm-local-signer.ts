@@ -296,7 +296,8 @@ export const sendLocalEvmTransaction = async (
   const signedTx = signTransaction(finalTransaction, privateKey);
   return submitSignedEvmTransaction(
     signedTx,
-    (raw) => provider.sendTransaction(raw),
+    ({ rawTransaction, admit }) =>
+      admit(() => provider.sendTransaction(rawTransaction)),
     submission,
     beforeBroadcast,
     expectedUnsignedTransaction

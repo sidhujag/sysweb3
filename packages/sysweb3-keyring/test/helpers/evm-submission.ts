@@ -4,10 +4,20 @@ import {
   type EvmSubmissionContext,
 } from '../../src/transactions/evm-submission';
 
+export const admitTestSignedDispatch = async <T>(
+  _record: EvmSignedSubmission,
+  initiate: () => Promise<T>,
+  preflight: () => Promise<void>
+): Promise<T> => {
+  await preflight();
+  return initiate();
+};
+
 export function createTestSubmissionCapture() {
   const retained = new Map<string, EvmSignedSubmission>();
   return () => ({
     assertCurrent: () => undefined,
+    dispatchSigned: admitTestSignedDispatch,
     async persistSigned(record: EvmSignedSubmission) {
       retained.set(record.hash, record);
     },

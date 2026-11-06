@@ -7,6 +7,7 @@ import {
   KeyringAccountType,
   INetworkType,
 } from '../../../src/software';
+import { admitTestSignedDispatch } from '../../helpers/evm-submission';
 
 import type { EvmSignedSubmission } from '../../../src/transactions/evm-submission';
 
@@ -56,6 +57,7 @@ it.each(['healthy', 'lock', 'account-change'] as const)(
         assertCurrent() {
           return undefined;
         },
+        dispatchSigned: admitTestSignedDispatch,
         async persistSigned(record) {
           saved = record;
           entered.resolve();

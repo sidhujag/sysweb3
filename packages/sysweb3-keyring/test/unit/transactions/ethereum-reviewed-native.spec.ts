@@ -4,6 +4,7 @@ import { Wallet } from 'ethers/wallet';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import * as preparedSigner from '../../../src/transactions/prepared-evm';
 import { KeyringAccountType } from '../../../src/types';
+import { admitTestSignedDispatch } from '../../helpers/evm-submission';
 
 const wallet = new Wallet(`0x${'19'.repeat(32)}`);
 const network = {
@@ -55,7 +56,11 @@ function fixture(withPersistence = true) {
     undefined,
     () => () => undefined,
     withPersistence
-      ? () => ({ assertCurrent: () => undefined, persistSigned })
+      ? () => ({
+          assertCurrent: () => undefined,
+          dispatchSigned: admitTestSignedDispatch,
+          persistSigned,
+        })
       : null
   );
   Object.defineProperty(sdk, 'web3Provider', { get: () => provider });

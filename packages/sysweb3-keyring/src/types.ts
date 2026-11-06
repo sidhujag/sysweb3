@@ -94,10 +94,30 @@ type EvmOriginalAdmission<Original> = {
 export type IEvmReplacementOptions = EvmReplacementFeeApproval &
   EvmOriginalAdmission<TransactionResponse> & {
     beforeBroadcast?: () => void;
+    /** Exact signed original obtained from the host's protected cancellation lineage. */
+    retainedCancellation?: string;
   };
 
+export type EvmRetainedCancellationOrigin = Readonly<{
+  kind: 'retained';
+  rawTransaction: string;
+  nonce: number;
+  tipHash: string;
+  feeFloor: Readonly<
+    | { type: 0; gasPrice: bigint }
+    | { type: 2; maxFeePerGas: bigint; maxPriorityFeePerGas: bigint }
+  >;
+}>;
+
 export type IEvmCancellationOptions = EvmReplacementFeeApproval &
-  EvmOriginalAdmission<TransactionResponse | null>;
+  (
+    | (EvmOriginalAdmission<TransactionResponse | null> & { origin?: never })
+    | (Omit<EvmOriginalAdmission<never>, 'validateOriginal'> & {
+        /** The host owns the protected journal lineage and its live admission. */
+        origin: EvmRetainedCancellationOrigin;
+        validateOriginal?: never;
+      })
+  );
 
 // Version type is now replaced by SignTypedDataVersion from @metamask/eth-sig-util
 
