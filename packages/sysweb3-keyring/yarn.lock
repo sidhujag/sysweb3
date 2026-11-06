@@ -351,10 +351,10 @@
     eth-chains "^1.0.0"
     ethers "^6.17.0"
 
-"@sidhujag/sysweb3-utils@1.1.281":
-  version "1.1.281"
-  resolved "https://registry.npmjs.org/@sidhujag/sysweb3-utils/-/sysweb3-utils-1.1.281.tgz#1cca75264f512844bb37622b9f3bff190ecc75f8"
-  integrity sha512-Tm12mm3guA0DEY5UXzF7X063A9F5HnJpbBjNwqldX7W2xWzBPwwvhez4oDujNdDuh9vZqQjiptmfE7nVwbOICA==
+"@sidhujag/sysweb3-utils@1.1.282":
+  version "1.1.282"
+  resolved "https://registry.npmjs.org/@sidhujag/sysweb3-utils/-/sysweb3-utils-1.1.282.tgz#b3cb072c77ec9ca82cc63e69a59b1c357410a4dd"
+  integrity sha512-uUdQr4gN/OEjWRGY0eZOIVqUomYQtxrdNWKGJUlBYtjpbdc7CDLTgKpH+0H6dT9R7xGe7MYvoU69AQmn9M2h3g==
   dependencies:
     "@sidhujag/sysweb3-network" "2.0.0"
     bech32 "^2.0.0"
@@ -1975,10 +1975,10 @@ supports-color@^7.1.0:
   dependencies:
     has-flag "^4.0.0"
 
-syscoinjs-lib@^1.0.280:
-  version "1.0.280"
-  resolved "https://registry.npmjs.org/syscoinjs-lib/-/syscoinjs-lib-1.0.280.tgz#3771bf81ed07aa93b2140576bae617ec27f17502"
-  integrity sha512-ig88pEIPpn3oiOP6bmilzwDUVugXzStbc8jtSf4yeD3yqzuL98mIncLqoQ4NZaiuwjtT5f1AAcI9Gf+2bBUorg==
+syscoinjs-lib@2.0.0:
+  version "2.0.0"
+  resolved "https://registry.npmjs.org/syscoinjs-lib/-/syscoinjs-lib-2.0.0.tgz#55294c728718b471ba8cfdfda632264b027ba809"
+  integrity sha512-eS3vBcbWP0MyUwY/8ncqW38WixfaLH1BD7ceknbZQsktbCT1YPuu7zE7fGX2Nuy3lm0yNveljq0mqHEhqcv1tA==
   dependencies:
     "@bitcoinerlab/secp256k1" "^1.2.0"
     axios "^1.18.1"
@@ -1992,13 +1992,13 @@ syscoinjs-lib@^1.0.280:
     eth-object "https://github.com/syscoin/eth-object.git"
     eth-proof "^2.1.6"
     ethers "^6.17.0"
-    syscointx-js "^1.0.128"
+    syscointx-js "2.0.0"
     varuint-bitcoin "^2.0.0"
 
-syscointx-js@^1.0.128:
-  version "1.0.128"
-  resolved "https://registry.npmjs.org/syscointx-js/-/syscointx-js-1.0.128.tgz#60795c81430eacafe1bbc3233d69c8e8baa75ef0"
-  integrity sha512-43dgrnCgRCWcM6PIMU7mvV9t2thjLhtm9yMqmvZvMPWuqRGbWG7yxC6Ix+bsvd/NDIFri26npR5xPdRlXPSO9g==
+syscointx-js@2.0.0:
+  version "2.0.0"
+  resolved "https://registry.npmjs.org/syscointx-js/-/syscointx-js-2.0.0.tgz#6bc594edfe26b018683a1fd783cf0ce7b3753485"
+  integrity sha512-u5ji1uPe1g/UMDMO4PJs1LJy3mu2RC28PvHMqEAuuObfneBBe8R+WIyD8EPUpRejBHNNOgUJLRubj2JG0/5sQw==
   dependencies:
     "@bitcoinerlab/secp256k1" "^1.2.0"
     bitcoin-ops "^1.4.1"
