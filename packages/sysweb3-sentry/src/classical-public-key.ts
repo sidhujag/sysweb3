@@ -2,6 +2,13 @@ import { fail } from './bytes.js';
 
 export type SentryClassicalScheme = 'bls-basic' | 'secp256k1';
 
+// Read the built-in view and backing-store slots instead of overridable properties.
+const typedArray = Object.getPrototypeOf(Uint8Array.prototype);
+const viewType = Object.getOwnPropertyDescriptor(typedArray, Symbol.toStringTag)!.get!;
+const viewLength = Object.getOwnPropertyDescriptor(typedArray, 'byteLength')!.get!;
+const viewBuffer = Object.getOwnPropertyDescriptor(typedArray, 'buffer')!.get!;
+const bufferLength = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength')!.get!;
+
 /** Derive only the compressed public key. The caller still owns its input. */
 export async function deriveSentryClassicalPublicKey(
   scheme: SentryClassicalScheme,
@@ -11,8 +18,8 @@ export async function deriveSentryClassicalPublicKey(
     return fail('UNSUPPORTED_SCHEME', 'Unsupported Sentry key scheme');
   let owned: Uint8Array | undefined;
   try {
-    if (!ArrayBuffer.isView(secret) || !(secret instanceof Uint8Array) ||
-        secret.byteLength !== 32 || !(secret.buffer instanceof ArrayBuffer))
+    if (viewType.call(secret) !== 'Uint8Array' || viewLength.call(secret) !== 32 ||
+        bufferLength.call(viewBuffer.call(secret)) < 32)
       return fail('INVALID_SECRET_KEY', 'Invalid Sentry secret key');
     // Own the exact borrowed view before yielding to the curve loader.
     owned = new Uint8Array(secret);

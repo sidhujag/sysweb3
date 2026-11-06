@@ -45,5 +45,21 @@ test('classical import rejects invalid widths, fake bytes, unsupported schemes a
   const forged = Object.create(Uint8Array.prototype);
   Object.defineProperties(forged, { byteLength: { value: 32 }, buffer: { value: new ArrayBuffer(32) } });
   await assert.rejects(deriveSentryClassicalPublicKey('bls-basic', forged), invalid);
+  class SpoofedWidth extends Uint8Array {
+    get byteLength() { return 32; }
+  }
+  const short = new SpoofedWidth([1]);
+  const long = new SpoofedWidth(33);
+  long[32] = 1;
+  const words = new Uint16Array(16);
+  words[15] = 1;
+  Object.setPrototypeOf(words, Uint8Array.prototype);
+  const shared = new SharedArrayBuffer(32);
+  const sharedView = new Uint8Array(shared);
+  sharedView[31] = 1;
+  Object.setPrototypeOf(shared, ArrayBuffer.prototype);
+  for (const secret of [short, long, words, sharedView]) {
+    await assert.rejects(deriveSentryClassicalPublicKey('secp256k1', secret), invalid);
+  }
   await assert.rejects(deriveSentryClassicalPublicKey('slh-dsa-shake-128s', key(1n)), { code: 'UNSUPPORTED_SCHEME' });
 });
