@@ -245,8 +245,12 @@ export function planEvmSpeedUpFees(input: EvmSpeedUpFeeInput) {
     input.maxPriorityFeePerGas,
     bumped === 0n && baseFee === 0n
   );
-  const marketMinimum = baseFee + maxPriorityFeePerGas;
-  const maxFeePerGas = bumped > marketMinimum ? bumped : marketMinimum;
+  // A valid cap may clip the effective tip. Preserve the reviewed replacement
+  // policy unless the cap would be below the sampled base fee.
+  const maxFeePerGas =
+    bumped < baseFee ? baseFee + maxPriorityFeePerGas : bumped;
+  if (maxPriorityFeePerGas > maxFeePerGas)
+    throw new Error('Invalid replacement fee');
   return Object.freeze({
     type: 2 as const,
     gasLimit,

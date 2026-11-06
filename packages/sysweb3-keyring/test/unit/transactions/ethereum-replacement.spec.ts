@@ -439,6 +439,10 @@ describe('source SDK account-scoped replacement signing', () => {
     ])(
       'quotes and enforces the exact type $type replacement of a $originalRate wei fee',
       async ({ type, originalRate, replacementRate }) => {
+        provider.getBlock.mockResolvedValue({
+          baseFeePerGas: BigNumber.from(0),
+          gasLimit: BigNumber.from(30_000_000),
+        });
         const hash = useOriginal(
           transaction({
             type,
@@ -516,6 +520,10 @@ describe('source SDK account-scoped replacement signing', () => {
       'keeps signed type%s zero fees at zero under a zero cap',
       async (type) => {
         const hash = useOriginal(zeroFeeOriginal(type));
+        provider.getBlock.mockResolvedValue({
+          baseFeePerGas: BigNumber.from(0),
+          gasLimit: BigNumber.from(30_000_000),
+        });
         provider.getGasPrice.mockResolvedValue(BigNumber.from(0));
         const dynamicQuote = jest
           .spyOn(sdk, 'getFeeDataWithDynamicMaxPriorityFeePerGas')
@@ -545,7 +553,7 @@ describe('source SDK account-scoped replacement signing', () => {
           expect(dynamicQuote).toHaveBeenCalledTimes(2);
           for (const [reader] of dynamicQuote.mock.calls) {
             expect(await reader!.getBlock('latest')).toEqual({
-              baseFeePerGas: BigNumber.from(50),
+              baseFeePerGas: BigNumber.from(0),
               gasLimit: BigNumber.from(30000000),
             });
           }

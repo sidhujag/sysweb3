@@ -102,6 +102,17 @@ describe('shared Speed Up fee-only policy', () => {
       gasLimit: 25200n,
       maximumFee: 25250400n,
     });
+    expect(
+      planEvmSpeedUpFees({
+        ...market,
+        type: 2,
+        maxFeePerGas: 1000n,
+        maxPriorityFeePerGas: 1000n,
+      })
+    ).toMatchObject({
+      maxFeePerGas: 1200n,
+      maxPriorityFeePerGas: 1200n,
+    });
     expect(() =>
       planEvmSpeedUpFees({
         ...market,

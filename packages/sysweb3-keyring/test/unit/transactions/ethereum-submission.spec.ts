@@ -158,7 +158,10 @@ function fixture(kind: KeyringAccountType, capture?: CaptureEvmSubmission) {
       maxPriorityFeePerGas: BigNumber.from(1),
     })),
     getGasPrice: jest.fn(async () => BigNumber.from(2)),
-    getBlock: jest.fn(async () => ({ baseFeePerGas: BigNumber.from(1) })),
+    getBlock: jest.fn(async () => ({
+      baseFeePerGas: BigNumber.from(1),
+      gasLimit: BigNumber.from(30_000_000),
+    })),
     estimateGas: jest.fn(async () => BigNumber.from(42000)),
     send: jest.fn(async () => '0x1'),
     sendTransaction: jest.fn(async (raw: string) => ({
