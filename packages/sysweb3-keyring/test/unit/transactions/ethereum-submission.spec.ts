@@ -4,6 +4,7 @@ jest.resetModules();
 
 import { Interface, Wallet, Transaction } from 'ethers';
 
+import { admitTestSignedDispatch } from '../../helpers/evm-submission';
 import { BigNumber, serializeTransaction } from '../../../src/ethers-v6';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import { evmSubmissionFailure } from '../../../src/transactions/evm-submission';
@@ -281,6 +282,7 @@ for (const kind of kinds)
         assertCurrent() {
           return undefined;
         },
+        dispatchSigned: admitTestSignedDispatch,
         async persistSigned(record: EvmSignedSubmission) {
           saved = record;
           entered.resolve();
@@ -333,6 +335,7 @@ for (const kind of kinds)
         assertCurrent() {
           return undefined;
         },
+        dispatchSigned: admitTestSignedDispatch,
         async persistSigned(record) {
           saved = record.rawTransaction;
           entered.resolve();
@@ -367,6 +370,7 @@ it('keeps exact ERC20 amounts on the ERC20 capture and persistence route', async
   let saved!: EvmSignedSubmission;
   const capture = jest.fn(() => ({
     assertCurrent: () => undefined,
+    dispatchSigned: admitTestSignedDispatch,
     async persistSigned(record: EvmSignedSubmission) {
       saved = record;
       stored.resolve();
@@ -419,6 +423,7 @@ it('keeps exact ERC20 amounts on the ERC20 capture and persistence route', async
 it('rejects absent or async review, a different RPC and missing reviewed fees before provider or key entry', async () => {
   const f = fixture(KeyringAccountType.HDAccount, () => ({
     assertCurrent: () => undefined,
+    dispatchSigned: admitTestSignedDispatch,
     persistSigned: jest.fn(async () => undefined),
   }));
   const approved = {
@@ -472,6 +477,7 @@ it('blocks the ERC20 POST when approval closes during durable persistence', asyn
   let current = true;
   const f = fixture(KeyringAccountType.HDAccount, () => ({
     assertCurrent: () => undefined,
+    dispatchSigned: admitTestSignedDispatch,
     async persistSigned() {
       stored.resolve();
       await acknowledged.promise;
@@ -506,6 +512,7 @@ it('blocks the ERC20 POST when approval closes during durable persistence', asyn
 it('rejects omitted, aborted, or substituted collectible approval before I/O', async () => {
   const f = fixture(KeyringAccountType.HDAccount, () => ({
     assertCurrent: () => undefined,
+    dispatchSigned: admitTestSignedDispatch,
     persistSigned: jest.fn(async () => undefined),
   }));
   const request = {
@@ -572,6 +579,7 @@ it.each([
       assertCurrent() {
         if (!current) throw new Error('Durable authority revoked');
       },
+      dispatchSigned: admitTestSignedDispatch,
       persistSigned,
     }));
     f.provider.estimateGas.mockImplementationOnce(async () => {
@@ -612,6 +620,7 @@ it('rejects host A-B-A revision changes after persistence even when account/netw
       assertCurrent() {
         if (revision !== captured) throw Error('Host revision changed');
       },
+      dispatchSigned: admitTestSignedDispatch,
       async persistSigned() {
         entered.resolve();
         await ack.promise;
@@ -636,6 +645,7 @@ it.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
   async (kind) => {
     const f = fixture(kind, () => ({
       assertCurrent: () => undefined,
+      dispatchSigned: admitTestSignedDispatch,
       persistSigned: async () => undefined,
     }));
     await expect(
@@ -653,6 +663,7 @@ it.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
 it('preserves local dispatch evidence through the formatted-send public error wrapper', async () => {
   const f = fixture(KeyringAccountType.HDAccount, () => ({
     assertCurrent: () => undefined,
+    dispatchSigned: admitTestSignedDispatch,
     persistSigned: async () => undefined,
   }));
   f.provider.sendTransaction.mockRejectedValueOnce(

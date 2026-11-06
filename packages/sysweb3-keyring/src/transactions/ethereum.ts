@@ -80,6 +80,7 @@ import {
   evmSubmissionFailure,
   copyEvmSubmissionFailure,
   type CaptureEvmSubmission,
+  type EvmSignedBroadcast,
   type EvmSubmissionBoundary,
   type EvmSubmissionContext,
 } from './evm-submission';
@@ -479,7 +480,7 @@ export class EthereumTransactions<
   private submitSignedHardwareTransaction = <T>(
     provider: CustomJsonRpcProvider,
     raw: string,
-    broadcast: (raw: string) => Promise<T>,
+    broadcast: EvmSignedBroadcast<T>,
     submission: EvmSubmissionBoundary,
     beforeBroadcast: (() => void) | undefined,
     expectedUnsigned: string
@@ -1500,7 +1501,8 @@ export class EthereumTransactions<
             await this.submitSignedHardwareTransaction(
               provider,
               signedTx,
-              (raw) => provider.sendTransaction(raw),
+              ({ rawTransaction, admit }) =>
+                admit(() => provider.sendTransaction(rawTransaction)),
               submission,
               undefined,
               rawTx
@@ -1593,7 +1595,8 @@ export class EthereumTransactions<
             await this.submitSignedHardwareTransaction(
               provider,
               signedTx,
-              (raw) => provider.sendTransaction(raw),
+              ({ rawTransaction, admit }) =>
+                admit(() => provider.sendTransaction(rawTransaction)),
               submission,
               undefined,
               expectedUnsignedTransaction
@@ -1809,7 +1812,8 @@ export class EthereumTransactions<
       );
       return submitSignedEvmTransaction(
         signed.rawTransaction,
-        (raw) => provider.sendTransaction(raw),
+        ({ rawTransaction, admit }) =>
+          admit(() => provider.sendTransaction(rawTransaction)),
         submission,
         assertBeforeBroadcast,
         expectedUnsigned
@@ -2003,7 +2007,8 @@ export class EthereumTransactions<
           const finalTx = await this.submitSignedHardwareTransaction(
             provider,
             signedTx,
-            (raw) => provider.sendTransaction(raw),
+            ({ rawTransaction, admit }) =>
+              admit(() => provider.sendTransaction(rawTransaction)),
             submission,
             assertBeforeBroadcast,
             rawTx
@@ -2138,7 +2143,8 @@ export class EthereumTransactions<
           const finalTx = await this.submitSignedHardwareTransaction(
             provider,
             signedTx,
-            (raw) => provider.sendTransaction(raw),
+            ({ rawTransaction, admit }) =>
+              admit(() => provider.sendTransaction(rawTransaction)),
             submission,
             assertBeforeBroadcast,
             expectedUnsignedTransaction
@@ -2488,7 +2494,8 @@ export class EthereumTransactions<
             await this.submitSignedHardwareTransaction(
               provider,
               signedTx,
-              (raw) => provider.sendTransaction(raw),
+              ({ rawTransaction, admit }) =>
+                admit(() => provider.sendTransaction(rawTransaction)),
               submission,
               assertBeforeBroadcast,
               rawTx
@@ -2592,7 +2599,8 @@ export class EthereumTransactions<
             await this.submitSignedHardwareTransaction(
               provider,
               signedTx,
-              (raw) => provider.sendTransaction(raw),
+              ({ rawTransaction, admit }) =>
+                admit(() => provider.sendTransaction(rawTransaction)),
               submission,
               assertBeforeBroadcast,
               expectedUnsignedTransaction
@@ -2886,8 +2894,10 @@ export class EthereumTransactions<
             const finalTx = await this.submitSignedHardwareTransaction(
               provider,
               signedTx,
-              async (raw) => {
-                const response = await provider.sendTransaction(raw);
+              async ({ rawTransaction, admit }) => {
+                const response = await admit(() =>
+                  provider.sendTransaction(rawTransaction)
+                );
                 saveTrezorTx && saveTrezorTx(response);
                 return response;
               },
@@ -3010,8 +3020,10 @@ export class EthereumTransactions<
             const finalTx = await this.submitSignedHardwareTransaction(
               provider,
               signedTx,
-              async (raw) => {
-                const response = await provider.sendTransaction(raw);
+              async ({ rawTransaction, admit }) => {
+                const response = await admit(() =>
+                  provider.sendTransaction(rawTransaction)
+                );
                 saveTrezorTx && saveTrezorTx(response);
                 return response;
               },
@@ -3227,7 +3239,8 @@ export class EthereumTransactions<
             const finalTx = await this.submitSignedHardwareTransaction(
               provider,
               signedTx,
-              (raw) => provider.sendTransaction(raw),
+              ({ rawTransaction, admit }) =>
+                admit(() => provider.sendTransaction(rawTransaction)),
               submission,
               undefined,
               rawTx
@@ -3351,7 +3364,8 @@ export class EthereumTransactions<
             const finalTx = await this.submitSignedHardwareTransaction(
               provider,
               signedTx,
-              (raw) => provider.sendTransaction(raw),
+              ({ rawTransaction, admit }) =>
+                admit(() => provider.sendTransaction(rawTransaction)),
               submission,
               undefined,
               expectedUnsignedTransaction
@@ -3570,7 +3584,8 @@ export class EthereumTransactions<
             const finalTx = await this.submitSignedHardwareTransaction(
               provider,
               signedTx,
-              (raw) => provider.sendTransaction(raw),
+              ({ rawTransaction, admit }) =>
+                admit(() => provider.sendTransaction(rawTransaction)),
               submission,
               undefined,
               rawTx
@@ -3690,7 +3705,8 @@ export class EthereumTransactions<
             const finalTx = await this.submitSignedHardwareTransaction(
               provider,
               signedTx,
-              (raw) => provider.sendTransaction(raw),
+              ({ rawTransaction, admit }) =>
+                admit(() => provider.sendTransaction(rawTransaction)),
               submission,
               undefined,
               expectedUnsignedTransaction
