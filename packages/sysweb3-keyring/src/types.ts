@@ -94,6 +94,8 @@ type EvmOriginalAdmission<Original> = {
 export type IEvmReplacementOptions = EvmReplacementFeeApproval &
   EvmOriginalAdmission<TransactionResponse> & {
     beforeBroadcast?: () => void;
+    /** Exact signed original obtained from the host's protected cancellation lineage. */
+    retainedCancellation?: string;
   };
 
 export type IEvmCancellationOptions = EvmReplacementFeeApproval &

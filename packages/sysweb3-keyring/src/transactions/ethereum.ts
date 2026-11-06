@@ -1067,6 +1067,7 @@ export class EthereumTransactions<
     isLegacy: boolean,
     bounds: Readonly<{
       chainId: bigint;
+      retainedCancellationGasLimit?: bigint;
       sampledBlockGasLimit: bigint;
       sampledBaseFeePerGas: bigint | null;
     }>
@@ -2230,7 +2231,12 @@ export class EthereumTransactions<
       throw new Error('Replacement context required');
     if (typeof options.validateOriginal !== 'function')
       throw new Error('Replacement original validator required');
-    const { assertCurrentContext, validateOriginal, beforeBroadcast } = options;
+    const {
+      assertCurrentContext,
+      validateOriginal,
+      beforeBroadcast,
+      retainedCancellation,
+    } = options;
     if (!previewOnly) this.assertHardwareSignerAvailable(options.targetAccount);
     isLegacy ??= false;
     let assertCapturedSignerCurrent: (() => void) | undefined;
@@ -2279,6 +2285,28 @@ export class EthereumTransactions<
     const requestedHash = txHash.toLowerCase();
     const provider = this.web3Provider;
     assertSigningCurrent();
+    let cancellation: Transaction | undefined;
+    if (retainedCancellation !== undefined) {
+      if (
+        typeof retainedCancellation !== 'string' ||
+        retainedCancellation.length > 1024
+      )
+        throw new Error('Invalid retained cancellation');
+      cancellation = Transaction.from(retainedCancellation);
+      if (
+        !cancellation.isSigned() ||
+        cancellation.serialized !== retainedCancellation ||
+        cancellation.hash !== requestedHash ||
+        cancellation.chainId !== BigInt(activeNetwork.chainId) ||
+        cancellation.from?.toLowerCase() !== expectedSender ||
+        cancellation.to?.toLowerCase() !== expectedSender ||
+        cancellation.value !== 0n ||
+        cancellation.data !== '0x' ||
+        cancellation.accessList?.length ||
+        (cancellation.type !== 0 && cancellation.type !== 2)
+      )
+        throw new Error('Invalid retained cancellation');
+    }
     const submission = previewOnly
       ? undefined
       : this.captureSubmission(
@@ -2301,6 +2329,15 @@ export class EthereumTransactions<
         activeNetwork.chainId
       );
       const type = authenticated.type;
+      if (
+        cancellation &&
+        (type !== cancellation.type ||
+          parseEvmFeeQuantity(
+            authenticated.gasLimit,
+            'retained cancellation gas limit'
+          ) !== cancellation.gasLimit)
+      )
+        throw new Error('Retained cancellation does not match original');
       if (type !== 1) isLegacy = type === 0;
       if (
         isLegacy &&
@@ -2338,6 +2375,9 @@ export class EthereumTransactions<
     assertCurrent();
     const bounds = Object.freeze({
       chainId: BigInt(activeNetwork.chainId),
+      ...(cancellation
+        ? { retainedCancellationGasLimit: cancellation.gasLimit }
+        : {}),
       sampledBlockGasLimit: parseEvmFeeQuantity(
         sampledBlock?.gasLimit,
         'replacement block gas limit'

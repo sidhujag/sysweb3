@@ -268,6 +268,79 @@ describe('source SDK account-scoped replacement signing', () => {
   });
   afterEach(() => jest.restoreAllMocks());
 
+  it.each([0, 2])(
+    'reprices a verified retained type %s cancellation without changing gas',
+    async (type) => {
+      const fields = { type, to: PAYER, value: 0, data: '0x', gasLimit: 42000 };
+      const hash = useOriginal(transaction(fields));
+      const retainedCancellation = await hardwareWallet.signTransaction({
+        ...fields,
+        chainId: CHAIN,
+        nonce: 8,
+        ...(type === 0
+          ? { gasPrice: 100 }
+          : { maxFeePerGas: 100, maxPriorityFeePerGas: 10 }),
+      });
+      expect(Transaction.from(retainedCancellation).hash).toBe(hash);
+      const preview = {
+        ...options(),
+        previewOnly: true as const,
+        approvedMaximumFee: undefined,
+      };
+      await expect(
+        sdk.sendTransactionWithEditedFee(hash, type === 0, preview)
+      ).resolves.toMatchObject({ maximumFee: '6048000' });
+      await expect(
+        sdk.sendTransactionWithEditedFee(hash, type === 0, {
+          ...preview,
+          retainedCancellation,
+        })
+      ).resolves.toMatchObject({ maximumFee: '5040000' });
+      const wrongEnvelope = await hardwareWallet.signTransaction({
+        ...fields,
+        chainId: CHAIN,
+        nonce: 9,
+        ...(type === 0
+          ? { gasPrice: 100 }
+          : { maxFeePerGas: 100, maxPriorityFeePerGas: 10 }),
+      });
+      await expect(
+        sdk.sendTransactionWithEditedFee(hash, type === 0, {
+          ...preview,
+          retainedCancellation: wrongEnvelope,
+        })
+      ).rejects.toThrow('Invalid retained cancellation');
+      const signer = jest.requireActual(
+        '../../../src/transactions/evm-local-signer'
+      );
+      jest
+        .mocked(sendLocalEvmTransaction)
+        .mockImplementation((rpc, _key, ...args) =>
+          signer.sendLocalEvmTransaction(
+            rpc,
+            hardwareWallet.privateKey,
+            ...args
+          )
+        );
+      await expect(
+        sdk.sendTransactionWithEditedFee(hash, type === 0, {
+          ...options(),
+          approvedMaximumFee: '5040000',
+          retainedCancellation,
+        })
+      ).resolves.toMatchObject({ isSpeedUp: true });
+      const sent = Transaction.from(provider.sendTransaction.mock.calls[0][0]);
+      expect(sent).toMatchObject({
+        type,
+        nonce: 8,
+        gasLimit: 42000n,
+        to: PAYER,
+        value: 0n,
+        data: '0x',
+      });
+    }
+  );
+
   it.each([false, true])(
     'signs through the explicit outer payer without changing the active SmartAccount (legacy=%s)',
     async (legacy) => {
