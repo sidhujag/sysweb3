@@ -62,8 +62,10 @@ export async function importSentryAuthorityKey(
     return { ...(await importSentryOperatorKey(scheme, secretKeyHex)), role };
   const secret = fromHex(secretKeyHex, 'secp256k1 key', 32);
   try {
-    const { secp256k1 } = await import('@noble/curves/secp256k1.js');
-    const publicKey = secp256k1.getPublicKey(secret, true);
+    const { deriveSentryClassicalPublicKey } = await import(
+      './classical-public-key.js'
+    );
+    const publicKey = await deriveSentryClassicalPublicKey(scheme, secret);
     return { role, scheme, publicKey: hex(publicKey), secretKey: hex(secret) };
   } catch {
     return fail('INVALID_SECRET_KEY', 'Invalid node authority key');

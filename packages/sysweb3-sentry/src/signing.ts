@@ -20,8 +20,6 @@ import type {
 } from './types.js';
 
 const BLS_BASIC_DST = 'BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_';
-const BLS_SCALAR_ORDER =
-  0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001n;
 
 function assertScheme(scheme: SentryScheme): void {
   if (scheme !== 'bls-basic' && scheme !== 'slh-dsa-shake-128s')
@@ -42,13 +40,10 @@ export async function importSentryOperatorKey(
   let publicKey: Uint8Array;
   try {
     if (scheme === 'bls-basic') {
-      // Core imports an exact scalar, not a scalar reduced modulo r. Noble's
-      // point multiplication accepts broader integer encodings, so constrain it.
-      const scalar = BigInt(`0x${hex(secret)}`);
-      if (scalar === 0n || scalar >= BLS_SCALAR_ORDER)
-        fail('INVALID_SECRET_KEY', 'Invalid BLS scalar');
-      const { bls12_381 } = await import('@noble/curves/bls12-381.js');
-      publicKey = bls12_381.longSignatures.getPublicKey(secret).toBytes();
+      const { deriveSentryClassicalPublicKey } = await import(
+        './classical-public-key.js'
+      );
+      publicKey = await deriveSentryClassicalPublicKey(scheme, secret);
     } else {
       const { slh_dsa_shake_128s } = await import(
         '@noble/post-quantum/slh-dsa.js'
