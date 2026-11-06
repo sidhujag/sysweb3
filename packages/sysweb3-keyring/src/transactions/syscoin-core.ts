@@ -72,7 +72,12 @@ const notDispatched = () =>
 
 function retainedBlockbookBase(url: string): string {
   const path = '/api/v2/sendtx/';
-  if (typeof url !== 'string' || url.length > 2048 || /[\s\\?#]/.test(url))
+  const maxBaseLength = 2048;
+  if (
+    typeof url !== 'string' ||
+    url.length > maxBaseLength + path.length ||
+    /[\s\\?#]/.test(url)
+  )
     throw notDispatched();
   const target = new URL(url);
   if (
@@ -84,10 +89,12 @@ function retainedBlockbookBase(url: string): string {
     !target.pathname.endsWith(path)
   )
     throw notDispatched();
-  target.pathname = `${target.pathname.slice(0, -path.length)}/`;
+  const prefix = target.pathname.slice(0, -path.length);
+  // The owned dispatcher strips one trailing slash from the base.
+  target.pathname = prefix.endsWith('/') ? `${prefix}/` : prefix || '/';
   const base = target.href;
   target.pathname = target.pathname.replace(/\/$/, '') + path;
-  if (target.href !== url) throw notDispatched();
+  if (base.length > maxBaseLength || target.href !== url) throw notDispatched();
   return base;
 }
 

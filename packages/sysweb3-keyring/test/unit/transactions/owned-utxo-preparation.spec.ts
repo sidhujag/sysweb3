@@ -702,9 +702,9 @@ async function signedOwnedFixture() {
 
 const submitUrl = `${base}/api/v2/sendtx/`;
 
-function acknowledgment(txid: string): Response {
+function acknowledgment(txid: string, url = submitUrl): Response {
   const response = Response.json({ result: txid });
-  Object.defineProperty(response, 'url', { value: submitUrl });
+  Object.defineProperty(response, 'url', { value: url });
   return response;
 }
 
@@ -825,10 +825,11 @@ const testnetStatus = {
   backend: { chain: 'test' },
 };
 
-async function retainedReplayFixture() {
+async function retainedReplayFixture(originalBase = base) {
   const fixture = await signedOwnedFixture();
   const { ring, state, txid, raw } = fixture;
   state.activeNetwork.url = replacementEndpoint;
+  const api = `${originalBase.replace(/\/$/, '')}/api/v2/`;
   const retained = {
     owner: {
       account: { id: 0, type: hd, xpub: state.accounts.HDAccount[0].xpub },
@@ -838,18 +839,18 @@ async function retainedReplayFixture() {
     },
     txid,
     rawTransaction: raw,
-    url: submitUrl,
+    url: `${api}sendtx/`,
   };
   const signal = new AbortController().signal;
   const authority = {
     assertCurrent: () => undefined,
-    fetch: jest.fn(async () => acknowledgment(txid)),
+    fetch: jest.fn(async () => acknowledgment(txid, retained.url)),
     prepare: jest.fn(async () => undefined),
     readRetained: jest.fn(async () => retained),
     readJson: jest.fn(async (url: string, ownerSignal: AbortSignal) => {
       expect(ownerSignal).toBe(signal);
-      if (url === statusUrl) return testnetStatus;
-      if (url === genesisUrl) return { blockHash: testnetGenesis };
+      if (url === api) return testnetStatus;
+      if (url === `${api}block-index/0`) return { blockHash: testnetGenesis };
       throw new Error('Unexpected retained route');
     }),
     signal,
@@ -903,6 +904,47 @@ it('replays authenticated bytes only to their original verified endpoint after d
   expect(state.activeNetwork.url).toBe(replacementEndpoint);
   expect(sign).not.toHaveBeenCalled();
   expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
+it.each(['', '//'])(
+  'replays from a maximum-length base with ending %p',
+  async (ending) => {
+    const prefix = 'https://offline-original.invalid/wallet/';
+    const originalBase = prefix.padEnd(2048 - ending.length, 'a') + ending;
+    const { txid, retained, authority, replay } = await retainedReplayFixture(
+      originalBase
+    );
+    const api = `${originalBase.replace(/\/$/, '')}/api/v2/`;
+    expect(originalBase).toHaveLength(2048);
+    expect(retained.url).toBe(`${api}sendtx/`);
+    await expect(replay(txid, authority)).resolves.toEqual({ txid });
+    expect(authority.readJson.mock.calls.map(([url]) => url)).toEqual([
+      api,
+      `${api}block-index/0`,
+    ]);
+    expect(authority.fetch).toHaveBeenCalledTimes(1);
+    expect(authority.fetch).toHaveBeenCalledWith(
+      retained.url,
+      expect.objectContaining({ method: 'POST' })
+    );
+  }
+);
+
+it('rejects an oversized reconstructed base even when the complete route meets its ceiling', async () => {
+  const originalBase =
+    'https://offline-original.invalid/wallet/'.padEnd(2047, 'a') + '//';
+  const { txid, retained, authority, replay } = await retainedReplayFixture(
+    originalBase
+  );
+  expect(originalBase).toHaveLength(2049);
+  expect(retained.url).toHaveLength(2048 + '/api/v2/sendtx/'.length);
+  await expect(replay(txid, authority)).rejects.toMatchObject({
+    code: 'UTXO_SUBMISSION_NOT_DISPATCHED',
+    transactionNotBroadcast: true,
+  });
+  expect(authority.readJson).not.toHaveBeenCalled();
+  expect(authority.prepare).not.toHaveBeenCalled();
+  expect(authority.fetch).not.toHaveBeenCalled();
 });
 
 it.each(['account', 'chain', 'genesis', 'txid', 'route', 'bytes', 'pin'])(
