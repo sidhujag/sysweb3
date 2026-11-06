@@ -3076,10 +3076,10 @@ supports-preserve-symlinks-flag@^1.0.0:
   resolved "https://registry.yarnpkg.com/supports-preserve-symlinks-flag/-/supports-preserve-symlinks-flag-1.0.0.tgz#6eda4bd344a3c94aea376d4cc31bc77311039e09"
   integrity sha512-ot0WnXS9fgdkgIcePe6RHNk1WA8+muPa6cSjeR3V8K27q9BB1rTE3R1p7Hv0z1ZyAc8s6Vvv8DIyWf681MAt0w==
 
-syscoinjs-lib@^1.0.275:
-  version "1.0.275"
-  resolved "https://registry.yarnpkg.com/syscoinjs-lib/-/syscoinjs-lib-1.0.275.tgz#e70379458953b55e82b4656bdfad4bef7ff6976a"
-  integrity sha512-el+6wWDxVObR/f7+Q1aZTgg7goUEEQTfNYoF+CSMvv/VZKd8I2qqImb4LV1opkIPXTwydRBhaFpM7wE+93J8XA==
+syscoinjs-lib@2.0.0:
+  version "2.0.0"
+  resolved "https://registry.npmjs.org/syscoinjs-lib/-/syscoinjs-lib-2.0.0.tgz#55294c728718b471ba8cfdfda632264b027ba809"
+  integrity sha512-eS3vBcbWP0MyUwY/8ncqW38WixfaLH1BD7ceknbZQsktbCT1YPuu7zE7fGX2Nuy3lm0yNveljq0mqHEhqcv1tA==
   dependencies:
     "@bitcoinerlab/secp256k1" "^1.2.0"
     axios "^1.18.1"
@@ -3093,13 +3093,13 @@ syscoinjs-lib@^1.0.275:
     eth-object "https://github.com/syscoin/eth-object.git"
     eth-proof "^2.1.6"
     ethers "^6.17.0"
-    syscointx-js "^1.0.128"
+    syscointx-js "2.0.0"
     varuint-bitcoin "^2.0.0"
 
-syscointx-js@^1.0.128:
-  version "1.0.128"
-  resolved "https://registry.npmjs.org/syscointx-js/-/syscointx-js-1.0.128.tgz#60795c81430eacafe1bbc3233d69c8e8baa75ef0"
-  integrity sha512-43dgrnCgRCWcM6PIMU7mvV9t2thjLhtm9yMqmvZvMPWuqRGbWG7yxC6Ix+bsvd/NDIFri26npR5xPdRlXPSO9g==
+syscointx-js@2.0.0:
+  version "2.0.0"
+  resolved "https://registry.npmjs.org/syscointx-js/-/syscointx-js-2.0.0.tgz#6bc594edfe26b018683a1fd783cf0ce7b3753485"
+  integrity sha512-u5ji1uPe1g/UMDMO4PJs1LJy3mu2RC28PvHMqEAuuObfneBBe8R+WIyD8EPUpRejBHNNOgUJLRubj2JG0/5sQw==
   dependencies:
     "@bitcoinerlab/secp256k1" "^1.2.0"
     bitcoin-ops "^1.4.1"
