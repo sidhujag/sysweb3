@@ -448,8 +448,10 @@ export class EthereumTransactions<
     id: number,
     network: INetwork,
     assertCurrent: () => void,
-    originalHash?: string,
-    origin?: EvmSubmissionContext['origin']
+    details: Pick<
+      EvmSubmissionContext,
+      'originalHash' | 'origin' | 'walletNonce'
+    > = {}
   ) => {
     if (!this.captureSubmissionLifecycle)
       throw new TypeError('A durable EVM submission lifecycle is required');
@@ -463,8 +465,7 @@ export class EthereumTransactions<
           slip44: network.slip44,
           url: network.url,
         },
-        ...(originalHash !== undefined ? { originalHash } : {}),
-        ...(origin !== undefined ? { origin } : {}),
+        ...details,
       },
       assertCurrent,
       this.captureSubmissionLifecycle
@@ -955,7 +956,9 @@ export class EthereumTransactions<
       !(approval.signal instanceof AbortSignal)
     )
       throw new Error(`${standard} transaction approval required`);
-    const { assertCurrent, signal } = approval;
+    const { assertCurrent, signal, nonce } = approval;
+    if (!Number.isSafeInteger(nonce) || nonce < 0)
+      throw new Error(`Invalid ${standard} transaction approval nonce`);
     const assertApproval = () => {
       if (signal.aborted)
         throw Object.assign(
@@ -970,7 +973,7 @@ export class EthereumTransactions<
       );
     };
     assertApproval();
-    return { assertApproval, signal };
+    return { assertApproval, signal, nonce };
   };
 
   private reviewedTokenFees = (
@@ -1293,8 +1296,10 @@ export class EthereumTransactions<
           activeAccountId,
           activeNetwork,
           assertSigningCurrent,
-          retained ? txHash.toLowerCase() : txHash,
-          retained
+          {
+            originalHash: retained ? txHash.toLowerCase() : txHash,
+            origin: retained,
+          }
         );
     const assertCurrent = submission?.assertCurrent ?? assertSigningCurrent;
     const currentEip1559Fees = async () => {
@@ -1717,7 +1722,9 @@ export class EthereumTransactions<
         throw new Error('Explicit transaction approval is required');
       // Capture once; later caller mutations cannot replace this invocation's
       // admission decision while chain checks or device approval are pending.
-      const { assertCurrent: assertHostCurrent, mode } = options;
+      const { assertCurrent: assertHostCurrent, mode, walletNonce } = options;
+      const nonceApproval =
+        walletNonce === undefined ? undefined : { ...walletNonce };
       const assertApproved = () => {
         const result: unknown = assertHostCurrent();
         if (result !== undefined) {
@@ -1736,7 +1743,8 @@ export class EthereumTransactions<
           broadcastAttempted = true;
         },
         assertApproved,
-        mode
+        mode,
+        nonceApproval
       );
     } catch (error) {
       // A broadcast transport error may mean the node accepted the signed
@@ -1764,7 +1772,8 @@ export class EthereumTransactions<
     isLegacy: boolean | undefined,
     beforeBroadcast: () => void,
     assertHostCurrent: () => void,
-    mode: IEvmSendOptions['mode']
+    mode: IEvmSendOptions['mode'],
+    walletNonce: IEvmSendOptions['walletNonce']
   ) => {
     // Hardware approval may outlive the selected account, network or unlocked
     // session. Keep immutable identities and one provider for this invocation.
@@ -1790,9 +1799,15 @@ export class EthereumTransactions<
       activeAccountType,
       activeAccountId,
       activeNetwork,
-      assertSigningCurrent
+      assertSigningCurrent,
+      { walletNonce }
     );
     const assertCurrent = submission.assertCurrent;
+    const approvedNonce = submission.context.walletNonce?.nonce;
+    const assertApprovedNonce = (nonce: number | undefined) => {
+      if (approvedNonce !== undefined && nonce !== approvedNonce)
+        throw new Error('EVM transaction nonce does not match wallet approval');
+    };
 
     if (mode === 'reviewed-native') {
       const { transaction } = snapshotPreparedEvmRequest({
@@ -1809,6 +1824,7 @@ export class EthereumTransactions<
         },
         transaction: input,
       });
+      assertApprovedNonce(Number(transaction.nonce));
       const minimum = this.gasOverrides.minGasLimit;
       if (
         transaction.data !== '0x' ||
@@ -1874,6 +1890,7 @@ export class EthereumTransactions<
     if (supplied.data != null) supplied.data = hexlify(supplied.data);
     if (supplied.accessList != null)
       supplied.accessList = accessListify(supplied.accessList);
+    assertApprovedNonce(supplied.nonce);
     params = supplied as SimpleTransactionRequest;
 
     assertCurrent();
@@ -2339,7 +2356,7 @@ export class EthereumTransactions<
           activeAccountId,
           activeNetwork,
           assertSigningCurrent,
-          txHash
+          { originalHash: txHash }
         );
     const assertCurrent = submission?.assertCurrent ?? assertSigningCurrent;
     const validateLookup = (transaction: TransactionResponse | null) => {
@@ -2767,7 +2784,7 @@ export class EthereumTransactions<
     request: ISendSignedErc20TransactionProps,
     approval: IReviewedEvmTokenApproval
   ): Promise<IResponseFromSendErcSignedTransaction> => {
-    const { assertApproval, signal } = this.captureReviewedTokenApproval(
+    const { assertApproval, signal, nonce } = this.captureReviewedTokenApproval(
       approval,
       'ERC20'
     );
@@ -2812,7 +2829,8 @@ export class EthereumTransactions<
       () => {
         assertApproval();
         assertSigningCurrent();
-      }
+      },
+      { walletNonce: { nonce, source: 'automatic' } }
     );
     const assertCurrent = submission.assertCurrent;
     const sendERC20Token = async () => {
@@ -2827,10 +2845,6 @@ export class EthereumTransactions<
         let transferMethod;
         if (isLegacy) {
           const overrides = {
-            nonce: await provider.getTransactionCount(
-              activeAccountAddress,
-              'pending'
-            ),
             gasPrice,
             gasLimit,
             type: 0, // Explicitly set Type 0 for legacy token transfers
@@ -2843,10 +2857,6 @@ export class EthereumTransactions<
           );
         } else {
           const overrides = {
-            nonce: await provider.getTransactionCount(
-              activeAccountAddress,
-              'pending'
-            ),
             maxPriorityFeePerGas,
             maxFeePerGas,
             gasLimit,
@@ -2865,6 +2875,7 @@ export class EthereumTransactions<
           decryptedPrivateKey,
           {
             ...transferMethod,
+            nonce,
             chainId: activeNetwork.chainId,
             from: activeAccountAddress,
             value: '0x0',
@@ -2880,11 +2891,6 @@ export class EthereumTransactions<
     };
 
     const sendERC20TokenOnLedger = async () => {
-      assertCurrent();
-      const transactionNonce = await provider.getTransactionCount(
-        activeAccountAddress,
-        'pending'
-      );
       assertCurrent();
       try {
         const _contract = new Contract(
@@ -2906,7 +2912,7 @@ export class EthereumTransactions<
             gasLimit: gasLimit,
             gasPrice,
             data: txData,
-            nonce: transactionNonce,
+            nonce,
             chainId: activeNetwork.chainId,
             type: 0,
           };
@@ -2918,7 +2924,7 @@ export class EthereumTransactions<
             maxFeePerGas,
             maxPriorityFeePerGas,
             data: txData,
-            nonce: transactionNonce,
+            nonce,
             chainId: activeNetwork.chainId,
             type: 2, // Need explicit type for hardware wallet serialization
           };
@@ -2983,11 +2989,6 @@ export class EthereumTransactions<
 
     const sendERC20TokenOnTrezor = async () => {
       assertCurrent();
-      const transactionNonce = await provider.getTransactionCount(
-        activeAccountAddress,
-        'pending'
-      );
-      assertCurrent();
       try {
         const _contract = new Contract(
           tokenAddress,
@@ -3007,7 +3008,7 @@ export class EthereumTransactions<
             value: '0x0',
             gasLimit: this.toHex0x(gasLimit, 'gasLimit'),
             gasPrice: this.toHex0x(gasPrice, 'gasPrice'),
-            nonce: this.toBigNumber(transactionNonce)._hex,
+            nonce: this.toBigNumber(nonce)._hex,
             chainId: activeNetwork.chainId,
             data: txData,
           };
@@ -3021,7 +3022,7 @@ export class EthereumTransactions<
               maxPriorityFeePerGas,
               'maxPriorityFeePerGas'
             ),
-            nonce: this.toBigNumber(transactionNonce)._hex,
+            nonce: this.toBigNumber(nonce)._hex,
             chainId: activeNetwork.chainId,
             data: txData,
           };
@@ -3057,7 +3058,7 @@ export class EthereumTransactions<
                 gasLimit: gasLimit,
                 gasPrice,
                 data: txData,
-                nonce: transactionNonce,
+                nonce,
                 chainId: activeNetwork.chainId,
                 type: 0,
               };
@@ -3069,7 +3070,7 @@ export class EthereumTransactions<
                 maxFeePerGas,
                 maxPriorityFeePerGas,
                 data: txData,
-                nonce: transactionNonce,
+                nonce,
                 chainId: activeNetwork.chainId,
                 type: 2, // Need explicit type for hardware wallet serialization
               };
@@ -3121,7 +3122,7 @@ export class EthereumTransactions<
     request: ISendSignedErc721TransactionProps,
     approval: IReviewedEvmTokenApproval
   ): Promise<IResponseFromSendErcSignedTransaction> => {
-    const { assertApproval, signal } = this.captureReviewedTokenApproval(
+    const { assertApproval, signal, nonce } = this.captureReviewedTokenApproval(
       approval,
       'ERC721'
     );
@@ -3155,7 +3156,8 @@ export class EthereumTransactions<
       () => {
         assertApproval();
         assertSigningCurrent();
-      }
+      },
+      { walletNonce: { nonce, source: 'automatic' } }
     );
     const assertCurrent = submission.assertCurrent;
 
@@ -3172,10 +3174,6 @@ export class EthereumTransactions<
 
         if (isLegacy) {
           const overrides = {
-            nonce: await provider.getTransactionCount(
-              activeAccountAddress,
-              'pending'
-            ),
             gasPrice,
             gasLimit,
             type: 0, // Explicitly set Type 0 for legacy NFT transfers
@@ -3188,10 +3186,6 @@ export class EthereumTransactions<
           );
         } else {
           const overrides = {
-            nonce: await provider.getTransactionCount(
-              activeAccountAddress,
-              'pending'
-            ),
             maxPriorityFeePerGas,
             maxFeePerGas,
             gasLimit,
@@ -3209,6 +3203,7 @@ export class EthereumTransactions<
           decryptedPrivateKey,
           {
             ...transferMethod,
+            nonce,
             chainId: activeNetwork.chainId,
             from: activeAccountAddress,
             value: '0x0',
@@ -3224,11 +3219,6 @@ export class EthereumTransactions<
     };
 
     const sendERC721TokenOnLedger = async () => {
-      assertCurrent();
-      const transactionNonce = await provider.getTransactionCount(
-        activeAccountAddress,
-        'pending'
-      );
       assertCurrent();
       try {
         const _contract = new Contract(
@@ -3250,7 +3240,7 @@ export class EthereumTransactions<
             gasLimit,
             gasPrice,
             data: txData,
-            nonce: transactionNonce,
+            nonce,
             chainId: activeNetwork.chainId,
             type: 0,
           };
@@ -3262,7 +3252,7 @@ export class EthereumTransactions<
             maxFeePerGas,
             maxPriorityFeePerGas,
             data: txData,
-            nonce: transactionNonce,
+            nonce,
             chainId: activeNetwork.chainId,
             type: 2, // Need explicit type for hardware wallet serialization
           };
@@ -3323,11 +3313,6 @@ export class EthereumTransactions<
 
     const sendERC721TokenOnTrezor = async () => {
       assertCurrent();
-      const transactionNonce = await provider.getTransactionCount(
-        activeAccountAddress,
-        'pending'
-      );
-      assertCurrent();
       try {
         const _contract = new Contract(
           tokenAddress,
@@ -3347,7 +3332,7 @@ export class EthereumTransactions<
             value: '0x0',
             gasLimit: this.toHex0x(gasLimit, 'gasLimit'),
             gasPrice: this.toHex0x(gasPrice, 'gasPrice'),
-            nonce: this.toBigNumber(transactionNonce)._hex,
+            nonce: this.toBigNumber(nonce)._hex,
             chainId: activeNetwork.chainId,
             data: txData,
           };
@@ -3362,7 +3347,7 @@ export class EthereumTransactions<
               maxPriorityFeePerGas,
               'maxPriorityFeePerGas'
             ),
-            nonce: this.toBigNumber(transactionNonce)._hex,
+            nonce: this.toBigNumber(nonce)._hex,
             chainId: activeNetwork.chainId,
             data: txData,
           };
@@ -3401,7 +3386,7 @@ export class EthereumTransactions<
                 gasLimit,
                 gasPrice,
                 data: txData,
-                nonce: transactionNonce,
+                nonce,
                 chainId: activeNetwork.chainId,
                 type: 0,
               };
@@ -3413,7 +3398,7 @@ export class EthereumTransactions<
                 maxFeePerGas,
                 maxPriorityFeePerGas,
                 data: txData,
-                nonce: transactionNonce,
+                nonce,
                 chainId: activeNetwork.chainId,
                 type: 2, // Need explicit type for hardware wallet serialization
               };
@@ -3462,7 +3447,7 @@ export class EthereumTransactions<
     request: ISendSignedErc1155TransactionProps,
     approval: IReviewedEvmTokenApproval
   ): Promise<IResponseFromSendErcSignedTransaction> => {
-    const { assertApproval, signal } = this.captureReviewedTokenApproval(
+    const { assertApproval, signal, nonce } = this.captureReviewedTokenApproval(
       approval,
       'ERC1155'
     );
@@ -3501,7 +3486,8 @@ export class EthereumTransactions<
       () => {
         assertApproval();
         assertSigningCurrent();
-      }
+      },
+      { walletNonce: { nonce, source: 'automatic' } }
     );
     const assertCurrent = submission.assertCurrent;
 
@@ -3521,20 +3507,12 @@ export class EthereumTransactions<
         let overrides;
         if (isLegacy) {
           overrides = {
-            nonce: await provider.getTransactionCount(
-              activeAccountAddress,
-              'pending'
-            ),
             gasPrice,
             gasLimit,
             type: 0, // Explicitly set Type 0 for legacy ERC1155 transfers
           };
         } else {
           overrides = {
-            nonce: await provider.getTransactionCount(
-              activeAccountAddress,
-              'pending'
-            ),
             maxPriorityFeePerGas,
             maxFeePerGas,
             gasLimit,
@@ -3554,6 +3532,7 @@ export class EthereumTransactions<
           decryptedPrivateKey,
           {
             ...transferMethod,
+            nonce,
             chainId: activeNetwork.chainId,
             from: activeAccountAddress,
             value: '0x0',
@@ -3569,11 +3548,6 @@ export class EthereumTransactions<
     };
 
     const sendERC1155TokenOnLedger = async () => {
-      assertCurrent();
-      const transactionNonce = await provider.getTransactionCount(
-        activeAccountAddress,
-        'pending'
-      );
       assertCurrent();
       try {
         const _contract = new Contract(
@@ -3595,7 +3569,7 @@ export class EthereumTransactions<
             gasLimit,
             gasPrice,
             data: txData,
-            nonce: transactionNonce,
+            nonce,
             chainId: activeNetwork.chainId,
             type: 0,
           };
@@ -3607,7 +3581,7 @@ export class EthereumTransactions<
             maxFeePerGas,
             maxPriorityFeePerGas,
             data: txData,
-            nonce: transactionNonce,
+            nonce,
             chainId: activeNetwork.chainId,
             type: 2, // Need explicit type for hardware wallet serialization
           };
@@ -3668,11 +3642,6 @@ export class EthereumTransactions<
 
     const sendERC1155TokenOnTrezor = async () => {
       assertCurrent();
-      const transactionNonce = await provider.getTransactionCount(
-        activeAccountAddress,
-        'pending'
-      );
-      assertCurrent();
       try {
         const _contract = new Contract(
           tokenAddress,
@@ -3692,7 +3661,7 @@ export class EthereumTransactions<
             value: '0x0',
             gasLimit: this.toHex0x(gasLimit, 'gasLimit'),
             gasPrice: this.toHex0x(gasPrice, 'gasPrice'),
-            nonce: this.toBigNumber(transactionNonce)._hex,
+            nonce: this.toBigNumber(nonce)._hex,
             chainId: activeNetwork.chainId,
             data: txData,
           };
@@ -3706,7 +3675,7 @@ export class EthereumTransactions<
               maxPriorityFeePerGas,
               'maxPriorityFeePerGas'
             ),
-            nonce: this.toBigNumber(transactionNonce)._hex,
+            nonce: this.toBigNumber(nonce)._hex,
             chainId: activeNetwork.chainId,
             data: txData,
           };
@@ -3742,7 +3711,7 @@ export class EthereumTransactions<
                 gasLimit,
                 gasPrice,
                 data: txData,
-                nonce: transactionNonce,
+                nonce,
                 chainId: activeNetwork.chainId,
                 type: 0,
               };
@@ -3754,7 +3723,7 @@ export class EthereumTransactions<
                 maxFeePerGas,
                 maxPriorityFeePerGas,
                 data: txData,
-                nonce: transactionNonce,
+                nonce,
                 chainId: activeNetwork.chainId,
                 type: 2, // Need explicit type for hardware wallet serialization
               };

@@ -10,6 +10,7 @@ import { BigNumber } from '../../../src/ethers-v6';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
 import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
 const tokenApproval = {
+  nonce: 7,
   assertCurrent: () => undefined,
   signal: new AbortController().signal,
 };

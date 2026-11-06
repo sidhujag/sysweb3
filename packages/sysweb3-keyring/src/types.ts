@@ -61,10 +61,16 @@ export type EvmLocalAccount = {
   publicKey: string;
 };
 
+export type EvmWalletNonce = Readonly<{
+  nonce: number;
+  source: 'automatic' | 'manual';
+}>;
+
 export interface IEvmSendOptions {
   /** Synchronous host admission, rechecked immediately before signing and broadcast. */
   assertCurrent: () => void;
   mode: 'reviewed-native' | 'specialized';
+  walletNonce?: EvmWalletNonce;
 }
 
 export type EvmFormattedSendArguments =
@@ -544,6 +550,8 @@ export interface ILatestUpdateForSysAccount {
 }
 
 export type IReviewedEvmTokenApproval = Readonly<{
+  /** Nonce selected by the host's ordinary wallet policy before signing. */
+  nonce: number;
   assertCurrent: () => void;
   signal: AbortSignal;
 }>;

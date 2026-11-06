@@ -2,6 +2,7 @@ import { Transaction } from 'ethers/transaction';
 
 import type {
   EvmRetainedCancellationOrigin,
+  EvmWalletNonce,
   KeyringAccountType,
 } from '../types';
 
@@ -16,6 +17,7 @@ export type EvmSubmissionContext = Readonly<{
   operation: 'send' | 'cancel' | 'speed-up' | 'erc20' | 'erc721' | 'erc1155';
   originalHash?: string;
   origin?: EvmRetainedCancellationOrigin;
+  walletNonce?: EvmWalletNonce;
 }>;
 
 /** Signed wire bytes only; never a key, password or mutable transaction request. */
@@ -87,11 +89,29 @@ export function captureEvmSubmission(
   assertCurrent: () => void,
   capture: CaptureEvmSubmission
 ): EvmSubmissionBoundary {
-  const origin = input.origin;
+  const { origin, walletNonce } = input;
+  let approvedWalletNonce: EvmWalletNonce | undefined;
+  if (walletNonce !== undefined) {
+    if (
+      !walletNonce ||
+      typeof walletNonce !== 'object' ||
+      Array.isArray(walletNonce)
+    )
+      throw new TypeError('Invalid wallet EVM nonce approval');
+    const { nonce, source } = walletNonce;
+    if (
+      !Number.isSafeInteger(nonce) ||
+      nonce < 0 ||
+      (source !== 'automatic' && source !== 'manual')
+    )
+      throw new TypeError('Invalid wallet EVM nonce approval');
+    approvedWalletNonce = Object.freeze({ nonce, source });
+  }
   const context: EvmSubmissionContext = Object.freeze({
     account: Object.freeze({ ...input.account }),
     network: Object.freeze({ ...input.network }),
     operation: input.operation,
+    ...(approvedWalletNonce ? { walletNonce: approvedWalletNonce } : {}),
     ...(input.originalHash !== undefined
       ? { originalHash: input.originalHash }
       : {}),
@@ -278,6 +298,9 @@ async function submit<T>(
     );
     if (tx.chainId !== BigInt(boundary.context.network.chainId))
       throw new Error('Signed EVM submission does not match captured context');
+    const approvedNonce = boundary.context.walletNonce?.nonce;
+    if (approvedNonce !== undefined && tx.nonce !== approvedNonce)
+      throw new Error('Signed EVM nonce does not match wallet approval');
     hash = tx.hash!;
     const record: EvmSignedSubmission = Object.freeze({
       context: boundary.context,
