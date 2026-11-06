@@ -438,6 +438,31 @@ describe('source SDK account-scoped replacement signing', () => {
       }
     );
 
+    it('signs a strictly higher tip for a signed zero-tip original with a positive cap', async () => {
+      const hash = useOriginal(
+        transaction({ maxPriorityFeePerGas: BigNumber.from(0) })
+      );
+      await expect(
+        sdk.sendTransactionWithEditedFee(hash, false, {
+          ...options(),
+          previewOnly: true,
+        })
+      ).resolves.toEqual({
+        isSpeedUp: false,
+        maximumFee: APPROVED_MAXIMUM_FEE,
+      });
+      expectNoSigning();
+      await expect(
+        sdk.sendTransactionWithEditedFee(hash, false, options())
+      ).resolves.toMatchObject({ isSpeedUp: true });
+      const tx = unsignedTransaction(
+        jest.mocked(sendLocalEvmTransaction).mock.calls[0][2]
+      );
+      expect(tx.maxFeePerGas).toBe(120n);
+      expect(tx.maxPriorityFeePerGas).toBe(1n);
+      expectNoFeeRpc();
+    });
+
     it.each([0, 2])(
       'keeps signed type%s zero fees at zero under a zero cap',
       async (type) => {
@@ -1680,7 +1705,7 @@ describe('source SDK account-scoped replacement signing', () => {
     expect(provider.sendTransaction).not.toHaveBeenCalled();
   });
 
-  describe('native MAX replacement value preservation', () => {
+  describe('replacement affordability and value preservation', () => {
     const targets = [
       { type: KeyringAccountType.HDAccount, id: 3 },
       { type: KeyringAccountType.Ledger, id: 4 },
@@ -1720,6 +1745,50 @@ describe('source SDK account-scoped replacement signing', () => {
         expect(sendLocalEvmTransaction).not.toHaveBeenCalled();
         expect(ledger.evm.signEVMTransaction).not.toHaveBeenCalled();
         expect(trezor.signEthTransaction).not.toHaveBeenCalled();
+        expect(provider.sendTransaction).not.toHaveBeenCalled();
+      }
+    );
+    it.each([
+      {
+        type: 0,
+        data: '0x',
+        code: 'REPLACEMENT_VALUE_WOULD_CHANGE',
+      },
+      { type: 2, data: '0x1234', code: 'CONTRACT_CALL_MAX_SEND' },
+    ])(
+      'rejects an unaffordable type $type replacement even when the original used well below 95% of balance',
+      async ({ type, data, code }) => {
+        const hash = useOriginal(transaction({ type, data }));
+        // The original costs 2,100,007 wei. The replacement costs 3,024,007.
+        provider.getBalance.mockResolvedValueOnce(BigNumber.from(3024007));
+        const preview = await sdk.sendTransactionWithEditedFee(
+          hash,
+          type === 0,
+          { ...options(), previewOnly: true }
+        );
+        expect(preview).toEqual({
+          isSpeedUp: false,
+          maximumFee: APPROVED_MAXIMUM_FEE,
+        });
+
+        // An exact prior approval does not authorize an unaffordable send.
+        provider.getBalance.mockResolvedValue(BigNumber.from(3024006));
+        const unavailable = { isSpeedUp: false, error: true, code };
+        await expect(
+          sdk.sendTransactionWithEditedFee(hash, type === 0, {
+            ...options(),
+            approvedMaximumFee: preview.maximumFee,
+          })
+        ).resolves.toMatchObject(unavailable);
+        await expect(
+          sdk.sendTransactionWithEditedFee(hash, type === 0, {
+            ...options(),
+            previewOnly: true,
+          })
+        ).resolves.toMatchObject(unavailable);
+        expect(getKey).not.toHaveBeenCalled();
+        expect(sendLocalEvmTransaction).not.toHaveBeenCalled();
+        expect(beforeBroadcast).not.toHaveBeenCalled();
         expect(provider.sendTransaction).not.toHaveBeenCalled();
       }
     );

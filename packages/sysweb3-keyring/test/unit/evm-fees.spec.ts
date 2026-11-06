@@ -43,7 +43,7 @@ describe('shared Speed Up fee-only policy', () => {
     }
   );
 
-  it('preserves a zero dynamic tip while increasing the positive cap', () => {
+  it('strictly increases both dynamic fee fields with a positive cap', () => {
     expect(
       planEvmSpeedUpFees({
         type: 2,
@@ -55,7 +55,7 @@ describe('shared Speed Up fee-only policy', () => {
       type: 2,
       gasLimit: 25200n,
       maxFeePerGas: 6n,
-      maxPriorityFeePerGas: 0n,
+      maxPriorityFeePerGas: 1n,
       maximumFee: 151200n,
     });
     expect(() =>

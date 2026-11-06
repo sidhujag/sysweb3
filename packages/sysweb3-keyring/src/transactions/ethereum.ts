@@ -2313,7 +2313,6 @@ export class EthereumTransactions<
         };
       }
     }
-    // Check if this might be a max send transaction by comparing total cost to balance
     const currentBalance = await provider.getBalance(activeAccount.address);
     assertCurrent();
     // Ensure all transaction values are resolved from promises
@@ -2328,15 +2327,6 @@ export class EthereumTransactions<
     const txValue = await Promise.resolve(tx.value);
     const txData = await Promise.resolve(tx.data || '0x');
     assertCurrent();
-    // Check if this is a contract call (has data)
-    const isContractCall = txData && txData !== '0x' && txData.length > 2;
-    const originalGasCost = isLegacy
-      ? gasLimit.mul(gasPrice || 0)
-      : gasLimit.mul(maxFeePerGas || 0);
-    const originalTotalCost = txValue.add(originalGasCost);
-    // If original transaction used >95% of balance, it's likely a max send
-    const balanceThreshold = currentBalance.mul(95).div(100);
-    const isLikelyMaxSend = originalTotalCost.gt(balanceThreshold);
     const oldTxsGasValues = {
       maxFeePerGas: maxFeePerGas,
       maxPriorityFeePerGas: maxPriorityFeePerGas,
@@ -2377,17 +2367,14 @@ export class EthereumTransactions<
     const maximumFee = newGasValues.gasLimit!.mul(
       isLegacy ? newGasValues.gasPrice! : newGasValues.maxFeePerGas!
     );
-    if (isLikelyMaxSend && txValue.add(maximumFee).gt(currentBalance)) {
-      if (isContractCall) {
-        console.error(
-          '[SpeedUp] Cannot adjust value for contract call - rejecting speedup'
-        );
+    if (txValue.add(maximumFee).gt(currentBalance)) {
+      if (txData.length > 2) {
         return {
           isSpeedUp: false,
           error: true,
           code: 'CONTRACT_CALL_MAX_SEND',
           message:
-            'Cannot speed up a likely max-send contract call; value cannot be adjusted to fit new gas',
+            'Add funds before speeding up this contract call; the original amount will not be changed',
         };
       }
       return {

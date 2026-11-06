@@ -184,11 +184,10 @@ export type EvmSpeedUpFeeInput = Readonly<
   )
 >;
 
-function speedUpRate(rate: bigint): bigint {
+function speedUpRate(rate: bigint, preserveZero = true): bigint {
   if (typeof rate !== 'bigint' || rate < 0n || rate > MAX_FEE)
     throw new Error('Invalid replacement fee');
-  // Preserve fee-free networks and explicit zero priority fees.
-  if (rate === 0n) return 0n;
+  if (rate === 0n && preserveZero) return 0n;
   const buffered = (rate * 120n) / 100n;
   const bumped = buffered > rate ? buffered : rate + 1n;
   if (bumped > MAX_FEE) throw new Error('Invalid replacement fee');
@@ -226,7 +225,12 @@ export function planEvmSpeedUpFees(input: EvmSpeedUpFeeInput) {
   }
   if (input.type !== 2) throw new Error('Invalid replacement fee type');
   const maxFeePerGas = speedUpRate(input.maxFeePerGas);
-  const maxPriorityFeePerGas = speedUpRate(input.maxPriorityFeePerGas);
+  // A paid replacement must strictly increase both rates. Keep a wholly free
+  // quote free so the host's zero-fee policy and approved ceiling still apply.
+  const maxPriorityFeePerGas = speedUpRate(
+    input.maxPriorityFeePerGas,
+    maxFeePerGas === 0n
+  );
   if (maxPriorityFeePerGas > maxFeePerGas)
     throw new Error('Invalid replacement fee');
   return Object.freeze({
