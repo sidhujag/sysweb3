@@ -24,6 +24,7 @@ import { TrezorKeyring } from './trezor';
 
 import type { KeyringCore } from './keyring-core';
 import type { PreparedEvmTransaction } from './transactions/prepared-evm';
+import type { OwnedUtxoRpcVerification } from '@sidhujag/sysweb3-network';
 
 export type AccessListish =
   | Array<{ address: string; storageKeys: string[] }>
@@ -242,6 +243,26 @@ export type SyscoinOwnedSubmissionOptions = SyscoinOwnedReadOptions &
     prepare: (descriptor: SyscoinSubmissionDescriptor) => Promise<void>;
   }>;
 
+export type SyscoinRetainedSubmissionOwner = Readonly<{
+  account: Readonly<{ id: number; type: string; xpub: string }>;
+  chainId: number;
+  genesisHash: string;
+  slip44: number;
+}>;
+
+export type SyscoinRetainedSubmission = SyscoinSubmissionDescriptor &
+  Readonly<{ owner: SyscoinRetainedSubmissionOwner }>;
+
+/** The trusted wallet host reads the authenticated journal, not a UI payload. */
+export type SyscoinRetainedSubmissionOptions = SyscoinOwnedSubmissionOptions &
+  Pick<OwnedUtxoRpcVerification, 'readJson'> &
+  Readonly<{
+    readRetained: (
+      owner: SyscoinRetainedSubmissionOwner,
+      txid: string
+    ) => Promise<SyscoinRetainedSubmission | undefined>;
+  }>;
+
 export interface ISyscoinTransactions {
   getEstimateSysTransactionFee: (
     {
@@ -276,6 +297,10 @@ export interface ISyscoinTransactions {
   sendTransaction: (
     rawTransaction: string,
     authority: SyscoinOwnedSubmissionOptions
+  ) => Promise<ITxid>;
+  replayRetainedTransaction: (
+    txid: string,
+    authority: SyscoinRetainedSubmissionOptions
   ) => Promise<ITxid>;
   signPSBT: (
     {
