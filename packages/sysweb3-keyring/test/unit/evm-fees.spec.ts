@@ -17,7 +17,11 @@ describe('shared Speed Up fee-only policy', () => {
   const originalGas = 21000n;
   const uint64 = (1n << 64n) - 1n;
   const uint256 = (1n << 256n) - 1n;
-  const bounds = { chainId: 743211n, sampledBlockGasLimit: uint64 };
+  const bounds = {
+    chainId: 743211n,
+    sampledBlockGasLimit: uint64,
+    sampledBaseFeePerGas: null,
+  };
 
   it.each([
     [0n, 0n],
@@ -72,6 +76,42 @@ describe('shared Speed Up fee-only policy', () => {
     ).toThrow('Invalid replacement fee');
   });
 
+  it('raises a fresh fee quote to the sampled market without changing gas', () => {
+    const market = {
+      ...bounds,
+      gasLimit: originalGas,
+      sampledBaseFeePerGas: 1000n,
+    };
+    expect(
+      planEvmSpeedUpFees({ ...market, type: 0, gasPrice: 3n })
+    ).toMatchObject({
+      gasPrice: 1000n,
+      gasLimit: 25200n,
+      maximumFee: 25200000n,
+    });
+    expect(
+      planEvmSpeedUpFees({
+        ...market,
+        type: 2,
+        maxFeePerGas: 3n,
+        maxPriorityFeePerGas: 1n,
+      })
+    ).toMatchObject({
+      maxFeePerGas: 1002n,
+      maxPriorityFeePerGas: 2n,
+      gasLimit: 25200n,
+      maximumFee: 25250400n,
+    });
+    expect(() =>
+      planEvmSpeedUpFees({
+        ...market,
+        type: 0,
+        gasPrice: 3n,
+        sampledBaseFeePerGas: undefined as unknown as null,
+      })
+    ).toThrow('Invalid replacement base fee');
+  });
+
   it('rejects the first buffered gas limit outside uint64', () => {
     const largest = ((uint64 + 1n) * 100n - 1n) / 120n;
     expect(
@@ -96,7 +136,12 @@ describe('shared Speed Up fee-only policy', () => {
   });
 
   it('requires sampled bounds and enforces both block and protocol ceilings', () => {
-    const input = { type: 0 as const, gasLimit: 25000000n, gasPrice: 1n };
+    const input = {
+      type: 0 as const,
+      gasLimit: 25000000n,
+      gasPrice: 1n,
+      sampledBaseFeePerGas: null,
+    };
     // @ts-expect-error A current sampled block limit is required.
     expect(() => planEvmSpeedUpFees({ ...input, chainId: 743211n })).toThrow();
     expect(

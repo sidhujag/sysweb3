@@ -1064,7 +1064,11 @@ export class EthereumTransactions<
     oldTxsParams: IGasParams,
     isForCancel: boolean,
     isLegacy: boolean,
-    bounds: Readonly<{ chainId: bigint; sampledBlockGasLimit: bigint }>
+    bounds: Readonly<{
+      chainId: bigint;
+      sampledBlockGasLimit: bigint;
+      sampledBaseFeePerGas: bigint | null;
+    }>
   ): IGasParams => {
     const newGasValues: IGasParams = {
       maxFeePerGas: undefined,
@@ -2332,6 +2336,13 @@ export class EthereumTransactions<
         sampledBlock?.gasLimit,
         'replacement block gas limit'
       ),
+      sampledBaseFeePerGas:
+        sampledBlock?.baseFeePerGas == null
+          ? null
+          : parseEvmFeeQuantity(
+              sampledBlock.baseFeePerGas,
+              'replacement base fee'
+            ),
     });
     // Ensure all transaction values are resolved from promises
     const gasLimit = await Promise.resolve(tx.gasLimit);
