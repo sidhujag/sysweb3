@@ -1,5 +1,6 @@
 import { Transaction, Wallet } from 'ethers';
 
+import { evmSubmissionFailure } from '../../../src/transactions/evm-submission';
 import { signLedgerEvmTransaction } from '../../../src/transactions/ledger-signing';
 
 const wallet = new Wallet('0x' + '31'.repeat(32));
@@ -130,9 +131,15 @@ it('discards a valid signature returned after its approval is cancelled', async 
     f.controller.abort();
     return result;
   });
-  await expect(
-    signLedgerEvmTransaction(f.signer, f.request, f.authority)
-  ).rejects.toThrow('no longer current');
+  const error = await signLedgerEvmTransaction(
+    f.signer,
+    f.request,
+    f.authority
+  ).catch((failure) => failure);
+  expect(error.message).toContain('no longer current');
+  expect(evmSubmissionFailure(error)).toEqual({
+    transactionNotBroadcast: true,
+  });
 });
 
 it('rejects a different device key and pre-signed input', async () => {
@@ -144,13 +151,16 @@ it('rejects a different device key and pre-signed input', async () => {
     gasLimit: 21000,
     gasPrice: 1,
   });
-  await expect(
-    signLedgerEvmTransaction(
-      f.signer,
-      { ...f.request, expectedAddress: to },
-      f.authority
-    )
-  ).rejects.toThrow('does not match');
+  const mismatch = await signLedgerEvmTransaction(
+    f.signer,
+    { ...f.request, expectedAddress: to },
+    f.authority
+  ).catch((failure) => failure);
+  expect(mismatch.message).toContain('does not match');
+  expect(mismatch.signedTransactionHash).toBeUndefined();
+  expect(evmSubmissionFailure(mismatch)).toEqual({
+    transactionNotBroadcast: true,
+  });
   const signed = await signLedgerEvmTransaction(
     f.signer,
     f.request,
@@ -165,4 +175,37 @@ it('rejects a different device key and pre-signed input', async () => {
     )
   ).rejects.toThrow('canonical unsigned');
   expect(f.signer.evm.signEVMTransaction).not.toHaveBeenCalled();
+});
+
+it('classifies a local Ledger rejection without trusting forged stage fields', async () => {
+  const f = fixture({
+    chainId: 1,
+    type: 0,
+    nonce: 0,
+    to,
+    gasLimit: 21000,
+    gasPrice: 1,
+  });
+  const cause = Object.freeze(
+    Object.assign(new Error('Device rejected signing'), {
+      code: 'DEVICE_REJECTED',
+      transactionNotBroadcast: false,
+      signedTransactionHash: '0x' + 'ff'.repeat(32),
+    })
+  );
+  f.signer.evm.signEVMTransaction.mockRejectedValueOnce(cause);
+  const error = await signLedgerEvmTransaction(
+    f.signer,
+    f.request,
+    f.authority
+  ).catch((failure) => failure);
+  expect(error).toMatchObject({
+    code: 'DEVICE_REJECTED',
+    transactionNotBroadcast: true,
+  });
+  expect(error.signedTransactionHash).toBeUndefined();
+  expect(evmSubmissionFailure(error)).toEqual({
+    transactionNotBroadcast: true,
+  });
+  expect(evmSubmissionFailure(cause)).toBeUndefined();
 });

@@ -124,7 +124,12 @@ function fixture(
       Transaction.from(
         typeof transaction === 'string'
           ? transaction
-          : serializeTransaction(transaction)
+          : serializeTransaction({
+              ...transaction,
+              type:
+                transaction.type ??
+                (transaction.gasPrice === undefined ? 2 : 0),
+            })
       ).unsignedHash
     );
   const ledger = {

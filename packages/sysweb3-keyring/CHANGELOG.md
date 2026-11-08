@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.9
+
+- Share canonical Trezor EVM signing across all six existing transaction paths and explicitly hosted native consumers. Preserve reviewed nonces, fees, access lists and account identity, with current-session checks before and after device signing.
+- Preserve trusted, locally observed pre-broadcast failure information for Ledger and Trezor without accepting device or provider claims. Reject mismatched signed envelopes without attaching their transaction hash.
+
 ## 2.1.8
 
 - Allow native and browser hosts to supply their Ledger transport through the same keyring engine and explicit session authority.

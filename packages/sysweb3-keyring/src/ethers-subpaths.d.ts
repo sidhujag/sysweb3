@@ -30,6 +30,7 @@ declare module 'ethers/utils' {
     isHexString,
     parseEther,
     parseUnits,
+    toBeHex,
   } from 'ethers';
   export type { BytesLike } from 'ethers';
 }

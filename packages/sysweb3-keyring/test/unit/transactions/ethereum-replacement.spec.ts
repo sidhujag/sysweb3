@@ -70,7 +70,12 @@ const ACCESS_LIST = [
 ];
 const deviceSignature = async (params: any, wallet = hardwareWallet) => {
   const tx = Transaction.from(
-    typeof params === 'string' ? params : serializeTransaction(params)
+    typeof params === 'string'
+      ? params
+      : serializeTransaction({
+          ...params,
+          type: params.type ?? (params.gasPrice === undefined ? 2 : 0),
+        })
   );
   const signed = await wallet.signTransaction({
     chainId: tx.chainId,
@@ -1485,7 +1490,7 @@ describe('source SDK account-scoped replacement signing', () => {
         transaction({ type: 1, nonce: 0, accessList: ACCESS_LIST })
       );
       const deviceCall = jest.fn(async (tx) => {
-        expect(tx.type).toBe(2);
+        expect(tx.type).toBeUndefined();
         expect(tx.gasPrice).toBeUndefined();
         expect(typeof tx.maxFeePerGas).toBe('string');
         expect(typeof tx.maxPriorityFeePerGas).toBe('string');

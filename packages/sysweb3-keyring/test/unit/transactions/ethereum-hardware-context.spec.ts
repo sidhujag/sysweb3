@@ -328,7 +328,11 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
       'rejects a missing request %s before transaction work',
       async (params) => {
         await expect(
-          sdk.sendFormattedTransaction(params as any, true, withEvmSendIdentity(sdk, specializedApproval))
+          sdk.sendFormattedTransaction(
+            params as any,
+            true,
+            withEvmSendIdentity(sdk, specializedApproval)
+          )
         ).rejects.toMatchObject({ transactionNotBroadcast: true });
         expect(device).not.toHaveBeenCalled();
         expect(provider.sendTransaction).not.toHaveBeenCalled();
@@ -367,7 +371,11 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
             [field]: malformed,
           };
           await expect(
-            sdk.sendFormattedTransaction(params, true, withEvmSendIdentity(sdk, specializedApproval))
+            sdk.sendFormattedTransaction(
+              params,
+              true,
+              withEvmSendIdentity(sdk, specializedApproval)
+            )
           ).rejects.toMatchObject({ transactionNotBroadcast: true });
         }
         expect(provider.getTransactionCount).not.toHaveBeenCalled();
@@ -862,15 +870,10 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
               return implementation(raw);
             });
             const signing = sendToken();
-            const rejection =
-              kind === KeyringAccountType.Ledger
-                ? expect(signing).rejects.toMatchObject({
-                    code: 'HARDWARE_REQUEST_CANCELLED',
-                    transactionNotBroadcast: true,
-                  })
-                : expect(signing).rejects.toThrow(
-                    'Wallet signing context changed'
-                  );
+            const rejection = expect(signing).rejects.toMatchObject({
+              code: 'HARDWARE_REQUEST_CANCELLED',
+              transactionNotBroadcast: true,
+            });
             await entered.promise;
             if (change === 'account') state.activeAccountId = 1;
             if (change === 'network')
@@ -975,7 +978,12 @@ describe('EVM cancellation signing context', () => {
   };
   const deviceSignature = (params: any) => {
     const tx = Transaction.from(
-      typeof params === 'string' ? params : serializeTransaction(params)
+      typeof params === 'string'
+        ? params
+        : serializeTransaction({
+            ...params,
+            type: params.type ?? (params.gasPrice === undefined ? 2 : 0),
+          })
     );
     return wallet.signingKey.sign(tx.unsignedHash);
   };
@@ -1316,6 +1324,7 @@ describe('EVM cancellation signing context', () => {
       expect(await result).toEqual({
         isCanceled: false,
         error: true,
+        transactionNotBroadcast: true,
       });
       expect(provider.sendTransaction).not.toHaveBeenCalled();
       expect(getKey).not.toHaveBeenCalled();
@@ -1461,6 +1470,7 @@ describe('EVM cancellation signing context', () => {
       expect(await run()).toEqual({
         isCanceled: false,
         error: true,
+        transactionNotBroadcast: true,
       });
       expect(getKey).not.toHaveBeenCalled();
       expect(provider.sendTransaction).not.toHaveBeenCalled();
@@ -1556,6 +1566,7 @@ describe('EVM cancellation signing context', () => {
       expect(await pending).toEqual({
         isCanceled: false,
         error: true,
+        transactionNotBroadcast: true,
       });
       expect(provider.sendTransaction).not.toHaveBeenCalled();
     }

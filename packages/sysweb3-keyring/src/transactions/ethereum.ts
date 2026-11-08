@@ -104,11 +104,11 @@ import {
   type PreparedSoftwareEvmSigningRequest,
   type PreparedEvmSigningOptions,
 } from './prepared-evm';
+import { signTrezorEvmTransaction } from './trezor-signing';
 import { getAddressDerivationPath } from '../utils/derivation-paths';
 
 import type { LedgerKeyring } from '../ledger';
 import type { TrezorKeyring } from '../trezor';
-import type { EthereumTransactionEIP1559 } from '@trezor/connect-webextension';
 
 /** Minimal trusted device capabilities used by EVM transaction routing. */
 export interface EthereumLedgerSigner {
@@ -150,31 +150,6 @@ const stripHexPrefix = (value: string) => {
   return value.startsWith('0x') || value.startsWith('0X')
     ? value.slice(2)
     : value;
-};
-
-// Connect returns hexadecimal signature fields; normalize their encoding
-// without mutating the response or reparsing an already numeric recovery v.
-const trezorSignature = (signature: {
-  r: string;
-  s: string;
-  v: string | number;
-}) => {
-  const { r, s, v } = signature;
-  if (![r, s].every((value) => /^(?:0x)?[0-9a-f]{64}$/i.test(value))) {
-    throw new Error('Invalid Trezor signature scalar encoding');
-  }
-  if (typeof v === 'string' && !/^(?:0x)?[0-9a-f]+$/i.test(v)) {
-    throw new Error('Invalid Trezor signature recovery value');
-  }
-  const recovery = typeof v === 'number' ? v : Number.parseInt(v, 16);
-  if (!Number.isSafeInteger(recovery) || recovery < 0) {
-    throw new Error('Invalid Trezor signature recovery value');
-  }
-  return {
-    r: `0x${stripHexPrefix(r)}`,
-    s: `0x${stripHexPrefix(s)}`,
-    v: recovery,
-  };
 };
 
 const normalizeEthersOverrideValue = (value: any) => normalizeTxValue(value);
@@ -1719,45 +1694,34 @@ export class EthereumTransactions<
         const expectedUnsignedTransaction =
           serializeTransaction(txFormattedForTrezor);
         if (retained) assertCancellationEnvelope(expectedUnsignedTransaction);
-        const signature = await this.requireTrezorSigner().signEthTransaction(
+        const { rawTransaction: signedTx } = await signTrezorEvmTransaction(
+          this.requireTrezorSigner(),
           {
+            accountIndex: activeAccountId,
             coin: trezorCoin,
-            tx: txFormattedForTrezor,
-            index: activeAccountId.toString(),
+            expectedAddress: activeAccount.address,
             slip44: activeNetwork.slip44,
+            unsignedTransaction: expectedUnsignedTransaction,
           },
           await this.authorizeHardwareTransaction(provider, assertCurrent)
         );
         assertCurrent();
 
-        if (signature.success) {
-          const signedTx = serializeTransaction(
-            txFormattedForTrezor,
-            trezorSignature(signature.payload)
-          );
-          assertCurrent();
-          assertHardwareTransactionSender(signedTx, activeAccount.address);
-          const transactionResponse =
-            await this.submitSignedHardwareTransaction(
-              provider,
-              signedTx,
-              ({ rawTransaction, admit }) =>
-                admit(() => provider.sendTransaction(rawTransaction)),
-              submission,
-              undefined,
-              expectedUnsignedTransaction
-            );
+        assertHardwareTransactionSender(signedTx, activeAccount.address);
+        const transactionResponse = await this.submitSignedHardwareTransaction(
+          provider,
+          signedTx,
+          ({ rawTransaction, admit }) =>
+            admit(() => provider.sendTransaction(rawTransaction)),
+          submission,
+          undefined,
+          expectedUnsignedTransaction
+        );
 
-          return {
-            isCanceled: true,
-            transaction: transactionResponse,
-          };
-        } else {
-          return {
-            isCanceled: false,
-            error: true,
-          };
-        }
+        return {
+          isCanceled: true,
+          transaction: transactionResponse,
+        };
       } catch (error) {
         return {
           ...evmSubmissionFailure(error),
@@ -2333,53 +2297,30 @@ export class EthereumTransactions<
         ...txFormattedForTrezor,
         type: isLegacy ? 0 : 2,
       });
-      const signature = await this.requireTrezorSigner().signEthTransaction(
+      const { rawTransaction: signedTx } = await signTrezorEvmTransaction(
+        this.requireTrezorSigner(),
         {
-          index: `${activeAccountId}`,
-          tx: txFormattedForTrezor as EthereumTransactionEIP1559,
+          accountIndex: activeAccountId,
           coin: activeNetwork.currency,
+          expectedAddress: activeAccount.address,
           slip44: activeNetwork.slip44,
+          unsignedTransaction: expectedUnsignedTransaction,
         },
         await this.authorizeHardwareTransaction(provider, assertCurrent)
       );
       assertCurrent();
-      if (signature.success) {
-        try {
-          const txFormattedForEthers = isLegacy
-            ? {
-                ...formatParams,
-                nonce: transactionNonce,
-                chainId: activeNetwork.chainId,
-                type: 0, // Force Type 0 for legacy
-              }
-            : {
-                ...formatParams,
-                nonce: transactionNonce,
-                chainId: activeNetwork.chainId,
-                type: 2, // Need explicit type for hardware wallet serialization
-              };
-          const signedTx = serializeTransaction(
-            txFormattedForEthers,
-            trezorSignature(signature.payload)
-          );
-          assertHardwareTransactionSender(signedTx, activeAccount.address);
-          const finalTx = await this.submitSignedHardwareTransaction(
-            provider,
-            signedTx,
-            ({ rawTransaction, admit }) =>
-              admit(() => provider.sendTransaction(rawTransaction)),
-            submission,
-            assertBeforeBroadcast,
-            expectedUnsignedTransaction
-          );
+      assertHardwareTransactionSender(signedTx, activeAccount.address);
+      const finalTx = await this.submitSignedHardwareTransaction(
+        provider,
+        signedTx,
+        ({ rawTransaction, admit }) =>
+          admit(() => provider.sendTransaction(rawTransaction)),
+        submission,
+        assertBeforeBroadcast,
+        expectedUnsignedTransaction
+      );
 
-          return finalTx;
-        } catch (error) {
-          throw error;
-        }
-      } else {
-        throw new Error(`Transaction Signature Failed. Error: ${signature}`);
-      }
+      return finalTx;
     };
 
     const sendEVMTransaction = async () => {
@@ -2826,42 +2767,32 @@ export class EthereumTransactions<
         assertTransactionGasLimit(txFormattedForTrezor);
         const expectedUnsignedTransaction =
           serializeTransaction(txFormattedForTrezor);
-        const signature = await this.requireTrezorSigner().signEthTransaction(
+        const { rawTransaction: signedTx } = await signTrezorEvmTransaction(
+          this.requireTrezorSigner(),
           {
+            accountIndex: activeAccountId,
             coin: trezorCoin,
-            tx: txFormattedForTrezor,
-            index: activeAccountId.toString(),
+            expectedAddress: activeAccount.address,
             slip44: activeNetwork.slip44,
+            unsignedTransaction: expectedUnsignedTransaction,
           },
           await this.authorizeHardwareTransaction(provider, assertCurrent)
         );
-        if (signature.success) {
-          const signedTx = serializeTransaction(
-            txFormattedForTrezor,
-            trezorSignature(signature.payload)
-          );
-          assertSignedSender(signedTx);
-          assertHardwareTransactionSender(signedTx, activeAccount.address);
-          const transactionResponse =
-            await this.submitSignedHardwareTransaction(
-              provider,
-              signedTx,
-              ({ rawTransaction, admit }) =>
-                admit(() => provider.sendTransaction(rawTransaction)),
-              submission,
-              assertBeforeBroadcast,
-              expectedUnsignedTransaction
-            );
-          return {
-            isSpeedUp: true,
-            transaction: transactionResponse,
-          };
-        } else {
-          return {
-            isSpeedUp: false,
-            error: true,
-          };
-        }
+        assertSignedSender(signedTx);
+        assertHardwareTransactionSender(signedTx, activeAccount.address);
+        const transactionResponse = await this.submitSignedHardwareTransaction(
+          provider,
+          signedTx,
+          ({ rawTransaction, admit }) =>
+            admit(() => provider.sendTransaction(rawTransaction)),
+          submission,
+          assertBeforeBroadcast,
+          expectedUnsignedTransaction
+        );
+        return {
+          isSpeedUp: true,
+          transaction: transactionResponse,
+        };
       } catch (error) {
         console.error(
           '[SpeedUp] Failed to send replacement transaction with Trezor:',
@@ -3175,12 +3106,14 @@ export class EthereumTransactions<
           ...txToBeSignedByTrezor,
           type: isLegacy ? 0 : 2,
         });
-        const signature = await this.requireTrezorSigner().signEthTransaction(
+        const { rawTransaction: signedTx } = await signTrezorEvmTransaction(
+          this.requireTrezorSigner(),
           {
-            index: `${activeAccountId}`,
-            tx: txToBeSignedByTrezor,
+            accountIndex: activeAccountId,
             coin: activeNetwork.currency,
+            expectedAddress: activeAccount.address,
             slip44: activeNetwork.slip44,
+            unsignedTransaction: expectedUnsignedTransaction,
           },
           await this.authorizeHardwareTransaction(
             provider,
@@ -3190,61 +3123,23 @@ export class EthereumTransactions<
         );
 
         assertCurrent();
-        if (signature.success) {
-          try {
-            let txFormattedForEthers;
-            if (isLegacy) {
-              txFormattedForEthers = {
-                to: tokenAddress,
-                value: '0x0',
-                gasLimit: gasLimit,
-                gasPrice,
-                data: txData,
-                nonce,
-                chainId: activeNetwork.chainId,
-                type: 0,
-              };
-            } else {
-              txFormattedForEthers = {
-                to: tokenAddress,
-                value: '0x0',
-                gasLimit: gasLimit,
-                maxFeePerGas,
-                maxPriorityFeePerGas,
-                data: txData,
-                nonce,
-                chainId: activeNetwork.chainId,
-                type: 2, // Need explicit type for hardware wallet serialization
-              };
-            }
-            const signedTx = serializeTransaction(
-              txFormattedForEthers,
-              trezorSignature(signature.payload)
+        assertHardwareTransactionSender(signedTx, activeAccount.address);
+        const finalTx = await this.submitSignedHardwareTransaction(
+          provider,
+          signedTx,
+          async ({ rawTransaction, admit }) => {
+            const response = await admit(() =>
+              provider.sendTransaction(rawTransaction)
             );
-            assertCurrent();
-            assertHardwareTransactionSender(signedTx, activeAccount.address);
-            const finalTx = await this.submitSignedHardwareTransaction(
-              provider,
-              signedTx,
-              async ({ rawTransaction, admit }) => {
-                const response = await admit(() =>
-                  provider.sendTransaction(rawTransaction)
-                );
-                saveTrezorTx && saveTrezorTx(response);
-                return response;
-              },
-              submission,
-              undefined,
-              expectedUnsignedTransaction
-            );
+            saveTrezorTx && saveTrezorTx(response);
+            return response;
+          },
+          submission,
+          undefined,
+          expectedUnsignedTransaction
+        );
 
-            return finalTx as any;
-          } catch (error) {
-            throw error;
-          }
-        } else {
-          throw new Error(`Transaction Signature Failed. Error: ${signature}`);
-        }
+        return finalTx as any;
       } catch (error) {
         throw error;
       }
@@ -3477,12 +3372,14 @@ export class EthereumTransactions<
           ...txToBeSignedByTrezor,
           type: isLegacy ? 0 : 2,
         });
-        const signature = await this.requireTrezorSigner().signEthTransaction(
+        const { rawTransaction: signedTx } = await signTrezorEvmTransaction(
+          this.requireTrezorSigner(),
           {
-            index: `${activeAccountId}`,
-            tx: txToBeSignedByTrezor,
+            accountIndex: activeAccountId,
             coin: trezorCoin,
+            expectedAddress: activeAccount.address,
             slip44: activeNetwork.slip44,
+            unsignedTransaction: expectedUnsignedTransaction,
           },
           await this.authorizeHardwareTransaction(
             provider,
@@ -3492,57 +3389,18 @@ export class EthereumTransactions<
         );
 
         assertCurrent();
-        if (signature.success) {
-          try {
-            let txFormattedForEthers;
-            if (isLegacy) {
-              txFormattedForEthers = {
-                to: tokenAddress,
-                value: '0x0',
-                gasLimit,
-                gasPrice,
-                data: txData,
-                nonce,
-                chainId: activeNetwork.chainId,
-                type: 0,
-              };
-            } else {
-              txFormattedForEthers = {
-                to: tokenAddress,
-                value: '0x0',
-                gasLimit,
-                maxFeePerGas,
-                maxPriorityFeePerGas,
-                data: txData,
-                nonce,
-                chainId: activeNetwork.chainId,
-                type: 2, // Need explicit type for hardware wallet serialization
-              };
-            }
-            const signedTx = serializeTransaction(
-              txFormattedForEthers,
-              trezorSignature(signature.payload)
-            );
-            assertCurrent();
-            assertHardwareTransactionSender(signedTx, activeAccount.address);
-            const finalTx = await this.submitSignedHardwareTransaction(
-              provider,
-              signedTx,
-              ({ rawTransaction, admit }) =>
-                admit(() => provider.sendTransaction(rawTransaction)),
-              submission,
-              undefined,
-              expectedUnsignedTransaction
-            );
+        assertHardwareTransactionSender(signedTx, activeAccount.address);
+        const finalTx = await this.submitSignedHardwareTransaction(
+          provider,
+          signedTx,
+          ({ rawTransaction, admit }) =>
+            admit(() => provider.sendTransaction(rawTransaction)),
+          submission,
+          undefined,
+          expectedUnsignedTransaction
+        );
 
-            return finalTx as any;
-          } catch (error) {
-            console.log({ error });
-            throw error;
-          }
-        } else {
-          throw new Error(`Transaction Signature Failed. Error: ${signature}`);
-        }
+        return finalTx as any;
       } catch (error) {
         console.log({ errorDois: error });
         throw error;
@@ -3776,12 +3634,14 @@ export class EthereumTransactions<
           ...txToBeSignedByTrezor,
           type: isLegacy ? 0 : 2,
         });
-        const signature = await this.requireTrezorSigner().signEthTransaction(
+        const { rawTransaction: signedTx } = await signTrezorEvmTransaction(
+          this.requireTrezorSigner(),
           {
-            index: `${activeAccountId}`,
-            tx: txToBeSignedByTrezor,
+            accountIndex: activeAccountId,
             coin: activeNetwork.currency,
+            expectedAddress: activeAccount.address,
             slip44: activeNetwork.slip44,
+            unsignedTransaction: expectedUnsignedTransaction,
           },
           await this.authorizeHardwareTransaction(
             provider,
@@ -3791,57 +3651,18 @@ export class EthereumTransactions<
         );
 
         assertCurrent();
-        if (signature.success) {
-          try {
-            let txFormattedForEthers;
-            if (isLegacy) {
-              txFormattedForEthers = {
-                to: tokenAddress,
-                value: '0x0',
-                gasLimit,
-                gasPrice,
-                data: txData,
-                nonce,
-                chainId: activeNetwork.chainId,
-                type: 0,
-              };
-            } else {
-              txFormattedForEthers = {
-                to: tokenAddress,
-                value: '0x0',
-                gasLimit,
-                maxFeePerGas,
-                maxPriorityFeePerGas,
-                data: txData,
-                nonce,
-                chainId: activeNetwork.chainId,
-                type: 2, // Need explicit type for hardware wallet serialization
-              };
-            }
-            const signedTx = serializeTransaction(
-              txFormattedForEthers,
-              trezorSignature(signature.payload)
-            );
-            assertCurrent();
-            assertHardwareTransactionSender(signedTx, activeAccount.address);
-            const finalTx = await this.submitSignedHardwareTransaction(
-              provider,
-              signedTx,
-              ({ rawTransaction, admit }) =>
-                admit(() => provider.sendTransaction(rawTransaction)),
-              submission,
-              undefined,
-              expectedUnsignedTransaction
-            );
+        assertHardwareTransactionSender(signedTx, activeAccount.address);
+        const finalTx = await this.submitSignedHardwareTransaction(
+          provider,
+          signedTx,
+          ({ rawTransaction, admit }) =>
+            admit(() => provider.sendTransaction(rawTransaction)),
+          submission,
+          undefined,
+          expectedUnsignedTransaction
+        );
 
-            return finalTx as any;
-          } catch (error) {
-            console.log({ error });
-            throw error;
-          }
-        } else {
-          throw new Error(`Transaction Signature Failed. Error: ${signature}`);
-        }
+        return finalTx as any;
       } catch (error) {
         console.log({ error });
         throw error;
