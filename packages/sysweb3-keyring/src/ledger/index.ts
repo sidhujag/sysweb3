@@ -9,10 +9,7 @@ import {
 } from 'ethers';
 
 import { captureHardwareTransactionAuthority } from '../hardware-transaction-authority';
-import {
-  ConnectionStatus,
-  HardwareWalletType,
-} from '../hardware-wallet-manager';
+import { ConnectionStatus, HardwareWalletType } from '../hardware-wallet-types';
 import { ledgerCancelledError, ledgerHostError } from './host-types';
 
 import type { HardwareWalletManager } from '../hardware-wallet-manager';

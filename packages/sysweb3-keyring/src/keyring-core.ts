@@ -190,7 +190,7 @@ export type KeyringTrezorSigner = Pick<
   | 'verifyUtxoAddress'
 >;
 
-interface KeyringHardware<
+export interface KeyringHardware<
   TLedger extends KeyringLedgerSigner | undefined,
   TTrezor extends KeyringTrezorSigner | undefined
 > {

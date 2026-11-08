@@ -1,21 +1,11 @@
 import { EventEmitter } from 'events';
 
+import { ConnectionStatus, HardwareWalletType } from './hardware-wallet-types';
 import { ledgerCancelledError, ledgerHostError } from './ledger/host-types';
 import TrezorConnect, { subscribeTrezorEvents } from './trezor/connect';
 
+import type { HardwareWalletStatus } from './hardware-wallet-types';
 import type { LedgerHost } from './ledger/host-types';
-
-export enum HardwareWalletType {
-  LEDGER = 'ledger',
-  TREZOR = 'trezor',
-}
-
-export enum ConnectionStatus {
-  DISCONNECTED = 'disconnected',
-  CONNECTING = 'connecting',
-  CONNECTED = 'connected',
-  ERROR = 'error',
-}
 
 interface ConnectionPoolEntry {
   status: ConnectionStatus;
@@ -29,18 +19,6 @@ interface RetryConfig {
   baseDelay: number;
   maxDelay: number;
   backoffMultiplier: number;
-}
-
-export interface HardwareWalletStatus {
-  type: HardwareWalletType;
-  status: ConnectionStatus;
-  connected: boolean;
-  lastSeen?: number;
-  error?: string;
-  deviceInfo?: {
-    model?: string;
-    firmwareVersion?: string;
-  };
 }
 
 /**

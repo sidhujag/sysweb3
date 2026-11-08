@@ -19,6 +19,7 @@ export * from './providers';
 export * from './utils/derivation-paths';
 export * from './network-utils';
 export * from './hardware-wallet-manager';
+export * from './hardware-wallet-types';
 export { PsbtUtils } from './utils/psbt';
 export {
   deriveDescriptorAddress,

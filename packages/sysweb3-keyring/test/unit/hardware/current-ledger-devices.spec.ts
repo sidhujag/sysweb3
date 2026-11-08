@@ -1,7 +1,5 @@
-import {
-  HardwareWalletManager,
-  HardwareWalletType,
-} from '../../../src/hardware-wallet-manager';
+import { HardwareWalletManager } from '../../../src/hardware-wallet-manager';
+import { HardwareWalletType } from '../../../src/hardware-wallet-types';
 import {
   ledgerHostError,
   type LedgerHost,

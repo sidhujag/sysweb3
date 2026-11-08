@@ -83,6 +83,24 @@
       ],
       "cjs/utils/derivation-paths.js": [
         "types/utils/derivation-paths.d.ts"
+      ],
+      "cjs/host-keyring": [
+        "types/host-keyring.d.ts"
+      ],
+      "cjs/host-keyring.js": [
+        "types/host-keyring.d.ts"
+      ],
+      "cjs/ledger-hardware": [
+        "types/ledger-hardware.d.ts"
+      ],
+      "cjs/ledger-hardware.js": [
+        "types/ledger-hardware.d.ts"
+      ],
+      "cjs/hardware-wallet-types": [
+        "types/hardware-wallet-types.d.ts"
+      ],
+      "cjs/hardware-wallet-types.js": [
+        "types/hardware-wallet-types.d.ts"
       ]
     }
   },

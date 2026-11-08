@@ -1,6 +1,5 @@
 import { HardwareWalletManager } from './hardware-wallet-manager';
-import { KeyringCore } from './keyring-core';
-import { prepareKeyringHost } from './keyring-host';
+import { HostKeyring } from './host-keyring';
 import { LedgerKeyring } from './ledger';
 import {
   createLedgerPsbtSigner,
@@ -33,7 +32,7 @@ export type KeyringManagerOptions = Omit<
 
 /** Browser keyring with an explicit wallet authority and hardware adapter. */
 export class KeyringManager
-  extends KeyringCore<LedgerKeyring, TrezorKeyring>
+  extends HostKeyring<LedgerKeyring, TrezorKeyring>
   implements IKeyringManager
 {
   constructor(host: KeyringHost, options: KeyringManagerOptions) {
@@ -43,19 +42,19 @@ export class KeyringManager
     }
     if (typeof options.captureEvmSubmission !== 'function')
       throw new TypeError('Browser keyring requires durable EVM submission');
-    const { binding, publishControls } = prepareKeyringHost(host, options);
-    const manager = hardwareManager ?? new HardwareWalletManager(ledgerHost);
-    const trezorSigner = new TrezorKeyring();
-    const ledgerSigner = new LedgerKeyring(manager, ledgerHost);
-    super(binding, {
-      ledgerSigner,
-      trezorSigner,
-      syscoinHardwareSigners: {
-        ledger: createLedgerPsbtSigner(ledgerSigner),
-        trezor: createTrezorPsbtSigner(trezorSigner),
-      },
+    super(host, options, () => {
+      const manager = hardwareManager ?? new HardwareWalletManager(ledgerHost);
+      const trezorSigner = new TrezorKeyring();
+      const ledgerSigner = new LedgerKeyring(manager, ledgerHost);
+      return {
+        ledgerSigner,
+        trezorSigner,
+        syscoinHardwareSigners: {
+          ledger: createLedgerPsbtSigner(ledgerSigner),
+          trezor: createTrezorPsbtSigner(trezorSigner),
+        },
+      };
     });
-    publishControls?.();
   }
 
   public static async createInitialized(
