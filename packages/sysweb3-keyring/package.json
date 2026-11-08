@@ -131,6 +131,12 @@
       ],
       "cjs/trezor/connect.js": [
         "types/trezor/connect.d.ts"
+      ],
+      "cjs/hardware-transaction-authority": [
+        "types/hardware-transaction-authority.d.ts"
+      ],
+      "cjs/hardware-transaction-authority.js": [
+        "types/hardware-transaction-authority.d.ts"
       ]
     }
   },
