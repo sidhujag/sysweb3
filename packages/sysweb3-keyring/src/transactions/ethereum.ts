@@ -1884,7 +1884,7 @@ export class EthereumTransactions<
         {
           transactionNotBroadcast:
             !broadcastAttempted ||
-            evmSubmissionFailure(error).transactionNotBroadcast,
+            evmSubmissionFailure(error)?.transactionNotBroadcast === true,
         }
       );
       if (error instanceof Error) {

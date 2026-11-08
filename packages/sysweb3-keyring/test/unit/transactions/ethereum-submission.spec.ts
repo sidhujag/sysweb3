@@ -803,5 +803,5 @@ it('preserves local dispatch evidence through the formatted-send public error wr
   );
   const error = await f.submit('send').catch((e) => e);
   expect(error).toMatchObject({ transactionNotBroadcast: false });
-  expect(evmSubmissionFailure(error).transactionNotBroadcast).toBe(false);
+  expect(evmSubmissionFailure(error)?.transactionNotBroadcast).toBe(false);
 });

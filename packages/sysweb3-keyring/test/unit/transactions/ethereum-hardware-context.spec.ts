@@ -1284,7 +1284,6 @@ describe('EVM cancellation signing context', () => {
       expect(await result).toEqual({
         isCanceled: false,
         error: true,
-        transactionNotBroadcast: true,
       });
       expect(provider.sendTransaction).not.toHaveBeenCalled();
     }
@@ -1317,7 +1316,6 @@ describe('EVM cancellation signing context', () => {
       expect(await result).toEqual({
         isCanceled: false,
         error: true,
-        transactionNotBroadcast: true,
       });
       expect(provider.sendTransaction).not.toHaveBeenCalled();
       expect(getKey).not.toHaveBeenCalled();
@@ -1332,7 +1330,6 @@ describe('EVM cancellation signing context', () => {
     expect(await run()).toEqual({
       isCanceled: false,
       error: true,
-      transactionNotBroadcast: true,
     });
     expect(provider.verifyConfiguredChainId).not.toHaveBeenCalled();
     expect(provider.sendTransaction).not.toHaveBeenCalled();
@@ -1464,7 +1461,6 @@ describe('EVM cancellation signing context', () => {
       expect(await run()).toEqual({
         isCanceled: false,
         error: true,
-        transactionNotBroadcast: true,
       });
       expect(getKey).not.toHaveBeenCalled();
       expect(provider.sendTransaction).not.toHaveBeenCalled();
@@ -1560,7 +1556,6 @@ describe('EVM cancellation signing context', () => {
       expect(await pending).toEqual({
         isCanceled: false,
         error: true,
-        transactionNotBroadcast: true,
       });
       expect(provider.sendTransaction).not.toHaveBeenCalled();
     }
@@ -1604,7 +1599,6 @@ describe('EVM cancellation signing context', () => {
     expect(result).toEqual({
       isCanceled: false,
       error: true,
-      transactionNotBroadcast: true,
     });
     expect(provider.sendTransaction).not.toHaveBeenCalled();
   });
