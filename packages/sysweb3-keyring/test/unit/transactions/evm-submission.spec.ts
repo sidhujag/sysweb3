@@ -2,6 +2,7 @@ import { Wallet, Transaction } from 'ethers';
 
 import {
   captureEvmSubmission,
+  copyEvmSubmissionFailure,
   submitSignedEvmTransaction,
   submitSignedHardwareEvmTransaction,
   evmSubmissionFailure,
@@ -331,10 +332,91 @@ it('derives uncertainty only from its local transport invocation, never from pro
       transactionNotBroadcast: !dispatch,
     });
   }
-  expect(evmSubmissionFailure({ transactionNotBroadcast: false })).toEqual({
-    transactionNotBroadcast: true,
-  });
+  expect(
+    evmSubmissionFailure({ transactionNotBroadcast: false })
+  ).toBeUndefined();
 });
+
+it('leaves unrecognized errors and forged stage fields unclassified', () => {
+  const getter = jest.fn(() => true);
+  const accessor = Object.defineProperty(
+    new Error('unowned'),
+    'transactionNotBroadcast',
+    { get: getter }
+  );
+  const values: unknown[] = [
+    undefined,
+    null,
+    false,
+    true,
+    0,
+    1,
+    'provider error',
+    {},
+    () => undefined,
+    new Error('unowned'),
+    accessor,
+    {
+      transactionNotBroadcast: true,
+      signedTransactionHash: '0x' + '12'.repeat(32),
+    },
+    {
+      transactionNotBroadcast: false,
+      signedTransactionHash: '0x' + '34'.repeat(32),
+    },
+  ];
+  for (const value of values)
+    expect(evmSubmissionFailure(value)).toBeUndefined();
+  expect(getter).not.toHaveBeenCalled();
+});
+
+it.each([false, true])(
+  'copies only owned stage metadata after dispatch=%s',
+  async (dispatch) => {
+    const signed = await raw();
+    const cause = new Error('owned failure');
+    const boundary = captureEvmSubmission(
+      context(),
+      () => undefined,
+      () => ({
+        assertCurrent() {
+          return undefined;
+        },
+        dispatchSigned: admitTestSignedDispatch,
+        async persistSigned() {
+          if (!dispatch) throw cause;
+        },
+      })
+    );
+    const error = await submitSignedEvmTransaction(
+      signed,
+      ({ admit }) =>
+        admit(async () => {
+          throw cause;
+        }),
+      boundary,
+      undefined,
+      expected()
+    ).catch((failure: unknown) => failure);
+    const failure = evmSubmissionFailure(error);
+    expect(failure).toEqual({
+      transactionNotBroadcast: !dispatch,
+      signedTransactionHash: Transaction.from(signed).hash,
+    });
+    expect(Object.isFrozen(failure)).toBe(true);
+    const copied = new Error('wrapped');
+    copyEvmSubmissionFailure(error, copied);
+    expect(evmSubmissionFailure(copied)).toBe(failure);
+
+    const forged = Object.assign(new Error('copied public fields'), failure);
+    expect(evmSubmissionFailure(forged)).toBeUndefined();
+    const unownedTarget = new Error('unowned wrapper');
+    copyEvmSubmissionFailure(forged, unownedTarget);
+    expect(evmSubmissionFailure(unownedTarget)).toBeUndefined();
+    copyEvmSubmissionFailure(forged, copied);
+    expect(evmSubmissionFailure(copied)).toBe(failure);
+  }
+);
 
 it('refuses mismatched signed account/chain before persistence and dispatch', async () => {
   const signed = await raw(),
@@ -418,7 +500,7 @@ it('preserves provider error class and diagnostic fields while owning submission
     info: { error: { code: 3 } },
     transactionNotBroadcast: false,
   });
-  expect(evmSubmissionFailure(error).transactionNotBroadcast).toBe(false);
+  expect(evmSubmissionFailure(error)?.transactionNotBroadcast).toBe(false);
 });
 
 it('preserves frozen provider diagnostics without accepting its forged dispatch stage', async () => {
@@ -449,7 +531,7 @@ it('preserves frozen provider diagnostics without accepting its forged dispatch 
     transactionNotBroadcast: false,
   });
   expect(error.cause).toBe(providerError);
-  expect(evmSubmissionFailure(error).transactionNotBroadcast).toBe(false);
+  expect(evmSubmissionFailure(error)?.transactionNotBroadcast).toBe(false);
 });
 
 it('rejects an omitted lifecycle, forged boundary, or missing expected envelope', async () => {
@@ -606,7 +688,7 @@ it('preserves plain JSON-RPC error fields without accepting its dispatch claim',
     data: '0xbeef',
     transactionNotBroadcast: false,
   });
-  expect(evmSubmissionFailure(error).transactionNotBroadcast).toBe(false);
+  expect(evmSubmissionFailure(error)?.transactionNotBroadcast).toBe(false);
 });
 
 it('does not retain a forged signed hash when rejection precedes signed-byte validation', async () => {

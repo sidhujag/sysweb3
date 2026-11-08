@@ -213,16 +213,16 @@ const failures = new WeakMap<
   }>
 >();
 
-/** Only local stage evidence can label an error as a possibly dispatched send. */
-export function evmSubmissionFailure(error: unknown): Readonly<{
-  transactionNotBroadcast: boolean;
-  signedTransactionHash?: string;
-}> {
-  return (
-    (error && (typeof error === 'object' || typeof error === 'function')
-      ? failures.get(error as object)
-      : undefined) ?? { transactionNotBroadcast: true }
-  );
+/** Return owned stage evidence only; unrecognized errors carry no classification. */
+export function evmSubmissionFailure(error: unknown):
+  | Readonly<{
+      transactionNotBroadcast: boolean;
+      signedTransactionHash?: string;
+    }>
+  | undefined {
+  return error && (typeof error === 'object' || typeof error === 'function')
+    ? failures.get(error as object)
+    : undefined;
 }
 
 /** Preserve local evidence when an existing public API wraps its Error object. */

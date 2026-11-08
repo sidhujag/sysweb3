@@ -598,10 +598,9 @@ describe.each([true, false])(
           to: OTHER,
         }));
       const sign = jest.spyOn(localSigner, 'signTransaction');
-      await expect(f.run()).resolves.toMatchObject({
+      await expect(f.run()).resolves.toEqual({
         isCanceled: false,
         error: true,
-        transactionNotBroadcast: true,
       });
       expect(sign).not.toHaveBeenCalled();
       expect(f.provider.sendTransaction).not.toHaveBeenCalled();
@@ -678,7 +677,6 @@ describe.each([true, false])(
         await expect(f.run(f.options(target))).resolves.toEqual({
           isCanceled: false,
           error: true,
-          transactionNotBroadcast: true,
         });
         expect(f.ledger.evm.signEVMTransaction).not.toHaveBeenCalled();
         expect(f.trezor.signEthTransaction).not.toHaveBeenCalled();

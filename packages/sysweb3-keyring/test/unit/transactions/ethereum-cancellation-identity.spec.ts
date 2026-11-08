@@ -167,7 +167,6 @@ describe('cancellation original identity admission', () => {
     expect(await run()).toEqual({
       isCanceled: false,
       error: true,
-      transactionNotBroadcast: true,
     });
     expect(sendLocalEvmTransaction).toHaveBeenCalledTimes(1);
     expect(jest.mocked(sendLocalEvmTransaction).mock.calls[0][2]).toMatchObject(
@@ -239,7 +238,6 @@ describe('cancellation original identity admission', () => {
       ).toEqual({
         isCanceled: false,
         error: true,
-        transactionNotBroadcast: true,
       });
       expect(validateOriginal).toHaveBeenCalledWith(
         expect.objectContaining({ hash: original.hash, nonce: original.nonce })
@@ -289,7 +287,6 @@ describe('cancellation original identity admission', () => {
     expect(await run(0)).toEqual({
       isCanceled: false,
       error: true,
-      transactionNotBroadcast: true,
     });
     expect(validateOriginal).toHaveBeenCalledWith(null);
     expect(jest.mocked(sendLocalEvmTransaction).mock.calls[0][2].nonce).toBe(0);
@@ -350,7 +347,6 @@ describe('cancellation original identity admission', () => {
     expect(await run()).toEqual({
       isCanceled: false,
       error: true,
-      transactionNotBroadcast: true,
     });
     expect(jest.mocked(sendLocalEvmTransaction).mock.calls[0][2]).toMatchObject(
       {
