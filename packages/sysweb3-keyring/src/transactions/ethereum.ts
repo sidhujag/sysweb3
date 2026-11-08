@@ -2003,6 +2003,13 @@ export class EthereumTransactions<
     if (!params || typeof params !== 'object' || Array.isArray(params))
       throw new TypeError('Invalid EVM transaction request');
     const supplied: Record<string, any> = { ...params };
+    if (
+      supplied.from !== undefined &&
+      getAddress(supplied.from) !== targetIdentity.expectedAddress
+    )
+      throw new Error(
+        'EVM transaction sender does not match the approved payer'
+      );
     // Validate original scalar spellings before conversion. Normalization's
     // permissive zero coercion must not bypass the bounded wire parser.
     for (const field of [
