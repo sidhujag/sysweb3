@@ -74,6 +74,7 @@ jobs:
             test/unit/keyring-manager/software-entry.spec.ts \
             test/unit/keyring-manager/software-indexed-hd.spec.ts \
             test/unit/keyring-manager/initialization.spec.ts \
+            test/unit/keyring-manager/key-derivation.spec.ts \
             test/unit/keyring-manager/unlock-errors.spec.ts \
             test/unit/keyring-manager/vault-kdf-compatibility.spec.ts \
             test/unit/keyring-manager/storage-adapter.spec.ts \
@@ -88,6 +89,8 @@ jobs:
         run: |
           NODE_ENV=test node ../../node_modules/jest/bin/jest.js --config jest.config.js --runInBand --silent \
             test/unit/hardware/trezor-connect-adapter.spec.ts \
+            test/unit/hardware/trezor-host.spec.ts \
+            test/unit/keyring-manager/session-transfer.spec.ts \
             test/unit/hardware/trezor-manager-lifecycle.spec.ts \
             test/unit/hardware/trezor-suite-connect.spec.ts \
             test/unit/hardware/trezor-address.spec.ts \
