@@ -108,6 +108,12 @@
       "cjs/transactions/ledger-signing.js": [
         "types/transactions/ledger-signing.d.ts"
       ],
+      "cjs/transactions/trezor-signing": [
+        "types/transactions/trezor-signing.d.ts"
+      ],
+      "cjs/transactions/trezor-signing.js": [
+        "types/transactions/trezor-signing.d.ts"
+      ],
       "cjs/trezor-hardware": [
         "types/trezor-hardware.d.ts"
       ],

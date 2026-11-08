@@ -1,6 +1,12 @@
 import { Transaction } from 'ethers/transaction';
 
 import { readEvmOwnData } from './evm-envelope';
+import { annotateEvmSubmissionFailure } from './evm-submission-failure';
+
+export {
+  copyEvmSubmissionFailure,
+  evmSubmissionFailure,
+} from './evm-submission-failure';
 
 import type {
   EvmRetainedCancellationOrigin,
@@ -205,34 +211,6 @@ export function assertDurableEvmSubmission(
   boundary.assertCurrent();
 }
 
-const failures = new WeakMap<
-  object,
-  Readonly<{
-    transactionNotBroadcast: boolean;
-    signedTransactionHash?: string;
-  }>
->();
-
-/** Return owned stage evidence only; unrecognized errors carry no classification. */
-export function evmSubmissionFailure(error: unknown):
-  | Readonly<{
-      transactionNotBroadcast: boolean;
-      signedTransactionHash?: string;
-    }>
-  | undefined {
-  return error && (typeof error === 'object' || typeof error === 'function')
-    ? failures.get(error as object)
-    : undefined;
-}
-
-/** Preserve local evidence when an existing public API wraps its Error object. */
-export function copyEvmSubmissionFailure(source: unknown, target: Error): void {
-  if (source && (typeof source === 'object' || typeof source === 'function')) {
-    const failure = failures.get(source as object);
-    if (failure) failures.set(target, failure);
-  }
-}
-
 /** Compare signed wire bytes with the complete envelope captured before signing. */
 export function assertSignedEvmTransactionMatches(
   rawTransaction: string,
@@ -412,61 +390,9 @@ async function submit<T>(
       open = false;
     }
   } catch (cause) {
-    const failure = Object.freeze({
+    throw annotateEvmSubmissionFailure(cause, {
       transactionNotBroadcast: !dispatched,
       ...(hash ? { signedTransactionHash: hash } : {}),
     });
-    // Preserve provider Error identity/class and its data/shortMessage/reason/
-    // cause contract. Only the locally owned submission fields are overwritten.
-    let error =
-      cause instanceof Error
-        ? cause
-        : new Error(
-            typeof cause === 'string' ? cause : 'EVM submission failed'
-          );
-    if (!(cause instanceof Error) && cause && typeof cause === 'object') {
-      // JSON-RPC adapters can reject with a plain error object. Copy data
-      // descriptors without invoking accessors or accepting its stage claim.
-      for (const [key, descriptor] of Object.entries(
-        Object.getOwnPropertyDescriptors(cause)
-      )) {
-        if (
-          key !== 'transactionNotBroadcast' &&
-          key !== 'signedTransactionHash' &&
-          'value' in descriptor
-        ) {
-          Object.defineProperty(error, key, descriptor);
-        }
-      }
-    }
-    const stageDescriptors = Object.fromEntries(
-      Object.entries({ ...failure, signedTransactionHash: hash }).map(
-        ([key, value]) => [
-          key,
-          { value, enumerable: true, configurable: true, writable: true },
-        ]
-      )
-    );
-    try {
-      Object.defineProperties(error, stageDescriptors);
-    } catch {
-      // A frozen provider Error may have non-configurable forged stage fields.
-      // Retain its original details/cause without allowing those fields to win.
-      const wrapped = new Error(error.message);
-      wrapped.name = error.name;
-      const descriptors = Object.getOwnPropertyDescriptors(error);
-      delete descriptors.transactionNotBroadcast;
-      delete descriptors.signedTransactionHash;
-      Object.defineProperties(wrapped, descriptors);
-      if (!Object.prototype.hasOwnProperty.call(wrapped, 'cause'))
-        Object.defineProperty(wrapped, 'cause', {
-          value: error,
-          configurable: true,
-        });
-      Object.defineProperties(wrapped, stageDescriptors);
-      error = wrapped;
-    }
-    failures.set(error, failure);
-    throw error;
   }
 }
