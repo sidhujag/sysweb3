@@ -1,4 +1,5 @@
 /* eslint-disable camelcase */
+import { verify } from '@bitcoinerlab/secp256k1';
 import {
   TypedDataUtils,
   TypedMessage,
@@ -487,6 +488,11 @@ export class TrezorKeyring {
       });
     const approvedTransaction = unsignedSnapshot(psbt);
     const approvedFinalInputs = psbt.data.inputs.map(finalizedFields);
+    const approvedPsbt = psbt.toBase64();
+    const candidate = psbt.clone();
+    const approvedSighashTypes = candidate.data.inputs.map(
+      (input) => input.sighashType ?? 0x01
+    );
     const payload = await this.executeWithRetry(
       async () => {
         assertCurrent();
@@ -531,6 +537,12 @@ export class TrezorKeyring {
     ) {
       throw new Error('Trezor changed an already-finalized input');
     }
+    if (psbt.toBase64() !== approvedPsbt)
+      throw new Error('Trezor signing PSBT changed while awaiting approval');
+    const signatures: Array<{
+      index: number;
+      partialSig: Array<{ pubkey: Buffer; signature: Buffer }>;
+    }> = [];
     for (const i of this.range(psbt.data.inputs.length)) {
       if (approvedFinalInputs[i]) continue;
       if (tx.ins[i].witness == null || tx.ins[i].witness.length !== 2) {
@@ -540,12 +552,34 @@ export class TrezorKeyring {
       }
       const partialSig = [
         {
-          pubkey: tx.ins[i].witness[1],
-          signature: tx.ins[i].witness[0],
+          pubkey: Buffer.from(tx.ins[i].witness[1]),
+          signature: Buffer.from(tx.ins[i].witness[0]),
         },
       ];
-      psbt.updateInput(i, { partialSig });
+      const { pubkey, signature } = partialSig[0];
+      const expectedSighash = approvedSighashTypes[i];
+      if (signature[signature.length - 1] !== expectedSighash)
+        throw new Error(
+          'Trezor signature does not match the approved sighash type'
+        );
+      candidate.updateInput(i, { partialSig });
+      let valid = false;
+      try {
+        valid = candidate.validateSignaturesOfInput(
+          i,
+          (key, hash, value) => verify(hash, key, value),
+          pubkey
+        );
+      } catch {
+        // Invalid keys or script membership must fail before finalization.
+      }
+      if (!valid)
+        throw new Error('Invalid Trezor signature for approved transaction');
+      signatures.push({ index: i, partialSig });
     }
+
+    for (const { index, partialSig } of signatures)
+      psbt.updateInput(index, { partialSig });
 
     try {
       syscoinjs.utils.finalizePSBT(psbt);

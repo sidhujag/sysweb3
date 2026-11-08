@@ -69,7 +69,13 @@ describe('Syscoin Transactions', () => {
     );
   });
 
-  afterEach(() => jest.restoreAllMocks());
+  afterEach(async () => {
+    try {
+      await keyringManager?.destroy();
+    } finally {
+      jest.restoreAllMocks();
+    }
+  });
 
   describe('Fee Estimation', () => {
     it('should get recommended fee from network', async () => {
@@ -498,14 +504,18 @@ describe('Syscoin Transactions', () => {
         mainnetVaultStateGetter
       );
 
-      const address = mainnetKeyring.getActiveAccount().activeAccount.address;
-      expect(address.startsWith('sys1')).toBe(true); // Mainnet prefix
+      try {
+        const address = mainnetKeyring.getActiveAccount().activeAccount.address;
+        expect(address.startsWith('sys1')).toBe(true); // Mainnet prefix
 
-      const fee = await mainnetKeyring.syscoinTransaction.getRecommendedFee(
-        mainnetKeyring.getNetwork().url,
-        ownedUtxoTestRead()
-      );
-      expect(fee).toBeGreaterThan(0);
+        const fee = await mainnetKeyring.syscoinTransaction.getRecommendedFee(
+          mainnetKeyring.getNetwork().url,
+          ownedUtxoTestRead()
+        );
+        expect(fee).toBeGreaterThan(0);
+      } finally {
+        await mainnetKeyring.destroy();
+      }
     });
   });
 
