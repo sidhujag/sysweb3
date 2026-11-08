@@ -101,6 +101,12 @@
       ],
       "cjs/hardware-wallet-types.js": [
         "types/hardware-wallet-types.d.ts"
+      ],
+      "cjs/transactions/ledger-signing": [
+        "types/transactions/ledger-signing.d.ts"
+      ],
+      "cjs/transactions/ledger-signing.js": [
+        "types/transactions/ledger-signing.d.ts"
       ]
     }
   },

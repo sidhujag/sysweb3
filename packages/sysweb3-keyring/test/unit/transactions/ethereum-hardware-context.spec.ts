@@ -862,9 +862,15 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
               return implementation(raw);
             });
             const signing = sendToken();
-            const rejection = expect(signing).rejects.toThrow(
-              'Wallet signing context changed'
-            );
+            const rejection =
+              kind === KeyringAccountType.Ledger
+                ? expect(signing).rejects.toMatchObject({
+                    code: 'HARDWARE_REQUEST_CANCELLED',
+                    transactionNotBroadcast: true,
+                  })
+                : expect(signing).rejects.toThrow(
+                    'Wallet signing context changed'
+                  );
             await entered.promise;
             if (change === 'account') state.activeAccountId = 1;
             if (change === 'network')
