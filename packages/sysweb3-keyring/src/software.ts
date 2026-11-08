@@ -1,51 +1,14 @@
 /** Software-only entry: explicit host storage, no browser/device initialization. */
-import { KeyringCore } from './keyring-core';
-import { prepareKeyringHost } from './keyring-host';
+import { HostKeyring } from './host-keyring';
 
 import type { KeyringHost, KeyringOptions } from './keyring-host';
-import type {
-  EncryptedEvmHdRuntimeAccount,
-  EvmHdRuntimeAccountOptions,
-  EvmHdRuntimeAccountRequest,
-} from './software-hd-account';
-import type {
-  PreparedEvmSigningOptions,
-  PreparedSoftwareEvmSigningRequest,
-  SignedPreparedEvmTransaction,
-} from './transactions/prepared-evm';
 
-export class SoftwareKeyring extends KeyringCore<undefined, undefined> {
+export class SoftwareKeyring extends HostKeyring<undefined, undefined> {
   constructor(host: KeyringHost, options: KeyringOptions) {
-    const { binding, publishControls } = prepareKeyringHost(host, options);
-    super(binding, {
+    super(host, options, () => ({
       ledgerSigner: undefined,
       trezorSigner: undefined,
-    });
-    publishControls?.();
-  }
-
-  /**
-   * Derive a fixed-path Ethereum HD runtime account without network or storage
-   * writes. The returned password-encrypted xprv is internal runtime state,
-   * never a public account/catalogue DTO. The host owns index allocation.
-   */
-  public deriveEvmHdRuntimeAccount(
-    request: EvmHdRuntimeAccountRequest,
-    options: EvmHdRuntimeAccountOptions
-  ): Promise<EncryptedEvmHdRuntimeAccount> {
-    return this.deriveSoftwareEvmHdRuntimeAccount(request, options);
-  }
-
-  /**
-   * Sign exactly the prepared envelope without RPC, fee/nonce discovery or
-   * broadcasting. The host must journal the result before submitting it.
-   * A later lock cannot revoke already returned signed bytes.
-   */
-  public signPreparedEvmTransaction(
-    request: PreparedSoftwareEvmSigningRequest,
-    options: PreparedEvmSigningOptions
-  ): SignedPreparedEvmTransaction {
-    return this.signPreparedSoftwareEvmTransaction(request, options);
+    }));
   }
 
   public static async createInitialized(

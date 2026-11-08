@@ -17,10 +17,8 @@ import TrezorConnect, {
 } from './connect';
 import { serializeWitness } from './witness';
 import { captureHardwareTransactionAuthority } from '../hardware-transaction-authority';
-import {
-  HardwareWalletManager,
-  HardwareWalletType,
-} from '../hardware-wallet-manager';
+import { HardwareWalletManager } from '../hardware-wallet-manager';
+import { HardwareWalletType } from '../hardware-wallet-types';
 import {
   getAccountDerivationPath,
   getAddressDerivationPath,
