@@ -750,9 +750,9 @@ export class EthereumTransactions<
     };
     const context = this.captureEvmAccountContext(target);
     const assertCurrent = () => {
+      hostGuard();
       selected.assertCurrent();
       context.assertCurrent();
-      hostGuard();
       if (
         selected.activeAccountId !== selectedAccount.id ||
         selected.activeAccountType !== selectedAccount.type ||

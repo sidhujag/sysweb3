@@ -562,6 +562,37 @@ describe('software-only prepared signing authority', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it('rechecks the selected account after a synchronous digest guard revokes it', async () => {
+    const selectedAccount = selectSmartAccount();
+    guard.mockImplementationOnce(() => {
+      state.activeAccount = { id: 0, type: KeyringAccountType.HDAccount };
+    });
+    await expect(
+      keyring.ethereumTransaction.ethSign([ADDRESS, '0x' + '12'.repeat(32)], {
+        selectedAccount,
+        targetAccount: request().account,
+        assertCurrent: guard,
+      })
+    ).rejects.toThrow();
+    expect(sign).not.toHaveBeenCalled();
+    expect(provider).not.toHaveBeenCalled();
+  });
+
+  it('snapshots the approved digest before invoking the host guard', async () => {
+    const selectedAccount = selectSmartAccount();
+    const digest = '0x' + '12'.repeat(32);
+    const params = [ADDRESS, digest];
+    guard.mockImplementationOnce(() => {
+      params[1] = '0x' + '34'.repeat(32);
+    });
+    const signature = await keyring.ethereumTransaction.ethSign(params, {
+      selectedAccount,
+      targetAccount: request().account,
+      assertCurrent: guard,
+    });
+    expect(recoverAddress(digest, signature)).toBe(ADDRESS);
+  });
+
   it('rejects missing or asynchronous digest authority before signing', async () => {
     const selectedAccount = selectSmartAccount();
     const digest = '0x' + '12'.repeat(32);
