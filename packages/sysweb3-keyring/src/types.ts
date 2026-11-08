@@ -22,7 +22,7 @@ import {
 import { SyscoinHDSigner } from './signers';
 import { TrezorKeyring } from './trezor';
 
-import type { KeyringCore } from './keyring-core';
+import type { KeyringCore, PreparedSessionTransfer } from './keyring-core';
 import type { PreparedEvmTransaction } from './transactions/evm-envelope';
 import type { OwnedUtxoRpcVerification } from '@sidhujag/sysweb3-network';
 
@@ -442,7 +442,10 @@ export interface IKeyringManager {
   // NEW: Separated initialization methods
   initializeSession: (seedPhrase: string, password: string) => Promise<void>;
   createFirstAccount: (label?: string) => Promise<IKeyringAccountState>;
-  transferSessionTo: (targetKeyring: KeyringCore) => void;
+  prepareSessionTransfer: (
+    targetKeyring: KeyringCore,
+    assertCurrent: () => void
+  ) => Promise<PreparedSessionTransfer>;
   lockWallet: () => Promise<void>;
   // NEW: Store access for stateless keyring
   setVaultStateGetter: (getter: () => any) => void;

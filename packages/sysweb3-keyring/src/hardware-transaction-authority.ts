@@ -10,6 +10,19 @@ const retiredApproval = () =>
     transactionNotBroadcast: true,
   });
 
+export function assertHardwareOperationCurrent(check: () => void): void {
+  let result: unknown;
+  try {
+    result = check();
+  } catch {
+    throw retiredApproval();
+  }
+  if (result !== undefined) {
+    void Promise.resolve(result).catch(() => undefined);
+    throw retiredApproval();
+  }
+}
+
 export function captureHardwareTransactionAuthority(
   authority: HardwareTransactionAuthority
 ): HardwareTransactionAuthority {
@@ -24,16 +37,7 @@ export function captureHardwareTransactionAuthority(
 
   const assertCurrent = () => {
     if (signal.aborted) throw retiredApproval();
-    let result: unknown;
-    try {
-      result = check();
-    } catch {
-      throw retiredApproval();
-    }
-    if (result !== undefined) {
-      void Promise.resolve(result).catch(() => undefined);
-      throw retiredApproval();
-    }
+    assertHardwareOperationCurrent(check);
     if (signal.aborted) throw retiredApproval();
   };
   assertCurrent();

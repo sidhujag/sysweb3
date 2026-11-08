@@ -7,7 +7,7 @@ import type { TrezorKeyring } from '../../../src/trezor';
 
 jest.unmock('../../../src/trezor/connect');
 
-type Adapter = typeof import('../../../src/trezor/connect');
+type Adapter = import('../../../src/trezor/connect').TrezorConnection;
 let adapter: Adapter;
 let Manager: typeof HardwareWalletManager;
 let Keyring: typeof TrezorKeyring;
@@ -27,7 +27,7 @@ const waitFor = async (condition: () => boolean) => {
   expect(condition()).toBe(true);
 };
 const manager = (host?: LedgerHost) => {
-  const value = new Manager(host);
+  const value = new Manager(host, adapter);
   managers.push(value);
   return value;
 };
@@ -48,6 +48,10 @@ const evmRequest = {
   },
 };
 const vendorSigner = () => {
+  const previous = Object.getOwnPropertyDescriptor(
+    ConnectMock,
+    'ethereumSignTransaction'
+  );
   const device = jest.fn().mockResolvedValue({
     success: true,
     payload: { r: '0x01', s: '0x02', v: '0x1b' },
@@ -57,7 +61,9 @@ const vendorSigner = () => {
     value: device,
   });
   releaseHeld.push(() => {
-    Reflect.deleteProperty(ConnectMock, 'ethereumSignTransaction');
+    if (previous)
+      Object.defineProperty(ConnectMock, 'ethereumSignTransaction', previous);
+    else Reflect.deleteProperty(ConnectMock, 'ethereumSignTransaction');
   });
   return device;
 };
@@ -79,7 +85,22 @@ beforeEach(() => {
     windows: { getCurrent: jest.fn() },
   };
   jest.isolateModules(() => {
-    adapter = jest.requireActual('../../../src/trezor/connect');
+    const { createTrezorConnection } = jest.requireActual(
+      '../../../src/trezor/connect'
+    );
+    const { createTrezorWebExtensionHost } = jest.requireActual(
+      '../../../src/trezor/webextension-host'
+    );
+    adapter = createTrezorConnection(
+      createTrezorWebExtensionHost({
+        manifest: {
+          appName: 'Pali',
+          appUrl: 'https://paliwallet.com',
+          email: 'test@example.invalid',
+        },
+        coreMode: 'auto',
+      })
+    );
     Manager = jest.requireActual(
       '../../../src/hardware-wallet-manager'
     ).HardwareWalletManager;
@@ -243,7 +264,7 @@ it('still invalidates a genuine adapter cancellation during initialization', asy
   const value = manager();
   const first = value.initializeTrezor();
   await waitFor(() => (ConnectMock.init as jest.Mock).mock.calls.length === 1);
-  await adapter.default.dispose();
+  await adapter.dispose();
   await expect(first).resolves.toBe(false);
   expect(status(value).connected).toBe(false);
   initialization.resolve();
@@ -297,7 +318,7 @@ it('revokes a queued Trezor reply synchronously before waiting for Ledger cleanu
         reply = resolve;
       }) as any
   );
-  const request = adapter.default.getAccountInfo({
+  const request = adapter.getAccountInfo({
     coin: 'sys',
     path: "m/84'/57'/0'",
   });
@@ -306,7 +327,7 @@ it('revokes a queued Trezor reply synchronously before waiting for Ledger cleanu
   });
   await waitFor(() => !!reply);
   const observer = jest.fn();
-  adapter.subscribeTrezorEvents(observer);
+  adapter.subscribe(observer);
   // Queue the raw success first, but do not yield before destroying the owner.
   reply({
     success: true,
@@ -328,7 +349,7 @@ it('revokes a queued Trezor reply synchronously before waiting for Ledger cleanu
 });
 
 it('reattaches exactly one keyring status callback after each lock and reconnect', async () => {
-  const value = new Keyring();
+  const value = new Keyring(adapter);
   keyrings.push(value);
   const internal = value as any;
   const hardware: HardwareWalletManager = internal.hardwareWalletManager;
@@ -339,7 +360,7 @@ it('reattaches exactly one keyring status callback after each lock and reconnect
     expect(hardware.listenerCount('disconnected')).toBe(1);
     expect(internal.initialized).toBe(true);
     const previousCalls = (ConnectMock.init as jest.Mock).mock.calls.length;
-    await adapter.default.dispose();
+    await adapter.dispose();
     expect(internal.initialized).toBe(false);
     await value.getAccountInfo({ coin: 'sys', slip44: 57 });
     expect(ConnectMock.init).toHaveBeenCalledTimes(previousCalls + 1);
@@ -353,7 +374,7 @@ it('reattaches exactly one keyring status callback after each lock and reconnect
 
 it('does not start a keyring initialization after lock overtakes its startup delay', async () => {
   jest.useFakeTimers({ doNotFake: ['setImmediate'] });
-  const value = new Keyring();
+  const value = new Keyring(adapter);
   keyrings.push(value);
   const initialization = value.init();
   await value.destroy();
@@ -368,7 +389,7 @@ it('does not start a keyring initialization after lock overtakes its startup del
 
 it('does not open the vendor signer when the review retires during the Trezor popup delay', async () => {
   jest.useFakeTimers({ doNotFake: ['setImmediate'] });
-  const value = new Keyring();
+  const value = new Keyring(adapter);
   keyrings.push(value);
   const initialization = value.init();
   await jest.advanceTimersByTimeAsync(100);
@@ -391,7 +412,7 @@ it('does not open the vendor signer when the review retires during the Trezor po
 
 it('rejects a direct Trezor transaction without explicit approval before vendor dispatch', async () => {
   jest.useFakeTimers({ doNotFake: ['setImmediate'] });
-  const value = new Keyring();
+  const value = new Keyring(adapter);
   keyrings.push(value);
   const initialization = value.init();
   await jest.advanceTimersByTimeAsync(100);
@@ -406,13 +427,13 @@ it('rejects a direct Trezor transaction without explicit approval before vendor 
     transactionNotBroadcast: true,
   });
   expect(device).not.toHaveBeenCalled();
-  expect('ethereumSignTransaction' in adapter.default).toBe(false);
+  expect('ethereumSignTransaction' in adapter).toBe(false);
 });
 
 it('rejects asynchronous approval before entering the Trezor transaction connector', async () => {
   const device = vendorSigner();
   await expect(
-    adapter.default.ethereumSignTransactionOwned(
+    adapter.ethereumSignTransactionOwned(
       { path: "m/44'/60'/0'/0/0", transaction: evmRequest.tx },
       {
         signal: new AbortController().signal,
@@ -430,12 +451,12 @@ it('rejects asynchronous approval before entering the Trezor transaction connect
 });
 
 it('checks the owner after the Connect adapter waits to enter the vendor method', async () => {
-  const value = new Keyring();
+  const value = new Keyring(adapter);
   keyrings.push(value);
   await expect(value.init()).resolves.toBe(true);
   const device = vendorSigner();
   let current = true;
-  const pending = adapter.default.ethereumSignTransactionOwned(
+  const pending = adapter.ethereumSignTransactionOwned(
     { path: "m/44'/60'/0'/0/0", transaction: evmRequest.tx },
     {
       signal: new AbortController().signal,
@@ -453,12 +474,12 @@ it('checks the owner after the Connect adapter waits to enter the vendor method'
 });
 
 it('checks UTXO approval after the Connect adapter waits to enter the vendor method', async () => {
-  const value = new Keyring();
+  const value = new Keyring(adapter);
   keyrings.push(value);
   await expect(value.init()).resolves.toBe(true);
   const device = jest.spyOn(ConnectMock, 'signTransaction');
   let current = true;
-  const pending = adapter.default.signTransactionOwned(
+  const pending = adapter.signTransactionOwned(
     { coin: 'sys', inputs: [], outputs: [] },
     {
       signal: new AbortController().signal,
@@ -473,5 +494,5 @@ it('checks UTXO approval after the Connect adapter waits to enter the vendor met
     transactionNotBroadcast: true,
   });
   expect(device).not.toHaveBeenCalled();
-  expect('signTransaction' in adapter.default).toBe(false);
+  expect('signTransaction' in adapter).toBe(false);
 });

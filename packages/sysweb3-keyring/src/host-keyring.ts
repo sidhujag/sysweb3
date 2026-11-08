@@ -65,4 +65,5 @@ export type {
   KeyringHardware,
   KeyringLedgerSigner,
   KeyringTrezorSigner,
+  PreparedSessionTransfer,
 } from './keyring-core';

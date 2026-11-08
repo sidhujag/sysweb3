@@ -27,6 +27,7 @@ const SLH_DSA_PARAMETER_SET = 'SLH-DSA-SHA2-128-24';
 
 import { currentVaultRefusals } from './current-vault-refusal';
 import { isHexString } from './ethers-v6';
+import { assertHardwareOperationCurrent } from './hardware-transaction-authority';
 import {
   initialActiveImportedAccountState,
   initialActiveLedgerAccountState,
@@ -164,6 +165,7 @@ const readCurrentVaultPair = async (
 /** Only the device capabilities consumed by the wallet authority. */
 export interface KeyringLedgerSigner {
   destroy: LedgerKeyring['destroy'];
+  retire: LedgerKeyring['retire'];
   evm: Pick<
     LedgerKeyring['evm'],
     | 'getEvmAddressAndPubKey'
@@ -178,6 +180,7 @@ export interface KeyringLedgerSigner {
 export type KeyringTrezorSigner = Pick<
   TrezorKeyring,
   | 'destroy'
+  | 'retire'
   | 'getAccountInfo'
   | 'getPublicKey'
   | 'signTypedData'
@@ -185,6 +188,8 @@ export type KeyringTrezorSigner = Pick<
   | 'signEthTransaction'
   | 'verifyUtxoAddress'
 >;
+
+export type PreparedSessionTransfer = Readonly<{ transfer(): void }>;
 
 export interface KeyringHardware<
   TLedger extends KeyringLedgerSigner | undefined,
@@ -345,6 +350,7 @@ export class KeyringCore<
   private sessionPassword: SecureBuffer | null = null;
   private sessionMnemonic: SecureBuffer | null = null; // can be a mnemonic or a zprv, can be changed to a zprv when using an imported wallet
   private privateRecordSessionRevision = 0;
+  private sessionLifetime = new AbortController();
   #deviceUnlockRetired = false;
   readonly #sessionOwnership: {
     tracker: SessionOwner;
@@ -575,7 +581,7 @@ export class KeyringCore<
     !!this.sessionPassword && !this.sessionPassword.isCleared();
 
   public lockWallet = async () => {
-    this.privateRecordSessionRevision++;
+    this.retireSessionLifetime();
     // Clear secure session data
     if (this.sessionPassword) {
       this.sessionPassword.clear();
@@ -617,8 +623,11 @@ export class KeyringCore<
     }
   };
 
-  // Direct secure transfer of session data to another keyring
-  public transferSessionTo = (targetKeyring: KeyringCore): void => {
+  /** Retire hardware before preparing a synchronous, one-use session move. */
+  public prepareSessionTransfer = async (
+    targetKeyring: KeyringCore,
+    assertCurrent: () => void
+  ): Promise<PreparedSessionTransfer> => {
     if (!this.isUnlocked()) {
       throw new Error('Source keyring must be unlocked to transfer session');
     }
@@ -628,26 +637,94 @@ export class KeyringCore<
       !(targetKeyring instanceof KeyringCore) ||
       targetKeyring.authority !== this.authority ||
       targetKeyring.storage !== this.storage ||
-      targetKeyring.vaultPersistence !== this.vaultPersistence
+      targetKeyring.vaultPersistence !== this.vaultPersistence ||
+      targetKeyring.#sessionOwnership.tracker !== this.#sessionOwnership.tracker
     ) {
       throw new Error(
         'Cannot transfer session between different wallet authorities'
       );
     }
-    if (targetKeyring === this) return;
-
-    // Transfer ownership of our buffers to the target
-    if (!this.sessionPassword || !this.sessionMnemonic) {
-      throw new Error('Session data is missing during transfer');
+    const sourceGuard = this.#captureSessionGuard();
+    const targetRevision = targetKeyring.privateRecordSessionRevision;
+    const ledger = this.ledgerSigner;
+    const trezor = this.trezorSigner;
+    const retirementChecks: (() => void)[] = [];
+    const checkOwnership = () => {
+      sourceGuard();
+      if (
+        !this.isUnlocked() ||
+        !this.sessionMnemonic ||
+        this.ledgerSigner !== ledger ||
+        this.trezorSigner !== trezor ||
+        targetKeyring.#sessionOwnership.destroyed ||
+        targetKeyring.privateRecordSessionRevision !== targetRevision
+      )
+        throw new Error('Wallet session changed during transfer preparation');
+    };
+    const check = () => {
+      checkOwnership();
+      assertHardwareOperationCurrent(assertCurrent);
+      for (const assertRetired of retirementChecks)
+        assertHardwareOperationCurrent(assertRetired);
+      checkOwnership();
+    };
+    check();
+    if (targetKeyring !== this) {
+      const signals = [
+        this.sessionLifetime.signal,
+        targetKeyring.sessionLifetime.signal,
+      ];
+      let cancel!: () => void;
+      const cancelled = new Promise<never>((_resolve, reject) => {
+        cancel = () =>
+          reject(
+            new Error('Wallet session changed during transfer preparation')
+          );
+        for (const signal of signals)
+          signal.addEventListener('abort', cancel, { once: true });
+      });
+      const signers = [ledger, trezor].filter(
+        (signer): signer is NonNullable<TLedger | TTrezor> =>
+          signer !== undefined
+      );
+      const retirement = Promise.allSettled(
+        signers.map((signer) => Promise.resolve().then(() => signer.retire()))
+      ).then((results) => {
+        for (const result of results) {
+          if (result.status === 'rejected') throw result.reason;
+          retirementChecks.push(result.value);
+        }
+      });
+      try {
+        await Promise.race([retirement, cancelled]);
+      } finally {
+        for (const signal of signals)
+          signal.removeEventListener('abort', cancel);
+      }
+      check();
     }
-    targetKeyring.#acceptSessionFrom(this);
-    this.privateRecordSessionRevision++;
-    this.#deviceUnlockRetired = true;
-
-    // Null out our references (do NOT clear buffers - target owns them now)
-    this.sessionPassword = null;
-    this.sessionMnemonic = null;
+    let consumed = false;
+    return Object.freeze({
+      transfer: () => {
+        if (consumed) throw new Error('Session transfer has already been used');
+        consumed = true;
+        check();
+        if (targetKeyring === this) return;
+        targetKeyring.#acceptSessionFrom(this);
+        this.retireSessionLifetime();
+        this.#deviceUnlockRetired = true;
+        // Move the original SecureBuffers without copying their contents.
+        this.sessionPassword = null;
+        this.sessionMnemonic = null;
+      },
+    });
   };
+
+  private retireSessionLifetime(): void {
+    this.privateRecordSessionRevision++;
+    this.sessionLifetime.abort();
+    this.sessionLifetime = new AbortController();
+  }
 
   // The checked transfer path never dispatches through a public host receiver.
   #acceptSessionFrom(source: KeyringCore): void {
@@ -703,7 +780,7 @@ export class KeyringCore<
     sourceToken?: symbol
   ): void {
     this.#assertSessionOwner(sourceToken);
-    this.privateRecordSessionRevision++;
+    this.retireSessionLifetime();
     // Clear any existing data first
     if (this.sessionPassword) {
       this.sessionPassword.clear();

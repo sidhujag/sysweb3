@@ -456,8 +456,13 @@ describe('private record async session lifetime', () => {
       await pause.started;
       if (change === 'replace') installSession(source);
       else {
-        source.transferSessionTo(target);
-        if (change === 'transfer-back') target.transferSessionTo(source);
+        (
+          await source.prepareSessionTransfer(target, () => undefined)
+        ).transfer();
+        if (change === 'transfer-back')
+          (
+            await target.prepareSessionTransfer(source, () => undefined)
+          ).transfer();
       }
       pause.release();
       await expect(pending).rejects.toThrow('session changed');
@@ -468,7 +473,7 @@ describe('private record async session lifetime', () => {
     const { source, target } = await transferFixture();
     const profile = await source.getPrivateRecordProfileId();
     const envelope = await seal(source);
-    source.transferSessionTo(target);
+    (await source.prepareSessionTransfer(target, () => undefined)).transfer();
     expect(source.isUnlocked()).toBe(false);
     expect(await target.getPrivateRecordProfileId()).toBe(profile);
     expect(await open(target, envelope)).toEqual(bytes());

@@ -412,7 +412,9 @@ it('moves the host owner on transfer and retires the source device controls', as
   const issuing = source.controls.issue(password, current);
   await started.promise;
 
-  source.ring.transferSessionTo(target);
+  (
+    await source.ring.prepareSessionTransfer(target, () => undefined)
+  ).transfer();
   release.resolve();
   await expect(issuing).rejects.toThrow('Device unlock session changed');
   expect(wrote).toBe(false);

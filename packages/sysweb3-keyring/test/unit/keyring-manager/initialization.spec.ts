@@ -8,8 +8,8 @@ import {
   SECOND_FAKE_SEED_PHRASE,
 } from '../../helpers/constants';
 import {
-  createTestKeyring,
-  createInitializedTestKeyring,
+  createTestKeyring as makeTestKeyring,
+  createInitializedTestKeyring as makeInitializedTestKeyring,
   createTestKeyringHost,
 } from '../../helpers/keyring-host';
 import { setupMocks } from '../../helpers/setup';
@@ -18,6 +18,19 @@ const deviceZpub =
   'zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNfE3EfH1r1ADqtfSdVCToUG868RvUUkgDKf31mGDtKsAYz2oz2AGutZYs';
 
 describe('KeyringManager Initialization', () => {
+  const instances = new Set<KeyringManager>();
+  const createTestKeyring = (...args: Parameters<typeof makeTestKeyring>) => {
+    const result = makeTestKeyring(...args);
+    instances.add(result);
+    return result;
+  };
+  const createInitializedTestKeyring = async (
+    ...args: Parameters<typeof makeInitializedTestKeyring>
+  ) => {
+    const result = await makeInitializedTestKeyring(...args);
+    instances.add(result);
+    return result;
+  };
   let keyringManager: KeyringManager;
   let mockVaultStateGetter: jest.Mock;
   let currentVaultState: any;
@@ -28,9 +41,8 @@ describe('KeyringManager Initialization', () => {
 
   afterEach(async () => {
     // Clean up resources
-    if (keyringManager) {
-      await keyringManager.destroy();
-    }
+    for (const instance of instances) await instance.destroy();
+    instances.clear();
   });
 
   describe('Seed Management', () => {
@@ -348,7 +360,9 @@ describe('KeyringManager Initialization', () => {
       const keyring2 = createTestKeyring(host);
 
       // Transfer session from first to second keyring
-      keyring1.transferSessionTo(keyring2);
+      (
+        await keyring1.prepareSessionTransfer(keyring2, () => undefined)
+      ).transfer();
 
       // Both should be unlocked (first should be locked after transfer, second should be unlocked)
       expect(keyring1.isUnlocked()).toBe(false); // Source keyring is locked after transfer
@@ -359,13 +373,13 @@ describe('KeyringManager Initialization', () => {
       expect(seed2).toBe(PEACE_SEED_PHRASE);
     });
 
-    it('should throw when transferring from locked keyring', () => {
+    it('should throw when transferring from locked keyring', async () => {
       const keyring1 = createTestKeyring();
       const keyring2 = createTestKeyring();
 
-      expect(() => keyring1.transferSessionTo(keyring2)).toThrow(
-        'Source keyring must be unlocked to transfer session'
-      );
+      await expect(
+        keyring1.prepareSessionTransfer(keyring2, () => undefined)
+      ).rejects.toThrow('Source keyring must be unlocked to transfer session');
     });
   });
 

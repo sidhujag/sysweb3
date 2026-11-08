@@ -11,12 +11,12 @@ import bs58check from 'bs58check';
 import { Buffer } from 'buffer';
 import * as syscoinjs from 'syscoinjs-lib';
 
-import TrezorConnect, {
-  subscribeTrezorEvents,
-  trezorResponseError,
-} from './connect';
+import { trezorResponseError } from './connect';
 import { serializeWitness } from './witness';
-import { captureHardwareTransactionAuthority } from '../hardware-transaction-authority';
+import {
+  assertHardwareOperationCurrent,
+  captureHardwareTransactionAuthority,
+} from '../hardware-transaction-authority';
 import { HardwareWalletManager } from '../hardware-wallet-manager';
 import { HardwareWalletType } from '../hardware-wallet-types';
 import {
@@ -26,6 +26,7 @@ import {
 } from '../utils/derivation-paths';
 
 import type { HardwareTransactionAuthority } from '../hardware-transaction-authority';
+import type { TrezorConnection } from './connect';
 import type {
   AccountInfo,
   CoinSymbol,
@@ -85,12 +86,6 @@ interface MessageTypes {
   EIP712Domain: MessageTypeProperty[];
 }
 
-declare global {
-  // eslint-disable-next-line @typescript-eslint/naming-convention
-  interface Window {
-    TrezorConnect: any;
-  }
-}
 export class TrezorKeyring {
   public hdPath: string = initialHDPath;
   public publicKey: Buffer;
@@ -100,6 +95,7 @@ export class TrezorKeyring {
   private hardwareWalletManager: HardwareWalletManager;
   private initialized = false;
   private lifecycleGeneration = 0;
+  private retirementEpoch = 0;
   private unsubscribeTrezor?: () => void;
   private readonly onTrezorConnected = ({
     type,
@@ -122,12 +118,17 @@ export class TrezorKeyring {
     }
   };
 
-  constructor() {
+  constructor(private readonly connection: TrezorConnection) {
     this.publicKey = Buffer.from('', 'hex');
     this.chainCode = Buffer.from('', 'hex');
     this.hdPath = '';
     this.paths = {};
-    this.hardwareWalletManager = new HardwareWalletManager();
+    if (!connection)
+      throw new TypeError('Trezor requires an explicit connection');
+    this.hardwareWalletManager = new HardwareWalletManager(
+      undefined,
+      connection
+    );
 
     this.observeTrezor();
   }
@@ -148,7 +149,7 @@ export class TrezorKeyring {
     )
       this.hardwareWalletManager.on('disconnected', this.onTrezorDisconnected);
     if (!this.unsubscribeTrezor)
-      this.unsubscribeTrezor = subscribeTrezorEvents((event) => {
+      this.unsubscribeTrezor = this.connection.subscribe((event) => {
         if (event.type === 'model') this.model = event.model;
       });
   }
@@ -158,6 +159,7 @@ export class TrezorKeyring {
    */
   public async init(assertCurrent?: () => void): Promise<boolean> {
     assertCurrent?.();
+    this.retirementEpoch++;
     const generation = this.lifecycleGeneration;
     this.observeTrezor();
     if (this.initialized) {
@@ -220,7 +222,7 @@ export class TrezorKeyring {
           this.initialized = false;
           // Dispose Trezor connection to clean up
           try {
-            await TrezorConnect.dispose();
+            await this.connection.dispose();
           } catch (disposeError) {
             console.log('Failed to dispose Trezor on error:', disposeError);
           }
@@ -259,7 +261,7 @@ export class TrezorKeyring {
       // For EVM networks, getAccountInfo is not supported
       // We need to use getAddress instead
       if (slip44 === 60) {
-        const addressResponse = await TrezorConnect.ethereumGetAddress({
+        const addressResponse = await this.connection.ethereumGetAddress({
           path: this.hdPath,
           showOnTrezor: false,
         });
@@ -281,7 +283,7 @@ export class TrezorKeyring {
       }
 
       // For UTXO networks, use the standard getAccountInfo
-      const response = await TrezorConnect.getAccountInfo({
+      const response = await this.connection.getAccountInfo({
         coin: coin as CoinSymbol,
         path: this.hdPath,
       });
@@ -312,7 +314,7 @@ export class TrezorKeyring {
   public dispose() {
     this.lifecycleGeneration++;
     try {
-      void TrezorConnect.dispose().catch((error) => {
+      void this.connection.dispose().catch((error) => {
         console.log('Error disposing Trezor:', error);
       });
       this.initialized = false;
@@ -357,7 +359,7 @@ export class TrezorKeyring {
           method = 'verifyMessage';
       }
       // @ts-ignore
-      const { success, payload } = await TrezorConnect[method]({
+      const { success, payload } = await this.connection[method]({
         coin,
         address,
         message,
@@ -400,10 +402,12 @@ export class TrezorKeyring {
     try {
       // For EVM networks, use ethereumGetPublicKey
       if (slip44 === 60) {
-        const { success, payload } = await TrezorConnect.ethereumGetPublicKey({
-          path: this.hdPath,
-          showOnTrezor: false,
-        });
+        const { success, payload } = await this.connection.ethereumGetPublicKey(
+          {
+            path: this.hdPath,
+            showOnTrezor: false,
+          }
+        );
 
         if (success) {
           const { publicKey } = payload;
@@ -420,7 +424,7 @@ export class TrezorKeyring {
       }
 
       // For UTXO networks, use standard getPublicKey
-      const { success, payload } = await TrezorConnect.getPublicKey({
+      const { success, payload } = await this.connection.getPublicKey({
         coin: coin as CoinSymbol,
         path: this.hdPath,
       });
@@ -486,7 +490,7 @@ export class TrezorKeyring {
     const payload = await this.executeWithRetry(
       async () => {
         assertCurrent();
-        const response = await TrezorConnect.signTransactionOwned(
+        const response = await this.connection.signTransactionOwned(
           utxoTransaction,
           owner
         );
@@ -882,7 +886,7 @@ export class TrezorKeyring {
         const request = { path: this.hdPath, transaction: tx };
 
         try {
-          const response = await TrezorConnect.ethereumSignTransactionOwned(
+          const response = await this.connection.ethereumSignTransactionOwned(
             request,
             owner
           );
@@ -949,7 +953,7 @@ export class TrezorKeyring {
         throw new Error('Message must be a string');
       // Use dynamic path generation instead of hardcoded switch
       this.setHdPath(coin, index || 0, slip44);
-      const { success, payload } = await TrezorConnect.signMessage({
+      const { success, payload } = await this.connection.signMessage({
         path: this.hdPath,
         coin: coin as CoinSymbol,
         message,
@@ -975,11 +979,12 @@ export class TrezorKeyring {
         try {
           this.setHdPath('eth', index, 60);
 
-          TrezorConnect.ethereumSignMessage({
-            path: this.hdPath,
-            message: stripHexPrefix(message),
-            hex: true,
-          })
+          this.connection
+            .ethereumSignMessage({
+              path: this.hdPath,
+              message: stripHexPrefix(message),
+              hex: true,
+            })
             .then((response: any) => {
               if (response.success) {
                 if (
@@ -1109,7 +1114,7 @@ export class TrezorKeyring {
       // This is necessary to avoid popup collision
       // between the unlock & sign trezor popups
 
-      const response = await TrezorConnect.ethereumSignTypedData({
+      const response = await this.connection.ethereumSignTypedData({
         path: this.hdPath,
         data: {
           types: {
@@ -1159,7 +1164,7 @@ export class TrezorKeyring {
       );
 
       try {
-        const { payload, success } = await TrezorConnect.getAddress({
+        const { payload, success } = await this.connection.getAddress({
           path: fullPath,
           coin: currency as CoinSymbol,
           showOnTrezor: true, // This displays the address on device for verification
@@ -1198,5 +1203,26 @@ export class TrezorKeyring {
     } catch (error) {
       console.error('Error destroying Trezor keyring:', error);
     }
+  }
+
+  /** Wait for the old device call and transport ownership to be fully retired. */
+  public async retire(): Promise<() => void> {
+    const epoch = this.retirementEpoch;
+    this.dispose();
+    this.unsubscribeTrezor?.();
+    this.unsubscribeTrezor = undefined;
+    const [retirement, managerRetirement] = await Promise.allSettled([
+      this.connection.retire(),
+      this.hardwareWalletManager.destroy(),
+    ] as const);
+    if (retirement.status === 'rejected') throw retirement.reason;
+    if (managerRetirement.status === 'rejected') throw managerRetirement.reason;
+    const assertRetired = () => {
+      if (epoch !== this.retirementEpoch || this.initialized)
+        throw new Error('Trezor reopened after retirement');
+      assertHardwareOperationCurrent(retirement.value);
+    };
+    assertRetired();
+    return assertRetired;
   }
 }

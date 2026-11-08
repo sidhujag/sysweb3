@@ -2,10 +2,10 @@ import { EventEmitter } from 'events';
 
 import { ConnectionStatus, HardwareWalletType } from './hardware-wallet-types';
 import { ledgerCancelledError, ledgerHostError } from './ledger/host-types';
-import TrezorConnect, { subscribeTrezorEvents } from './trezor/connect';
 
 import type { HardwareWalletStatus } from './hardware-wallet-types';
 import type { LedgerHost } from './ledger/host-types';
+import type { TrezorConnection } from './trezor/connect';
 
 interface ConnectionPoolEntry {
   status: ConnectionStatus;
@@ -42,15 +42,18 @@ export class HardwareWalletManager extends EventEmitter {
     backoffMultiplier: 2,
   };
 
-  constructor(private readonly ledgerHost?: LedgerHost) {
+  constructor(
+    private readonly ledgerHost?: LedgerHost,
+    private readonly trezor?: TrezorConnection
+  ) {
     super();
     this.observeTrezor();
     this.startStatusMonitoring();
   }
 
   private observeTrezor(): void {
-    if (this.unsubscribeTrezor) return;
-    this.unsubscribeTrezor = subscribeTrezorEvents((event) => {
+    if (this.unsubscribeTrezor || !this.trezor) return;
+    this.unsubscribeTrezor = this.trezor.subscribe((event) => {
       if (event.type === 'disconnected') {
         // Our pre-init disposal and Connect initialization invalidate the
         // adapter too. Keep this attempt owned until it settles or is revoked.
@@ -62,6 +65,17 @@ export class HardwareWalletManager extends EventEmitter {
         this.handleDisconnect('trezor-default', HardwareWalletType.TREZOR);
       }
     });
+  }
+
+  private requireTrezor(): TrezorConnection {
+    if (!this.trezor)
+      throw Object.assign(
+        new Error('Trezor signer is unavailable in this host'),
+        {
+          code: 'HARDWARE_SIGNER_UNAVAILABLE',
+        }
+      );
+    return this.trezor;
   }
 
   /** Raw transports are deliberately unavailable through the semantic host boundary. */
@@ -149,6 +163,7 @@ export class HardwareWalletManager extends EventEmitter {
    * Initialize Trezor with retry logic
    */
   async initializeTrezor(): Promise<boolean> {
+    this.requireTrezor();
     if (this.destruction) {
       throw Object.assign(new Error('Trezor connection is closing'), {
         code: 'Method_Interrupted',
@@ -231,7 +246,7 @@ export class HardwareWalletManager extends EventEmitter {
 
         // Dispose the previous Suite connection before initialization
         try {
-          await TrezorConnect.dispose();
+          await this.requireTrezor().dispose();
         } catch (disposeError) {
           console.log(
             '[HardwareWalletManager] Dispose error (safe to ignore):',
@@ -240,16 +255,7 @@ export class HardwareWalletManager extends EventEmitter {
         }
         if (!isCurrent()) return false;
 
-        await TrezorConnect.init({
-          manifest: {
-            appName: 'Pali Wallet',
-            appUrl: 'https://paliwallet.com/',
-            email: 'support@syscoin.org',
-          },
-          debug: false, // Disable debug mode to prevent extra logs
-          // Connect chooses Suite Desktop, then the supported Suite Web fallback.
-          coreMode: 'auto',
-        });
+        await this.requireTrezor().init();
         if (!isCurrent()) return false;
 
         entry.status = ConnectionStatus.CONNECTED;
@@ -284,7 +290,7 @@ export class HardwareWalletManager extends EventEmitter {
           // Instead of just marking as connected, verify the connection
           try {
             // Test the connection with a simple call
-            const testResponse = await TrezorConnect.getFeatures();
+            const testResponse = await this.requireTrezor().getFeatures();
             if (!isCurrent()) return false;
             if (testResponse.success) {
               entry.status = ConnectionStatus.CONNECTED;
@@ -303,7 +309,7 @@ export class HardwareWalletManager extends EventEmitter {
 
           // If test failed, dispose and retry
           try {
-            await TrezorConnect.dispose();
+            await this.requireTrezor().dispose();
             if (!isCurrent()) return false;
             await this.delay(500);
           } catch (disposeError) {
@@ -329,7 +335,7 @@ export class HardwareWalletManager extends EventEmitter {
 
           // Try to dispose and reinitialize
           try {
-            await TrezorConnect.dispose();
+            await this.requireTrezor().dispose();
             if (!isCurrent()) return false;
             await this.delay(2000); // Wait 2 seconds before retry
           } catch (disposeError) {
@@ -375,7 +381,7 @@ export class HardwareWalletManager extends EventEmitter {
 
     // Clean up on failure
     try {
-      await TrezorConnect.dispose();
+      await this.requireTrezor().dispose();
     } catch (disposeError) {
       console.log(
         '[HardwareWalletManager] Failed to dispose on error:',
@@ -542,7 +548,7 @@ export class HardwareWalletManager extends EventEmitter {
     // Handle Trezor connections
     if (key.startsWith(HardwareWalletType.TREZOR)) {
       try {
-        await TrezorConnect.dispose();
+        await this.requireTrezor().dispose();
       } catch (error) {
         console.error('Error disposing Trezor:', error);
       }

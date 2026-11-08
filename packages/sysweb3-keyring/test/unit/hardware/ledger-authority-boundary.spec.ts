@@ -11,6 +11,7 @@ import type { LedgerHost } from '../../../src/ledger/host-types';
 const hostFixture = (): LedgerHost => ({
   connect: jest.fn(async () => undefined),
   disconnect: jest.fn(async () => undefined),
+  retire: jest.fn(async () => () => undefined),
   getStatus: () => ({ connected: true }),
   evm: {} as LedgerHost['evm'],
   utxo: {} as LedgerHost['utxo'],
@@ -39,9 +40,24 @@ test('requires durable EVM admission before constructing a browser keyring', () 
   expect(ledgerHost.connect).not.toHaveBeenCalled();
 });
 
+test('requires explicit Trezor capabilities for a browser keyring', () => {
+  const ledgerHost = hostFixture();
+  expect(() =>
+    Reflect.construct(KeyringManager, [
+      createTestKeyringHost(),
+      {
+        ledgerHost,
+        captureEvmSubmission: () => undefined,
+      },
+    ])
+  ).toThrow('Trezor requires explicit host capabilities');
+  expect(ledgerHost.connect).not.toHaveBeenCalled();
+});
+
 test('host-only injection binds the facade and its manager to the same host', async () => {
   const host = hostFixture();
   const keyring = new KeyringManager(createTestKeyringHost(), {
+    trezorHost: jest.requireMock('@trezor/connect-webextension'),
     captureEvmSubmission: () => {
       throw new Error('EVM submission is outside this fixture');
     },

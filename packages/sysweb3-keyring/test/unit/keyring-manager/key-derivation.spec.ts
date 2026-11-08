@@ -8,6 +8,19 @@ import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
 import { ownedUtxoTestRead } from '../../helpers/utxoAuthority';
 
 describe('KeyringManager - Key Derivation', () => {
+  const testKeyrings = new Set<KeyringManager>();
+  const createTrackedKeyring = async (
+    ...args: Parameters<typeof createFreshTestKeyring>
+  ) => {
+    const keyring = await createFreshTestKeyring(...args);
+    testKeyrings.add(keyring);
+    return keyring;
+  };
+  afterEach(async () => {
+    for (const keyring of testKeyrings) await keyring.destroy();
+    testKeyrings.clear();
+    if (keyringManager) await keyringManager.destroy();
+  });
   let keyringManager: KeyringManager;
   let mockVaultStateGetter: jest.Mock;
   let currentVaultState: any;
@@ -29,7 +42,7 @@ describe('KeyringManager - Key Derivation', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await createFreshTestKeyring(
+      keyringManager = await createTrackedKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -160,7 +173,7 @@ describe('KeyringManager - Key Derivation', () => {
       const vault2StateGetter = jest.fn(() => vault2State);
 
       // Create second keyring with same seed
-      const keyring2 = await createFreshTestKeyring(
+      const keyring2 = await createTrackedKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         vault2StateGetter
@@ -222,7 +235,7 @@ describe('KeyringManager - Key Derivation', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await createFreshTestKeyring(
+      keyringManager = await createTrackedKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -291,7 +304,7 @@ describe('KeyringManager - Key Derivation', () => {
       const testnetVaultStateGetter = jest.fn(() => testnetVaultState);
 
       // Create testnet keyring
-      const testnetKeyring = await createFreshTestKeyring(
+      const testnetKeyring = await createTrackedKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         testnetVaultStateGetter
@@ -315,7 +328,7 @@ describe('KeyringManager - Key Derivation', () => {
       const evmVaultStateGetter = jest.fn(() => evmVaultState);
 
       // EVM keyring
-      const evmKeyring = await createFreshTestKeyring(
+      const evmKeyring = await createTrackedKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         evmVaultStateGetter
@@ -331,7 +344,7 @@ describe('KeyringManager - Key Derivation', () => {
       const utxoVaultStateGetter = jest.fn(() => utxoVaultState);
 
       // UTXO keyring
-      const utxoKeyring = await createFreshTestKeyring(
+      const utxoKeyring = await createTrackedKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         utxoVaultStateGetter
@@ -347,6 +360,17 @@ describe('KeyringManager - Key Derivation', () => {
     });
 
     it('should maintain deterministic derivation after re-encryption', async () => {
+      currentVaultState = createMockVaultState({
+        activeAccountId: 0,
+        activeAccountType: KeyringAccountType.HDAccount,
+        networkType: INetworkType.Ethereum,
+        chainId: 1,
+      });
+      keyringManager = await createTrackedKeyring(
+        PEACE_SEED_PHRASE,
+        FAKE_PASSWORD,
+        () => currentVaultState
+      );
       // Store original addresses
       const originalAddresses = [
         keyringManager.getActiveAccount().activeAccount.address,
@@ -371,7 +395,7 @@ describe('KeyringManager - Key Derivation', () => {
       }
 
       // Lock and unlock (simulating re-encryption scenario)
-      keyringManager.lockWallet();
+      await keyringManager.lockWallet();
       await keyringManager.unlock(FAKE_PASSWORD);
 
       // Verify addresses remain the same
@@ -406,7 +430,7 @@ describe('KeyringManager - Key Derivation', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await createFreshTestKeyring(
+      keyringManager = await createTrackedKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -453,7 +477,7 @@ describe('KeyringManager - Key Derivation', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await createFreshTestKeyring(
+      keyringManager = await createTrackedKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -497,7 +521,7 @@ describe('KeyringManager - Key Derivation', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await createFreshTestKeyring(
+      keyringManager = await createTrackedKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -517,7 +541,7 @@ describe('KeyringManager - Key Derivation', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await createFreshTestKeyring(
+      keyringManager = await createTrackedKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -540,7 +564,7 @@ describe('KeyringManager - Key Derivation', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await createFreshTestKeyring(
+      keyringManager = await createTrackedKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -617,7 +641,7 @@ describe('KeyringManager - Key Derivation', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await createFreshTestKeyring(
+      keyringManager = await createTrackedKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -653,7 +677,7 @@ describe('KeyringManager - Key Derivation', () => {
       const vault2StateGetter = jest.fn(() => vault2State);
 
       // Create new keyring and add account with different label
-      const keyring2 = await createFreshTestKeyring(
+      const keyring2 = await createTrackedKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         vault2StateGetter
@@ -697,7 +721,7 @@ describe('KeyringManager - Key Derivation', () => {
       });
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await createFreshTestKeyring(
+      keyringManager = await createTrackedKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter
@@ -959,7 +983,7 @@ describe('KeyringManager - Key Derivation', () => {
         const btcVaultStateGetter = jest.fn(() => btcVaultState);
 
         // Create Bitcoin keyring
-        const btcKeyring = await createFreshTestKeyring(
+        const btcKeyring = await createTrackedKeyring(
           PEACE_SEED_PHRASE,
           FAKE_PASSWORD,
           btcVaultStateGetter
@@ -1034,7 +1058,7 @@ describe('KeyringManager - Key Derivation', () => {
 
       mockVaultStateGetter = jest.fn(() => currentVaultState);
 
-      keyringManager = await createFreshTestKeyring(
+      keyringManager = await createTrackedKeyring(
         PEACE_SEED_PHRASE,
         FAKE_PASSWORD,
         mockVaultStateGetter

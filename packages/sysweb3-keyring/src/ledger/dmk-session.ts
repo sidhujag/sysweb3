@@ -79,6 +79,8 @@ export class LedgerDmkSession {
   private activeCancel: (() => void) | undefined;
   private activeAbort: AbortController | undefined;
   private closing: Promise<void> = Promise.resolve();
+  private closingResult: Promise<void> = Promise.resolve();
+  private readonly closeObservers = new Set<(result: Promise<void>) => void>();
   private stateSubscription: Subscription | undefined;
   private connectionAttempt: Promise<void> | undefined;
   private connectionAbort: AbortController | undefined;
@@ -210,9 +212,8 @@ export class LedgerDmkSession {
     this.connectionAbort = controller;
     const abort = () => controller.abort();
     options.signal?.addEventListener('abort', abort, { once: true });
-    const attempt = this.connectDevice(request, controller.signal, selected);
-    this.connectionAttempt = attempt;
-    return attempt.finally(async () => {
+    const connecting = this.connectDevice(request, controller.signal, selected);
+    const attempt = connecting.finally(async () => {
       options.signal?.removeEventListener('abort', abort);
       try {
         if (controller.signal.aborted) {
@@ -227,6 +228,8 @@ export class LedgerDmkSession {
           this.connectionAbort = undefined;
       }
     });
+    this.connectionAttempt = attempt;
+    return attempt;
   }
 
   private discoverDevice(
@@ -332,7 +335,7 @@ export class LedgerDmkSession {
       if (ended || !isCurrent()) throw ledgerCancelledError();
     } catch (error) {
       subscription?.unsubscribe();
-      await this.dmk.disconnect({ sessionId }).catch(() => undefined);
+      await this.closeSession(sessionId);
       throw error;
     }
     this.connection = connection;
@@ -352,12 +355,48 @@ export class LedgerDmkSession {
     this.activeCancel = undefined;
     this.stateSubscription?.unsubscribe();
     this.stateSubscription = undefined;
-    this.closing = this.closing.then(async () => {
-      if (sessionId)
-        await this.dmk.disconnect({ sessionId }).catch(() => undefined);
-    });
+    if (sessionId) this.closeSession(sessionId);
     this.publishStatus();
     return this.closing;
+  }
+
+  private closeSession(sessionId: string): Promise<void> {
+    const result = this.closing.then(() => this.dmk.disconnect({ sessionId }));
+    this.closingResult = result;
+    this.closing = result.catch(() => undefined);
+    for (const observe of this.closeObservers) observe(result);
+    return this.closing;
+  }
+
+  /** Join late vendor admission and its cleanup after immediate revocation. */
+  async retire(): Promise<() => void> {
+    const attempt = this.connectionAttempt;
+    const closes = [this.closingResult];
+    const observe = (result: Promise<void>) => closes.push(result);
+    this.closeObservers.add(observe);
+    try {
+      const disconnected = this.disconnect();
+      const generation = this.generation;
+      await disconnected;
+      await attempt?.catch(() => undefined);
+      await this.closing;
+      const results = await Promise.allSettled(closes);
+      const failed = results.find((result) => result.status === 'rejected');
+      if (failed?.status === 'rejected') throw failed.reason;
+      const assertRetired = () => {
+        if (
+          generation !== this.generation ||
+          this.connectionAttempt ||
+          this.deviceSelection ||
+          this.connection
+        )
+          throw ledgerCancelledError();
+      };
+      assertRetired();
+      return assertRetired;
+    } finally {
+      this.closeObservers.delete(observe);
+    }
   }
 
   runExclusive<Output>(

@@ -9,6 +9,9 @@ import {
 import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
 
 describe('KeyringManager - State Management', () => {
+  afterEach(async () => {
+    if (keyringManager) await keyringManager.destroy();
+  });
   let keyringManager: KeyringManager;
   let mockVaultStateGetter: jest.Mock;
   let currentMockVaultState: any;
@@ -233,7 +236,9 @@ describe('KeyringManager - State Management', () => {
       keyring2.setVaultStateGetter(utxoVaultGetter);
 
       // Transfer session from keyring1 to keyring2
-      keyring1.transferSessionTo(keyring2);
+      (
+        await keyring1.prepareSessionTransfer(keyring2, () => undefined)
+      ).transfer();
 
       // After transfer: keyring1 should be locked, keyring2 should be unlocked
       expect(keyring1.isUnlocked()).toBe(false);

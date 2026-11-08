@@ -51,6 +51,7 @@ export function createLedgerHostForDmk(
     connect: (request, options) => session.connect(request, options),
     beginDeviceSelection: (signal) => session.beginDeviceSelection(signal),
     disconnect: () => session.disconnect(),
+    retire: () => session.retire(),
     getStatus: () => session.getStatus(),
     subscribeStatus: (listener) => session.subscribeStatus(listener),
     evm: createLedgerEvmAdapter(session, config),

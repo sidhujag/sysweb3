@@ -8,7 +8,10 @@ import {
   Transaction,
 } from 'ethers';
 
-import { captureHardwareTransactionAuthority } from '../hardware-transaction-authority';
+import {
+  assertHardwareOperationCurrent,
+  captureHardwareTransactionAuthority,
+} from '../hardware-transaction-authority';
 import { ConnectionStatus, HardwareWalletType } from '../hardware-wallet-types';
 import { ledgerCancelledError, ledgerHostError } from './host-types';
 
@@ -28,6 +31,7 @@ const invalidSignature = () =>
     'LEDGER_INVALID_SIGNATURE',
     'Ledger returned an invalid signature for this request'
   );
+const hostActivity = new WeakMap<LedgerHost, number>();
 
 const accountIndex = (value: number) => {
   if (!Number.isSafeInteger(value) || value < 0 || value > 0x7fffffff)
@@ -277,6 +281,7 @@ export class LedgerKeyring {
   ): Promise<T> {
     const generation = this.generation;
     const host = this.requireHost();
+    hostActivity.set(host, (hostActivity.get(host) ?? 0) + 1);
     // A visible platform host owns discovery, permission and device selection.
     if (!host.getStatus().connected) {
       const request = { useGrantedDevices: true };
@@ -371,5 +376,23 @@ export class LedgerKeyring {
     const cleanup = this.sharedHardwareWalletManager?.destroy();
     const disconnect = this.host?.disconnect();
     await Promise.all([cleanup, disconnect]);
+  }
+
+  /** Complete teardown and prove that no shared-host operation has reopened it. */
+  public async retire(): Promise<() => void> {
+    const host = this.host;
+    const activity = host && hostActivity.get(host);
+    const [, assertHostRetired] = await Promise.all([
+      this.destroy(),
+      Promise.resolve().then(() => host?.retire()),
+    ]);
+    const assertRetired = () => {
+      if (host) {
+        assertHardwareOperationCurrent(assertHostRetired!);
+        if (hostActivity.get(host) !== activity) throw ledgerCancelledError();
+      }
+    };
+    assertRetired();
+    return assertRetired;
   }
 }

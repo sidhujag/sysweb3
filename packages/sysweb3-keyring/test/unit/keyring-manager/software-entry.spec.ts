@@ -1,4 +1,3 @@
-import { withEvmSendIdentity } from '../../helpers/evm-send-identity';
 import { SignTypedDataVersion } from '@metamask/eth-sig-util';
 
 import { KeyringCore } from '../../../src/keyring-core';
@@ -11,6 +10,7 @@ import {
 } from '../../../src/software';
 import { createVaultPersistence } from '../../../src/storage-core';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
+import { withEvmSendIdentity } from '../../helpers/evm-send-identity';
 
 import type { KeyringStoragePort } from '../../../src/software';
 const tokenApproval = {
@@ -215,7 +215,15 @@ describe.each(missingHardwareCases)(
         (sdk) => sdk.signTypedData(address, {} as any, SignTypedDataVersion.V4),
       ],
       ['personal message', (sdk) => sdk.signPersonalMessage(['0x11', address])],
-      ['eth_sign', (sdk) => sdk.ethSign([address, '0x11'], { selectedAccount: { id: 0, type, expectedAddress: address }, targetAccount: { id: 0, type, expectedAddress: address }, assertCurrent: () => undefined })],
+      [
+        'eth_sign',
+        (sdk) =>
+          sdk.ethSign([address, '0x11'], {
+            selectedAccount: { id: 0, type, expectedAddress: address },
+            targetAccount: { id: 0, type, expectedAddress: address },
+            assertCurrent: () => undefined,
+          }),
+      ],
       [
         'transaction',
         (sdk) =>
@@ -336,7 +344,7 @@ it('rejects cross-authority session transfer without changing either session, an
     expect('receiveSessionOwnership' in sibling).toBe(false);
     expect((a as any).sessionMnemonic).toBe(sourceMnemonic);
     expect((a as any).sessionPassword).toBe(sourcePassword);
-    expect(() => a.transferSessionTo(b)).toThrow(
+    await expect(a.prepareSessionTransfer(b, () => undefined)).rejects.toThrow(
       'different wallet authorities'
     );
     expect(a.isUnlocked()).toBe(true);
@@ -344,11 +352,11 @@ it('rejects cross-authority session transfer without changing either session, an
     expect(await a.getSeed(password)).toBe(mnemonic);
     expect(await b.getSeed(password)).toBe(otherMnemonic);
     const assertBeforeTransfer = (a as any).capturePsbtSigningContext();
-    a.transferSessionTo(sibling);
+    (await a.prepareSessionTransfer(sibling, () => undefined)).transfer();
     expect(a.isUnlocked()).toBe(false);
     expect(sibling.isUnlocked()).toBe(true);
     expect(await sibling.getSeed(password)).toBe(mnemonic);
-    sibling.transferSessionTo(a);
+    (await sibling.prepareSessionTransfer(a, () => undefined)).transfer();
     expect(a.isUnlocked()).toBe(true);
     expect(sibling.isUnlocked()).toBe(false);
     expect(assertBeforeTransfer).toThrow('Wallet signing context changed');

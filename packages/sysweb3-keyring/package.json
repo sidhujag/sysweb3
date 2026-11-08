@@ -107,6 +107,36 @@
       ],
       "cjs/transactions/ledger-signing.js": [
         "types/transactions/ledger-signing.d.ts"
+      ],
+      "cjs/trezor-hardware": [
+        "types/trezor-hardware.d.ts"
+      ],
+      "cjs/trezor-hardware.js": [
+        "types/trezor-hardware.d.ts"
+      ],
+      "cjs/trezor/host-types": [
+        "types/trezor/host-types.d.ts"
+      ],
+      "cjs/trezor/host-types.js": [
+        "types/trezor/host-types.d.ts"
+      ],
+      "cjs/trezor/webextension-host": [
+        "types/trezor/webextension-host.d.ts"
+      ],
+      "cjs/trezor/webextension-host.js": [
+        "types/trezor/webextension-host.d.ts"
+      ],
+      "cjs/trezor/connect": [
+        "types/trezor/connect.d.ts"
+      ],
+      "cjs/trezor/connect.js": [
+        "types/trezor/connect.d.ts"
+      ],
+      "cjs/hardware-transaction-authority": [
+        "types/hardware-transaction-authority.d.ts"
+      ],
+      "cjs/hardware-transaction-authority.js": [
+        "types/hardware-transaction-authority.d.ts"
       ]
     }
   },

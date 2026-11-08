@@ -57,6 +57,7 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
         createVaultPersistence(storage));
       createRing = () =>
         new KeyringManager(createKeyringHost(storage), {
+          trezorHost: jest.requireMock('@trezor/connect-webextension'),
           captureEvmSubmission: () => {
             throw new Error('EVM submission is outside this fixture');
           },

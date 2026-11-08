@@ -39,6 +39,12 @@ const mockHost = () => {
     disconnect: jest.fn(async () => {
       connected = false;
     }),
+    retire: jest.fn(async () => {
+      connected = false;
+      return () => {
+        if (connected) throw new Error('Ledger reopened');
+      };
+    }),
     getStatus: jest.fn(() => ({ connected })),
     evm: {
       getAddress: jest.fn().mockResolvedValue({

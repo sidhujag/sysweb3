@@ -1,7 +1,7 @@
+import { createTestSubmissionCapture } from './evm-submission';
 import { HardwareWalletManager } from '../../src/hardware-wallet-manager';
 import { createKeyringHost } from '../../src/keyring-host';
 import { KeyringManager } from '../../src/keyring-manager';
-import { createTestSubmissionCapture } from './evm-submission';
 
 import type { KeyringHost } from '../../src/keyring-host';
 import type { KeyringManagerOptions } from '../../src/keyring-manager';
@@ -20,6 +20,7 @@ export function createTestKeyringHost(storage = testStorage()) {
 
 export const testHardware = () => ({
   hardwareManager: new HardwareWalletManager(),
+  trezorHost: jest.requireMock('@trezor/connect-webextension'),
   captureEvmSubmission: createTestSubmissionCapture(),
 });
 
@@ -27,18 +28,20 @@ export function createTestKeyring(host = createTestKeyringHost()) {
   return new KeyringManager(host, testHardware());
 }
 
-export function createInitializedTestKeyring(
+export async function createInitializedTestKeyring(
   seed: string,
   password: string,
   getter: () => any,
   host: KeyringHost = createTestKeyringHost(),
   hardware: KeyringManagerOptions = testHardware()
 ) {
-  return KeyringManager.createInitialized(
-    host,
-    seed,
-    password,
-    getter,
-    hardware
-  );
+  const keyring = new KeyringManager(host, hardware);
+  keyring.setVaultStateGetter(getter);
+  try {
+    await keyring.initializeWalletSecurely(seed, password);
+    return keyring;
+  } catch (error) {
+    await keyring.destroy();
+    throw error;
+  }
 }
