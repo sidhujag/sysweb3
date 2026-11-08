@@ -47,6 +47,7 @@ it('loads the native hardware facade without browser or Trezor initialization', 
       const host = {
         connect: jest.fn(),
         disconnect: jest.fn(async () => undefined),
+        retire: jest.fn(async () => () => undefined),
         getStatus: () => ({ connected: false }),
         evm: {},
         utxo: {},

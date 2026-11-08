@@ -496,10 +496,10 @@ it('revokes a held fee after a real software session is transferred away and bac
   await Promise.race([started.promise, pending]);
   try {
     const session = (ring as any).sessionPassword;
-    ring.transferSessionTo(sibling);
+    (await ring.prepareSessionTransfer(sibling, () => undefined)).transfer();
     expect(ring.isUnlocked()).toBe(false);
     expect(sibling.isUnlocked()).toBe(true);
-    sibling.transferSessionTo(ring);
+    (await sibling.prepareSessionTransfer(ring, () => undefined)).transfer();
     expect(ring.isUnlocked()).toBe(true);
     expect(sibling.isUnlocked()).toBe(false);
     expect((ring as any).sessionPassword).toBe(session);
@@ -676,8 +676,8 @@ it('rejects a held owned missing-path signature after actual keyring ownership A
   );
   try {
     await Promise.race([started.promise, signing]);
-    ring.transferSessionTo(sibling);
-    sibling.transferSessionTo(ring);
+    (await ring.prepareSessionTransfer(sibling, () => undefined)).transfer();
+    (await sibling.prepareSessionTransfer(ring, () => undefined)).transfer();
   } finally {
     release.resolve();
     await checked;

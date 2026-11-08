@@ -250,6 +250,29 @@ describe('Ledger explicit device selection', () => {
 });
 
 describe('Ledger DMK session ownership', () => {
+  it('retains a close failure when later cleanup succeeds during retirement', async () => {
+    const { dmk, session } = mockDmk();
+    await session.connect();
+    dmk.disconnect.mockRejectedValueOnce(new Error('First close failed'));
+    await expect(session.disconnect()).resolves.toBeUndefined();
+    let release!: (value: string) => void;
+    dmk.connect.mockImplementationOnce(
+      () => new Promise<string>((resolve) => (release = resolve))
+    );
+    const connecting = session.connect();
+    const cancelled = expect(connecting).rejects.toMatchObject({
+      code: 'HARDWARE_REQUEST_CANCELLED',
+    });
+    await tick();
+    const retirement = expect(session.retire()).rejects.toThrow(
+      'First close failed'
+    );
+    release('late-session');
+    await cancelled;
+    await retirement;
+    expect(dmk.disconnect).toHaveBeenCalledTimes(2);
+  });
+
   it('connects the selected device and refuses concurrent pickers', async () => {
     const { dmk, session } = mockDmk();
     const pending = new Subject<any>();

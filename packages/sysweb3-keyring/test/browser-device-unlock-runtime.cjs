@@ -20,6 +20,18 @@ const {
   HardwareWalletType,
   KeyringAccountType,
 } = sdk;
+const { createTrezorWebExtensionHost } = require(path.join(
+  compiled,
+  'trezor/webextension-host.js'
+));
+const trezorHost = () =>
+  createTrezorWebExtensionHost({
+    manifest: {
+      appName: 'Fixture',
+      appUrl: 'https://example.invalid',
+      email: 'test@example.invalid',
+    },
+  });
 const phrase =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 const password = 'public browser fixture password';
@@ -101,12 +113,16 @@ const offlineLedger = {
   utxo: {},
   async connect() {},
   async disconnect() {},
+  async retire() {
+    return () => {};
+  },
   getStatus: () => ({ connected: false }),
 };
 
 function manager(host, receive = true, hardwareManager, ledgerHost) {
   let controls;
   const options = {
+    trezorHost: trezorHost(),
     captureEvmSubmission() {
       throw new Error('EVM submission is outside this fixture');
     },
@@ -171,12 +187,14 @@ test('compiled browser owner shares controls and one session across replacement 
     assert.equal(await source.controls.issue('wrong password', current), false);
     assert.equal(f.counts().writes, 0);
     assert.equal(await source.controls.issue(password, current), true);
-    assert.throws(
-      () => source.ring.transferSessionTo(foreign.ring),
+    await assert.rejects(
+      source.ring.prepareSessionTransfer(foreign.ring, current),
       /different wallet authorities/
     );
     assert.equal(foreign.ring.isUnlocked(), true);
-    source.ring.transferSessionTo(target.ring);
+    (
+      await source.ring.prepareSessionTransfer(target.ring, () => undefined)
+    ).transfer();
     assert.equal(source.ring.isUnlocked(), false);
     assert.equal(target.ring.isUnlocked(), true);
     await target.ring.lockWallet();
@@ -250,6 +268,7 @@ test('compiled browser host rejects missing atomic storage and never falls back 
       new KeyringManager(
         {},
         {
+          trezorHost: trezorHost(),
           captureEvmSubmission: () => {
             throw new Error('EVM submission is outside this fixture');
           },
@@ -303,6 +322,7 @@ test('compiled fixed browser host preserves the existing storage namespace witho
     assert.throws(
       () =>
         new KeyringManager(undefined, {
+          trezorHost: trezorHost(),
           captureEvmSubmission: () => {
             throw new Error('EVM submission is outside this fixture');
           },
@@ -324,7 +344,9 @@ test('compiled fixed browser host preserves the existing storage namespace witho
       /owned by another keyring/
     );
     sibling.state.accounts.HDAccount[0] = owner.state.accounts.HDAccount[0];
-    owner.ring.transferSessionTo(sibling.ring);
+    (
+      await owner.ring.prepareSessionTransfer(sibling.ring, () => undefined)
+    ).transfer();
     assert.equal(owner.ring.isUnlocked(), false);
     assert.equal(sibling.ring.isUnlocked(), true);
     assert.equal(await sibling.ring.getSeed(password), phrase);
@@ -370,6 +392,7 @@ for (const sharedManager of [true, false]) {
       assert.throws(
         () =>
           new KeyringManager(host, {
+            trezorHost: trezorHost(),
             captureEvmSubmission: () => {
               throw new Error('EVM submission is outside this fixture');
             },

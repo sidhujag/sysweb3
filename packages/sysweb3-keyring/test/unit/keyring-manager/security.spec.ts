@@ -6,6 +6,9 @@ import { createTestKeyring } from '../../helpers/keyring-host';
 import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
 
 describe('KeyringManager - Security', () => {
+  afterEach(async () => {
+    if (keyringManager) await keyringManager.destroy();
+  });
   let keyringManager: KeyringManager;
   let mockVaultStateGetter: jest.Mock;
   let currentVaultState: any;

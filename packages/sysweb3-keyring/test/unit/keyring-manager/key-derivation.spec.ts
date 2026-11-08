@@ -8,6 +8,9 @@ import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
 import { ownedUtxoTestRead } from '../../helpers/utxoAuthority';
 
 describe('KeyringManager - Key Derivation', () => {
+  afterEach(async () => {
+    if (keyringManager) await keyringManager.destroy();
+  });
   let keyringManager: KeyringManager;
   let mockVaultStateGetter: jest.Mock;
   let currentVaultState: any;

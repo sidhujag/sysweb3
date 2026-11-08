@@ -171,6 +171,7 @@ const fixture = (scriptType = 'p2wpkh', sameWallet = false) => {
     getStatus: () => ({ connected: true }),
     connect: jest.fn(),
     disconnect: jest.fn(),
+    retire: jest.fn(async () => () => undefined),
     evm: {} as any,
     utxo: { signPsbt } as any,
   });

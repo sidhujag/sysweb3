@@ -143,6 +143,8 @@ export interface LedgerHost {
     options?: LedgerOperationOptions
   ): Promise<void>;
   disconnect(): Promise<void>;
+  /** Complete cleanup and return a guard invalidated by any subsequent reopen. */
+  retire(): Promise<() => void>;
   getStatus(): { connected: boolean };
   readonly evm: LedgerEvmHost;
   readonly utxo: LedgerUtxoHost;

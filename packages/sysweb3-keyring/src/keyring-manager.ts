@@ -1,15 +1,14 @@
 import { HardwareWalletManager } from './hardware-wallet-manager';
 import { HostKeyring } from './host-keyring';
 import { LedgerKeyring } from './ledger';
-import {
-  createLedgerPsbtSigner,
-  createTrezorPsbtSigner,
-} from './transactions/hardware-psbt';
+import { createLedgerPsbtSigner } from './transactions/hardware-psbt';
 import { TrezorKeyring } from './trezor';
+import { createTrezorHardware } from './trezor-hardware';
 
 import type { KeyringHost, KeyringOptions } from './keyring-host';
 import type { LedgerHost } from './ledger/host-types';
 import type { CaptureEvmSubmission } from './transactions/evm-submission';
+import type { TrezorHost } from './trezor/host-types';
 import type { IKeyringManager } from './types';
 
 export type { ISysAccount } from './keyring-core';
@@ -18,6 +17,7 @@ export type {
   DeviceUnlockPort,
   DeviceUnlockVaultPair,
   KeyringStoragePort,
+  PreparedSessionTransfer,
 } from './keyring-core';
 
 export type KeyringManagerOptions = Omit<
@@ -25,6 +25,7 @@ export type KeyringManagerOptions = Omit<
   'captureEvmSubmission'
 > & {
   captureEvmSubmission: CaptureEvmSubmission;
+  trezorHost: TrezorHost;
 } & (
     | { ledgerHost: LedgerHost; hardwareManager?: never }
     | { ledgerHost?: never; hardwareManager: HardwareWalletManager }
@@ -43,15 +44,17 @@ export class KeyringManager
     if (typeof options.captureEvmSubmission !== 'function')
       throw new TypeError('Browser keyring requires durable EVM submission');
     super(host, options, () => {
+      const { trezorSigner, syscoinHardwareSigners } = createTrezorHardware(
+        options.trezorHost
+      );
       const manager = hardwareManager ?? new HardwareWalletManager(ledgerHost);
-      const trezorSigner = new TrezorKeyring();
       const ledgerSigner = new LedgerKeyring(manager, ledgerHost);
       return {
         ledgerSigner,
         trezorSigner,
         syscoinHardwareSigners: {
+          ...syscoinHardwareSigners,
           ledger: createLedgerPsbtSigner(ledgerSigner),
-          trezor: createTrezorPsbtSigner(trezorSigner),
         },
       };
     });

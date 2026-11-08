@@ -1,6 +1,4 @@
-import { withEvmSendIdentity } from '../../helpers/evm-send-identity';
 import { execFileSync } from 'child_process';
-import { admitTestSignedDispatch } from '../../helpers/evm-submission';
 import { Transaction } from 'ethers/transaction';
 import { Wallet } from 'ethers/wallet';
 import path from 'path';
@@ -9,7 +7,11 @@ import { BigNumber, serializeTransaction } from '../../../src/ethers-v6';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import { TrezorKeyring } from '../../../src/trezor';
 import { KeyringAccountType } from '../../../src/types';
-import { createTestSubmissionCapture } from '../../helpers/evm-submission';
+import { withEvmSendIdentity } from '../../helpers/evm-send-identity';
+import {
+  admitTestSignedDispatch,
+  createTestSubmissionCapture,
+} from '../../helpers/evm-submission';
 
 const specializedApproval = {
   mode: 'specialized' as const,
@@ -87,6 +89,7 @@ beforeEach(() => {
     })),
   };
   const trezor = Object.create(TrezorKeyring.prototype);
+  trezor.connection = connect;
   // Hardware initialization/retry are isolated; the real keyring method and
   // HD path construction still pass the exact request to the Connect boundary.
   trezor.executeWithRetry = jest.fn((operation) => operation());

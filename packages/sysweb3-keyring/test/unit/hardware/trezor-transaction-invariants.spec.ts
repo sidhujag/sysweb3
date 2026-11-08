@@ -100,6 +100,7 @@ describe('Trezor unsigned transaction integrity', () => {
 
   beforeEach(() => {
     receiver = Object.create(TrezorKeyring.prototype);
+    (receiver as any).connection = TrezorConnect;
     (receiver as any).executeWithRetry = jest.fn((operation) => operation());
     jest.spyOn(console, 'log').mockImplementation(() => undefined);
   });

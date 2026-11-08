@@ -3,8 +3,25 @@ import ConnectMock from '@trezor/connect-webextension';
 
 import { HardwareWalletManager } from '../../../src/hardware-wallet-manager';
 
-type AdapterModule = typeof import('../../../src/trezor/connect');
-let adapter: AdapterModule;
+type Adapter = import('../../../src/trezor/connect').TrezorConnection;
+let adapter: Adapter;
+const settings = {
+  manifest: {
+    appName: 'Pali',
+    appUrl: 'https://paliwallet.com',
+    email: 'test@example.invalid',
+  },
+  coreMode: 'auto' as const,
+};
+const createAdapter = () => {
+  const { createTrezorConnection } = jest.requireActual(
+    '../../../src/trezor/connect'
+  );
+  const { createTrezorWebExtensionHost } = jest.requireActual(
+    '../../../src/trezor/webextension-host'
+  );
+  return createTrezorConnection(createTrezorWebExtensionHost(settings));
+};
 const chromeDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'chrome');
 const extensionHost = () => ({
   runtime: {
@@ -21,7 +38,7 @@ beforeEach(() => {
   jest.restoreAllMocks();
   jest.clearAllMocks();
   jest.isolateModules(() => {
-    adapter = jest.requireActual('../../../src/trezor/connect');
+    adapter = createAdapter();
   });
 });
 afterEach(() => {
@@ -41,30 +58,17 @@ it.each(['absent', 'incomplete', 'mv2'])(
         chrome.runtime.getManifest = () => ({ manifest_version: 2 });
       (globalThis as any).chrome = chrome;
     }
-    await expect(
-      adapter.default.init({
-        manifest: {
-          appName: 'Pali',
-          appUrl: 'https://paliwallet.com',
-          email: 'test@example.invalid',
-        },
-      })
-    ).rejects.toMatchObject({ code: 'HARDWARE_SIGNER_UNAVAILABLE' });
+    await expect(adapter.init()).rejects.toMatchObject({
+      code: 'HARDWARE_SIGNER_UNAVAILABLE',
+    });
     expect(ConnectMock.init).not.toHaveBeenCalled();
-    await expect(adapter.default.dispose()).resolves.toBeUndefined();
+    await expect(adapter.dispose()).resolves.toBeUndefined();
   }
 );
 
 it('loads Connect only for a supported extension and selects its webextension environment', async () => {
   (globalThis as any).chrome = extensionHost();
-  await adapter.default.init({
-    manifest: {
-      appName: 'Pali',
-      appUrl: 'https://paliwallet.com',
-      email: 'test@example.invalid',
-    },
-    coreMode: 'auto',
-  });
+  await adapter.init();
   expect(ConnectMock.init).toHaveBeenCalledWith({
     manifest: {
       appName: 'Pali',
@@ -78,18 +82,12 @@ it('loads Connect only for a supported extension and selects its webextension en
 
 it('preserves Connect 10 cancellation codes and the established SDK failure payload', async () => {
   (globalThis as any).chrome = extensionHost();
-  await adapter.default.init({
-    manifest: {
-      appName: 'Pali',
-      appUrl: 'https://paliwallet.com',
-      email: 'test@example.invalid',
-    },
-  });
+  await adapter.init();
   jest.spyOn(ConnectMock, 'getAccountInfo').mockResolvedValueOnce({
     success: false,
     error: { code: 'Method_Cancel', message: 'Canceled' },
   } as any);
-  const result = await adapter.default.getAccountInfo({
+  const result = await adapter.getAccountInfo({
     coin: 'sys',
     path: "m/84'/57'/0'",
   });
@@ -99,7 +97,11 @@ it('preserves Connect 10 cancellation codes and the established SDK failure payl
     payload: { code: 'Method_Cancel', error: 'Canceled' },
   });
   if (!result.success)
-    expect(adapter.trezorResponseError(result)).toMatchObject({
+    expect(
+      jest
+        .requireActual('../../../src/trezor/connect')
+        .trezorResponseError(result)
+    ).toMatchObject({
       code: 'Method_Cancel',
       message: 'Canceled',
     });
@@ -107,25 +109,19 @@ it('preserves Connect 10 cancellation codes and the established SDK failure payl
 
 it('isolates status observers and reports model/disconnection from actual call outcomes', async () => {
   (globalThis as any).chrome = extensionHost();
-  await adapter.default.init({
-    manifest: {
-      appName: 'Pali',
-      appUrl: 'https://paliwallet.com',
-      email: 'test@example.invalid',
-    },
-  });
+  await adapter.init();
   const listener = jest.fn();
-  adapter.subscribeTrezorEvents(() => {
+  adapter.subscribe(() => {
     throw new Error('synthetic observer failure');
   });
-  const stop = adapter.subscribeTrezorEvents(listener);
+  const stop = adapter.subscribe(listener);
   jest.spyOn(ConnectMock, 'getAccountInfo').mockResolvedValueOnce({
     success: true,
     payload: { descriptor: 'synthetic' },
     device: { features: { model: 'T3W1' } },
   } as any);
   await expect(
-    adapter.default.getAccountInfo({ coin: 'sys', path: "m/84'/57'/0'" })
+    adapter.getAccountInfo({ coin: 'sys', path: "m/84'/57'/0'" })
   ).resolves.toMatchObject({ success: true });
   expect(listener).toHaveBeenCalledWith({ type: 'model', model: 'T3W1' });
   jest.spyOn(ConnectMock, 'getAccountInfo').mockResolvedValueOnce({
@@ -133,7 +129,7 @@ it('isolates status observers and reports model/disconnection from actual call o
     error: { code: 'Device_Disconnected', message: 'Device disconnected' },
   } as any);
   await expect(
-    adapter.default.getAccountInfo({ coin: 'sys', path: "m/84'/57'/0'" })
+    adapter.getAccountInfo({ coin: 'sys', path: "m/84'/57'/0'" })
   ).resolves.toMatchObject({ success: false });
   expect(listener).toHaveBeenCalledWith({ type: 'disconnected' });
   stop();
@@ -152,7 +148,7 @@ it.each([
   'Browser_LocalNetworkPermissionMissing',
   'HARDWARE_SIGNER_UNAVAILABLE',
 ])('does not retry terminal %s errors', async (code) => {
-  const manager = new HardwareWalletManager();
+  const manager = new HardwareWalletManager(undefined, adapter);
   const operation = jest
     .fn()
     .mockRejectedValue(
@@ -180,7 +176,10 @@ it('reattaches connection observers after a locked wallet reuses its manager', a
       observers.add(listener);
       return () => observers.delete(listener);
     });
-  const manager = new HardwareWalletManager();
+  const manager = new HardwareWalletManager(
+    undefined,
+    mock.createTrezorConnection(mock)
+  );
   try {
     expect(await manager.initializeTrezor()).toBe(true);
     await manager.destroy();
@@ -198,13 +197,7 @@ it('reattaches connection observers after a locked wallet reuses its manager', a
 
 it('rejects a pending request immediately on disposal and ignores late approval', async () => {
   (globalThis as any).chrome = extensionHost();
-  await adapter.default.init({
-    manifest: {
-      appName: 'Pali',
-      appUrl: 'https://paliwallet.com',
-      email: 'test@example.invalid',
-    },
-  });
+  await adapter.init();
   let approve!: (result: any) => void;
   jest.spyOn(ConnectMock, 'getAccountInfo').mockImplementation(
     () =>
@@ -213,8 +206,8 @@ it('rejects a pending request immediately on disposal and ignores late approval'
       }) as any
   );
   const observer = jest.fn();
-  adapter.subscribeTrezorEvents(observer);
-  const request = adapter.default.getAccountInfo({
+  adapter.subscribe(observer);
+  const request = adapter.getAccountInfo({
     coin: 'sys',
     path: "m/84'/57'/0'",
   });
@@ -222,18 +215,12 @@ it('rejects a pending request immediately on disposal and ignores late approval'
     code: 'Method_Interrupted',
   });
   await new Promise(setImmediate);
-  await adapter.default.dispose();
+  await adapter.dispose();
   await rejected;
   expect(ConnectMock.cancel).not.toHaveBeenCalled();
-  await expect(
-    adapter.default.init({
-      manifest: {
-        appName: 'Pali',
-        appUrl: 'https://paliwallet.com',
-        email: 'test@example.invalid',
-      },
-    })
-  ).rejects.toMatchObject({ code: 'HARDWARE_SIGNER_BUSY' });
+  await expect(adapter.init()).rejects.toMatchObject({
+    code: 'HARDWARE_SIGNER_BUSY',
+  });
   expect(ConnectMock.dispose).not.toHaveBeenCalled();
   approve({
     success: true,
@@ -245,19 +232,13 @@ it('rejects a pending request immediately on disposal and ignores late approval'
     expect.objectContaining({ type: 'model' })
   );
   await expect(
-    adapter.default.getAccountInfo({ coin: 'sys', path: "m/84'/57'/0'" })
+    adapter.getAccountInfo({ coin: 'sys', path: "m/84'/57'/0'" })
   ).rejects.toMatchObject({ code: 'Init_NotInitialized' });
 });
 
 it('rejects pending work without invoking unsafe upstream cancellation', async () => {
   (globalThis as any).chrome = extensionHost();
-  await adapter.default.init({
-    manifest: {
-      appName: 'Pali',
-      appUrl: 'https://paliwallet.com',
-      email: 'test@example.invalid',
-    },
-  });
+  await adapter.init();
   jest.spyOn(ConnectMock, 'getAccountInfo').mockImplementation(
     () =>
       new Promise(() => {
@@ -267,7 +248,7 @@ it('rejects pending work without invoking unsafe upstream cancellation', async (
   jest.spyOn(ConnectMock, 'cancel').mockImplementation(() => {
     throw new Error('remote cancellation unavailable');
   });
-  const request = adapter.default.getAccountInfo({
+  const request = adapter.getAccountInfo({
     coin: 'sys',
     path: "m/84'/57'/0'",
   });
@@ -275,7 +256,7 @@ it('rejects pending work without invoking unsafe upstream cancellation', async (
     code: 'Method_Interrupted',
   });
   await new Promise(setImmediate);
-  await expect(adapter.default.dispose()).resolves.toBeUndefined();
+  await expect(adapter.dispose()).resolves.toBeUndefined();
   await rejected;
   expect(ConnectMock.dispose).not.toHaveBeenCalled();
   expect(ConnectMock.cancel).not.toHaveBeenCalled();
@@ -283,28 +264,23 @@ it('rejects pending work without invoking unsafe upstream cancellation', async (
 
 it('does not initialize or send after disposal overtakes a queued import', async () => {
   (globalThis as any).chrome = extensionHost();
-  const initialization = adapter.default.init({
-    manifest: {
-      appName: 'Pali',
-      appUrl: 'https://paliwallet.com',
-      email: 'test@example.invalid',
-    },
-  });
+  const initialization = adapter.init();
   const rejected = expect(initialization).rejects.toMatchObject({
     code: 'Method_Interrupted',
   });
-  await adapter.default.dispose();
+  await adapter.dispose();
   await rejected;
   expect(ConnectMock.init).not.toHaveBeenCalled();
 });
 
 it('preserves a stable busy error through manager initialization without retry', async () => {
+  (globalThis as any).chrome = extensionHost();
   jest.spyOn(ConnectMock, 'init').mockRejectedValueOnce(
     Object.assign(new Error('Previous Trezor request is still pending'), {
       code: 'HARDWARE_SIGNER_BUSY',
     })
   );
-  const manager = new HardwareWalletManager();
+  const manager = new HardwareWalletManager(undefined, adapter);
   try {
     await expect(manager.initializeTrezor()).rejects.toMatchObject({
       code: 'HARDWARE_SIGNER_BUSY',
@@ -313,4 +289,56 @@ it('preserves a stable busy error through manager initialization without retry',
   } finally {
     await manager.destroy();
   }
+});
+
+it('prevents another browser host from using or disposing the owned vendor client', async () => {
+  (globalThis as any).chrome = extensionHost();
+  let first!: Adapter;
+  let second!: Adapter;
+  jest.isolateModules(() => {
+    first = createAdapter();
+    second = createAdapter();
+  });
+  await first.init();
+  await expect(second.init()).rejects.toMatchObject({
+    code: 'HARDWARE_SIGNER_BUSY',
+  });
+  await second.dispose();
+  expect(ConnectMock.dispose).not.toHaveBeenCalled();
+  await expect(first.getFeatures()).resolves.toMatchObject({ success: true });
+  await first.dispose();
+  await expect(second.init()).resolves.toBeUndefined();
+  await second.dispose();
+});
+
+it('rejects an asynchronous initialization guard before the browser SDK is loaded', async () => {
+  (globalThis as any).chrome = extensionHost();
+  const { createTrezorWebExtensionHost } = jest.requireActual(
+    '../../../src/trezor/webextension-host'
+  );
+  const host = createTrezorWebExtensionHost(settings);
+  await expect(
+    host.init(async () => {
+      throw new Error('Async guard');
+    })
+  ).rejects.toMatchObject({
+    code: 'HARDWARE_REQUEST_CANCELLED',
+  });
+  expect(ConnectMock.init).not.toHaveBeenCalled();
+});
+
+it('dispatches a ready browser call synchronously after its final guard', async () => {
+  (globalThis as any).chrome = extensionHost();
+  const { createTrezorWebExtensionHost } = jest.requireActual(
+    '../../../src/trezor/webextension-host'
+  );
+  const host = createTrezorWebExtensionHost(settings);
+  await host.init(() => undefined);
+  const dispatch = jest.spyOn(ConnectMock, 'getFeatures');
+  const guard = jest.fn();
+  const response = host.getFeatures(guard);
+  expect(guard).toHaveBeenCalledTimes(1);
+  expect(dispatch).toHaveBeenCalledTimes(1);
+  await response;
+  await host.dispose([]);
 });

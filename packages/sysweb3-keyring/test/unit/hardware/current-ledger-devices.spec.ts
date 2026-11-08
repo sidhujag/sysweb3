@@ -14,6 +14,12 @@ const fixture = (initiallyConnected = false) => {
     disconnect: jest.fn(async () => {
       connected = false;
     }),
+    retire: jest.fn(async () => {
+      connected = false;
+      return () => {
+        if (connected) throw new Error('Ledger reopened');
+      };
+    }),
     getStatus: () => ({ connected }),
     evm: {} as LedgerHost['evm'],
     utxo: {} as LedgerHost['utxo'],
@@ -196,7 +202,11 @@ it('revokes Ledger in the same call stack after Trezor revocation without waitin
     order.push('ledger');
     current.setConnected(false);
   });
-  const value = manager(current.host);
+  const value = new HardwareWalletManager(current.host, {
+    ...TrezorConnect,
+    subscribe: () => () => undefined,
+  });
+  managers.push(value);
   (value as any).connectionPool.set('trezor-default', {
     status: 'connected',
     lastActivity: Date.now(),

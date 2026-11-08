@@ -774,7 +774,12 @@ export const createFreshTestKeyring = async (
       vaultStateGetter,
       host,
       {
-        ...(ledgerHost ? { ledgerHost } : testHardware()),
+        ...(ledgerHost
+          ? {
+              ledgerHost,
+              trezorHost: jest.requireMock('@trezor/connect-webextension'),
+            }
+          : testHardware()),
         captureEvmSubmission: createTestSubmissionCapture(),
       }
     );

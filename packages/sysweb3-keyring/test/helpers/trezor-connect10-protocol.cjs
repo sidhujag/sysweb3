@@ -212,6 +212,11 @@ class SimulatedSocket extends EventEmitter {
 }
 
 (async () => {
+  const manifest = {
+    appName: 'Pali Wallet',
+    appUrl: 'https://paliwallet.com/',
+    email: 'support@syscoin.org',
+  };
   let connect;
   let adapterModule;
   let keyring;
@@ -227,7 +232,18 @@ class SimulatedSocket extends EventEmitter {
       __dirname,
       '../../dist/cjs/trezor/connect.js'
     ));
-    connect = adapterModule.default;
+    const { createTrezorWebExtensionHost } = require(join(
+      __dirname,
+      '../../dist/cjs/trezor/webextension-host.js'
+    ));
+    connect = adapterModule.createTrezorConnection(
+      createTrezorWebExtensionHost({
+        manifest,
+        env: 'webextension',
+        coreMode: 'auto',
+        debug: false,
+      })
+    );
     trace.adapterMode = true;
     trace.proxyListenersBeforeInit = trace.proxyListeners;
   } else {
@@ -237,21 +253,17 @@ class SimulatedSocket extends EventEmitter {
     connect.implementations['core-in-suite-desktop'].ws.createWebsocket = () =>
       new SimulatedSocket();
   }
-  const manifest = {
-    appName: 'Pali Wallet',
-    appUrl: 'https://paliwallet.com/',
-    email: 'support@syscoin.org',
-  };
   if (scenario.missingAppName) delete manifest.appName;
   if (scenario.keyring) {
     const { TrezorKeyring } = require(join(
       __dirname,
       '../../dist/cjs/trezor/index.js'
     ));
-    keyring = new TrezorKeyring();
+    keyring = new TrezorKeyring(connect);
   }
   try {
     if (keyring) await keyring.init();
+    else if (scenario.adapter) await connect.init();
     else
       await connect.init({
         manifest,
@@ -268,7 +280,7 @@ class SimulatedSocket extends EventEmitter {
   trace.exposesEventEmitter = typeof connect.on === 'function';
   if (scenario.disposePending) {
     const notifications = [];
-    adapterModule.subscribeTrezorEvents((event) => notifications.push(event));
+    connect.subscribe((event) => notifications.push(event));
     const operation = keyring
       ? keyring.getAccountInfo({ coin: 'sys', slip44: 57 })
       : connect.getFeatures();

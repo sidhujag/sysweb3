@@ -87,3 +87,28 @@ module.exports.trezorResponseError = (response, prefix = '') =>
     new Error(prefix + (response.payload?.error || 'Trezor request failed')),
     { code: response.payload?.code }
   );
+
+for (const method of [
+  'getFeatures',
+  'ethereumGetPublicKey',
+  'signMessage',
+  'ethereumSignMessage',
+  'verifyMessage',
+  'ethereumVerifyMessage',
+  'ethereumSignTransaction',
+]) {
+  TrezorConnect[method] ??= jest.fn(async () => ({
+    success: true,
+    payload: {},
+  }));
+}
+module.exports.createTrezorConnection = (host) => {
+  if (!host) throw new TypeError('Trezor requires explicit host capabilities');
+  host.subscribe = (...args) => module.exports.subscribeTrezorEvents(...args);
+  return host;
+};
+
+module.exports.retire = jest.fn(async () => {
+  await TrezorConnect.dispose();
+  return () => {};
+});

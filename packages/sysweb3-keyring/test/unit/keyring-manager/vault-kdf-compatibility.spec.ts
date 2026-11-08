@@ -40,6 +40,7 @@ describe('production KDF compatibility through the real core adapter', () => {
   let originalNodeEnv: string | undefined;
   let originalIterations: string | undefined;
   let originalLocation: PropertyDescriptor | undefined;
+  const rings = new Set<{ destroy(): Promise<void> }>();
 
   const installLegacy = () => {
     data['sysweb3-vault-keys'] = { salt };
@@ -50,6 +51,7 @@ describe('production KDF compatibility through the real core adapter', () => {
   };
   const createRing = () => {
     const result = new Keyring(createKeyringHost(storage), {
+      trezorHost: jest.requireMock('@trezor/connect-webextension'),
       captureEvmSubmission() {
         throw new Error('EVM submission is outside this fixture');
       },
@@ -66,6 +68,7 @@ describe('production KDF compatibility through the real core adapter', () => {
         },
       },
     }));
+    rings.add(result);
     return result;
   };
 
@@ -122,7 +125,8 @@ describe('production KDF compatibility through the real core adapter', () => {
     jest.spyOn(console, 'error').mockImplementation(() => undefined);
   });
   afterEach(async () => {
-    await ring.lockWallet();
+    for (const created of rings) await created.destroy();
+    rings.clear();
     jest.restoreAllMocks();
     nativeStorage.restore();
     if (originalCrypto)
