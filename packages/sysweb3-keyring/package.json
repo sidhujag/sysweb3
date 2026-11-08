@@ -66,6 +66,12 @@
       "cjs/evm-fees.js": [
         "types/evm-fees.d.ts"
       ],
+      "cjs/transactions/evm-envelope": [
+        "types/transactions/evm-envelope.d.ts"
+      ],
+      "cjs/transactions/evm-envelope.js": [
+        "types/transactions/evm-envelope.d.ts"
+      ],
       "cjs/utils/watch-descriptor": [
         "types/utils/watch-descriptor.d.ts"
       ],

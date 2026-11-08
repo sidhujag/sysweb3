@@ -90,10 +90,10 @@ import {
 import {
   signPreparedEvmEnvelope,
   snapshotPreparedEvmRequest,
-  type PreparedEvmTransaction,
 } from './prepared-evm';
 import { getAddressDerivationPath } from '../utils/derivation-paths';
 
+import type { PreparedEvmTransaction } from './evm-envelope';
 import type { LedgerKeyring } from '../ledger';
 import type { TrezorKeyring } from '../trezor';
 import type { EthereumTransactionEIP1559 } from '@trezor/connect-webextension';
@@ -1827,6 +1827,9 @@ export class EthereumTransactions<
       assertApprovedNonce(Number(transaction.nonce));
       const minimum = this.gasOverrides.minGasLimit;
       if (
+        transaction.to === null ||
+        /^0x0{40}$/i.test(transaction.to) ||
+        (transaction.type === 2 && transaction.accessList.length !== 0) ||
         transaction.data !== '0x' ||
         BigInt(transaction.value) === 0n ||
         BigInt(transaction.gasLimit) < 21000n ||

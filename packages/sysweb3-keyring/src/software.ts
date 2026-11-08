@@ -83,7 +83,10 @@ export type {
 } from './types';
 
 export type {
+  EvmAccessList,
   PreparedEvmTransaction,
+} from './transactions/evm-envelope';
+export type {
   PreparedEvmSigningOptions,
   PreparedSoftwareEvmSigningRequest,
   SignedPreparedEvmTransaction,

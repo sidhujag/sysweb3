@@ -65,6 +65,15 @@ estimate fees, select a nonce, resolve names, fill omitted fields or broadcast.
 Only an unlocked software HD/imported account is supported. Hardware,
 smart-account and watch-only records reject before key use.
 
+Use `to: null` for contract creation and an explicit `accessList` array for every
+type-2 transaction. An empty array is valid. Type-0 transactions omit that field.
+The pure `transactions/evm-envelope` module exports `snapshotEvmAccessList`, which
+preserves entry/key order and duplicates, and `serializePreparedEvmTransaction`,
+which returns the validated unsigned bytes used by prepared signing.
+Calldata is bounded at 512 KiB, covering hex data within Pali's
+1 MiB request budget. Access lists admit at most 10,000 entries and storage keys
+combined.
+
 ```ts
 const signed = keyring.signPreparedEvmTransaction(
   {
@@ -90,6 +99,7 @@ const signed = keyring.signPreparedEvmTransaction(
       data: '0x',
       maxFeePerGas: '30000000000',
       maxPriorityFeePerGas: '1000000000',
+      accessList: [],
     },
   },
   {
