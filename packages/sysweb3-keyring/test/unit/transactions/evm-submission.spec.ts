@@ -60,6 +60,71 @@ const capture = () =>
     createTestSubmissionCapture()
   );
 
+it('snapshots review identity without invoking accessors or accepting extra fields', () => {
+  const getter = jest.fn(() => 'review-one');
+  const unsignedHash = Transaction.from(envelope()).unsignedHash;
+  const malformed = [
+    {
+      get id() {
+        return getter();
+      },
+      unsignedHash,
+    },
+    { id: 'review-one', unsignedHash, extra: true },
+    Object.defineProperty({ unsignedHash }, 'id', { value: 'review-one' }),
+  ];
+  const host = jest.fn(createTestSubmissionCapture());
+  for (const review of malformed)
+    expect(() =>
+      captureEvmSubmission(
+        {
+          ...context(),
+          walletNonce: { nonce: 7, source: 'manual' },
+          review,
+        },
+        () => undefined,
+        host
+      )
+    ).toThrow();
+  expect(getter).not.toHaveBeenCalled();
+  expect(host).not.toHaveBeenCalled();
+});
+
+it('rejects a signed envelope outside the captured fee review before persistence', async () => {
+  const persistSigned = jest.fn(async () => undefined);
+  const boundary = captureEvmSubmission(
+    {
+      ...context(),
+      walletNonce: { nonce: 7, source: 'manual' },
+      review: {
+        id: 'review-one',
+        unsignedHash: Transaction.from(envelope(0)).unsignedHash,
+      },
+    },
+    () => undefined,
+    () => ({
+      assertCurrent: () => undefined,
+      dispatchSigned: admitTestSignedDispatch,
+      persistSigned,
+    })
+  );
+  const broadcast = jest.fn(async () => undefined);
+  await expect(
+    submitSignedEvmTransaction(
+      await raw(),
+      broadcast,
+      boundary,
+      undefined,
+      expected()
+    )
+  ).rejects.toMatchObject({
+    transactionNotBroadcast: true,
+    message: 'Signed EVM transaction does not match its fee review',
+  });
+  expect(persistSigned).not.toHaveBeenCalled();
+  expect(broadcast).not.toHaveBeenCalled();
+});
+
 it('rejects a valid signed envelope that changes the captured wallet nonce', async () => {
   const persistSigned = jest.fn(async () => undefined);
   const dispatchSigned = jest.fn(admitTestSignedDispatch);

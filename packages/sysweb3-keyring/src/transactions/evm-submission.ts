@@ -1,5 +1,7 @@
 import { Transaction } from 'ethers/transaction';
 
+import { readEvmOwnData } from './evm-envelope';
+
 import type {
   EvmRetainedCancellationOrigin,
   EvmWalletNonce,
@@ -17,6 +19,8 @@ export type EvmSubmissionContext = Readonly<{
   operation: 'send' | 'cancel' | 'speed-up' | 'erc20' | 'erc721' | 'erc1155';
   originalHash?: string;
   origin?: EvmRetainedCancellationOrigin;
+  /** Transient identity of the live host fee review, bound to these signed bytes. */
+  review?: Readonly<{ id: string; unsignedHash: string }>;
   walletNonce?: EvmWalletNonce;
 }>;
 
@@ -90,6 +94,22 @@ export function captureEvmSubmission(
   capture: CaptureEvmSubmission
 ): EvmSubmissionBoundary {
   const { origin, walletNonce } = input;
+  const inputReview = input.review;
+  const review =
+    inputReview === undefined
+      ? undefined
+      : readEvmOwnData(inputReview, ['id', 'unsignedHash']);
+  if (
+    review !== undefined &&
+    (input.operation !== 'send' ||
+      !walletNonce ||
+      !review ||
+      typeof review.id !== 'string' ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(review.id) ||
+      typeof review.unsignedHash !== 'string' ||
+      !/^0x[0-9a-f]{64}$/.test(review.unsignedHash))
+  )
+    throw new TypeError('Invalid EVM fee review identity');
   let approvedWalletNonce: EvmWalletNonce | undefined;
   if (walletNonce !== undefined) {
     if (
@@ -111,6 +131,14 @@ export function captureEvmSubmission(
     account: Object.freeze({ ...input.account }),
     network: Object.freeze({ ...input.network }),
     operation: input.operation,
+    ...(review
+      ? {
+          review: Object.freeze({
+            id: review.id as string,
+            unsignedHash: review.unsignedHash as string,
+          }),
+        }
+      : {}),
     ...(approvedWalletNonce ? { walletNonce: approvedWalletNonce } : {}),
     ...(input.originalHash !== undefined
       ? { originalHash: input.originalHash }
@@ -153,7 +181,15 @@ export function captureEvmSubmission(
   const boundary = Object.freeze({
     context,
     assertCurrent: guard,
-    persistSigned,
+    persistSigned: (record: EvmSignedSubmission) => {
+      if (
+        context.review &&
+        Transaction.from(record.rawTransaction).unsignedHash !==
+          context.review.unsignedHash
+      )
+        throw new Error('Signed EVM transaction does not match its fee review');
+      return persistSigned(record);
+    },
     dispatchSigned,
   }) as EvmSubmissionBoundary;
   capturedBoundaries.add(boundary);
