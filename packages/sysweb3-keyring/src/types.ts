@@ -71,11 +71,20 @@ export interface IEvmSendOptions {
   targetAccount: import('./transactions/prepared-evm').EvmSigningIdentity;
   /** Synchronous host admission, rechecked immediately before signing and broadcast. */
   assertCurrent: () => void;
-  mode: 'reviewed-native' | 'specialized';
+  mode: 'reviewed-native' | 'reviewed-generic' | 'specialized';
   walletNonce?: EvmWalletNonce;
 }
 
 export type EvmFormattedSendArguments =
+  | [
+      approvedTransaction: PreparedEvmTransaction,
+      isLegacy: boolean | undefined,
+      options: IEvmSendOptions & {
+        mode: 'reviewed-generic';
+        reviewId: string;
+        walletNonce: EvmWalletNonce;
+      }
+    ]
   | [
       approvedTransaction: PreparedEvmTransaction,
       isLegacy: boolean | undefined,

@@ -68,7 +68,12 @@ import {
   assertEvmCancellationEnvelope,
   authenticateRetainedCancellation,
 } from './evm-cancellation';
-import { readEvmOwnData, type PreparedEvmTransaction } from './evm-envelope';
+import {
+  readEvmOwnData,
+  serializePreparedEvmTransaction,
+  snapshotPreparedEvmTransaction,
+  type PreparedEvmTransaction,
+} from './evm-envelope';
 import {
   deriveEvmAccountFromMnemonic,
   parsePersonalMessage as parseLocalPersonalMessage,
@@ -468,7 +473,7 @@ export class EthereumTransactions<
     assertCurrent: () => void,
     details: Pick<
       EvmSubmissionContext,
-      'originalHash' | 'origin' | 'walletNonce'
+      'originalHash' | 'origin' | 'review' | 'walletNonce'
     > = {}
   ) => {
     if (!this.captureSubmissionLifecycle)
@@ -1823,6 +1828,7 @@ export class EthereumTransactions<
         typeof options !== 'object' ||
         Array.isArray(options) ||
         (options.mode !== 'reviewed-native' &&
+          options.mode !== 'reviewed-generic' &&
           options.mode !== 'specialized') ||
         typeof options.assertCurrent !== 'function'
       )
@@ -1830,6 +1836,15 @@ export class EthereumTransactions<
       // Capture once; later caller mutations cannot replace this invocation's
       // admission decision while chain checks or device approval are pending.
       const { assertCurrent: assertHostCurrent, mode, walletNonce } = options;
+      const reviewId =
+        mode === 'reviewed-generic' ? options.reviewId : undefined;
+      if (
+        mode === 'reviewed-generic' &&
+        (typeof reviewId !== 'string' ||
+          !/^[A-Za-z0-9_-]{1,128}$/.test(reviewId) ||
+          walletNonce === undefined)
+      )
+        throw new Error('An issued fee review and approved nonce are required');
       const selectedAccount = snapshotEvmSigningIdentity(
         options.selectedAccount
       );
@@ -1857,7 +1872,8 @@ export class EthereumTransactions<
         mode,
         nonceApproval,
         selectedAccount,
-        targetAccount
+        targetAccount,
+        reviewId
       );
     } catch (error) {
       // A broadcast transport error may mean the node accepted the signed
@@ -1888,7 +1904,8 @@ export class EthereumTransactions<
     mode: IEvmSendOptions['mode'],
     walletNonce: IEvmSendOptions['walletNonce'],
     selectedIdentity: IEvmSendOptions['selectedAccount'],
-    targetIdentity: IEvmSendOptions['targetAccount']
+    targetIdentity: IEvmSendOptions['targetAccount'],
+    reviewId: string | undefined
   ) => {
     // Hardware approval may outlive the selected account, network or unlocked
     // session. Keep immutable identities and one provider for this invocation.
@@ -1921,6 +1938,25 @@ export class EthereumTransactions<
         throw new Error('EVM payer approval context changed');
     };
     assertSigningCurrent();
+    // Generic reviewed calls keep the exact prepared envelope, including
+    // contract creation, calldata and access lists, through existing signers.
+    const reviewed =
+      mode === 'reviewed-generic'
+        ? snapshotPreparedEvmTransaction(input)
+        : undefined;
+    if (reviewed) {
+      if (
+        reviewed.from !== targetIdentity.expectedAddress ||
+        reviewed.chainId !== String(activeNetwork.chainId) ||
+        reviewed.nonce !== String(walletNonce?.nonce) ||
+        (isLegacy !== undefined && isLegacy !== (reviewed.type === 0)) ||
+        (this.gasOverrides.minGasLimit &&
+          BigInt(reviewed.gasLimit) < this.gasOverrides.minGasLimit.toBigInt())
+      )
+        throw new Error('Reviewed EVM transaction does not match its approval');
+      input = reviewed;
+      isLegacy = reviewed.type === 0;
+    }
     const assertBeforeBroadcast = () => {
       assertCurrent();
       beforeBroadcast();
@@ -1932,7 +1968,19 @@ export class EthereumTransactions<
       activeAccountId,
       activeNetwork,
       assertSigningCurrent,
-      { walletNonce }
+      {
+        walletNonce,
+        ...(reviewed
+          ? {
+              review: {
+                id: reviewId!,
+                unsignedHash: Transaction.from(
+                  serializePreparedEvmTransaction(reviewed)
+                ).unsignedHash,
+              },
+            }
+          : {}),
+      }
     );
     const assertCurrent = submission.assertCurrent;
     const approvedNonce = submission.context.walletNonce?.nonce;
@@ -2072,7 +2120,10 @@ export class EthereumTransactions<
         params.maxPriorityFeePerGas,
         'priority fee'
       );
-      if (maximum.isZero() || priority.gt(maximum))
+      if (
+        (mode !== 'reviewed-generic' && maximum.isZero()) ||
+        priority.gt(maximum)
+      )
         throw new Error('Invalid EIP-1559 fees');
       params.maxFeePerGas = maximum;
       params.maxPriorityFeePerGas = priority;
@@ -2086,7 +2137,11 @@ export class EthereumTransactions<
 
     // Only apply a minimum gas limit when a network-specific override is set.
     // Otherwise keep the user/dapp-approved gas limit unchanged.
-    if (params.gasLimit != null && this.gasOverrides.minGasLimit) {
+    if (
+      mode !== 'reviewed-generic' &&
+      params.gasLimit != null &&
+      this.gasOverrides.minGasLimit
+    ) {
       const minGasLimit = this.gasOverrides.minGasLimit;
       const currentGasLimit = BigNumber.from(params.gasLimit);
       if (currentGasLimit.lt(minGasLimit)) {
