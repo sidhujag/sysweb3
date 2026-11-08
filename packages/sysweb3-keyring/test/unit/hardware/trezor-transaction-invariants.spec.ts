@@ -42,7 +42,7 @@ const fixture = (locktime = 12345, sequence = 0) => {
 };
 const signedTransaction = (psbt: any) => {
   const signed = psbt.clone();
-  signed.signInput(0, signer);
+  signed.signInput(0, signer, [psbt.data.inputs[0].sighashType ?? 0x01]);
   signed.finalizeAllInputs();
   return signed.extractTransaction().toHex();
 };
@@ -137,6 +137,135 @@ describe('Trezor unsigned transaction integrity', () => {
       .mockResolvedValue({ success: true, payload: { serializedTx } } as any);
     const signed = await receiver.signUtxoTransaction({}, psbt, owner());
     expect(signed.extractTransaction().toHex()).toBe(serializedTx);
+  });
+
+  it('rejects a DER-valid but cryptographically invalid signature without changing the PSBT', async () => {
+    const psbt = fixture();
+    const before = psbt.toBase64();
+    const tx = bitcoinjs.Transaction.fromHex(signedTransaction(psbt));
+    tx.ins[0].witness[0] = bitcoinjs.script.signature.encode(
+      Buffer.from(ecc.sign(Buffer.alloc(32, 9), privateKey)),
+      0x01
+    );
+    expect(() =>
+      bitcoinjs.script.signature.decode(tx.ins[0].witness[0])
+    ).not.toThrow();
+    jest.spyOn(TrezorConnect, 'signTransaction').mockResolvedValue({
+      success: true,
+      payload: { serializedTx: tx.toHex() },
+    } as any);
+    const update = jest.spyOn(psbt, 'updateInput');
+    await expect(
+      receiver.signUtxoTransaction({}, psbt, owner())
+    ).rejects.toThrow('Invalid Trezor signature for approved transaction');
+    expect(update).not.toHaveBeenCalled();
+    expect(psbt.toBase64()).toBe(before);
+  });
+
+  it('rejects a returned public key outside the approved input script', async () => {
+    const psbt = fixture();
+    const before = psbt.toBase64();
+    const tx = bitcoinjs.Transaction.fromHex(signedTransaction(psbt));
+    tx.ins[0].witness[1] = Buffer.from(
+      ecc.pointFromScalar(Buffer.alloc(32, 3))!
+    );
+    jest.spyOn(TrezorConnect, 'signTransaction').mockResolvedValue({
+      success: true,
+      payload: { serializedTx: tx.toHex() },
+    } as any);
+    await expect(
+      receiver.signUtxoTransaction({}, psbt, owner())
+    ).rejects.toThrow('Invalid Trezor signature for approved transaction');
+    expect(psbt.toBase64()).toBe(before);
+  });
+
+  it('preserves an explicitly approved sighash while rejecting a weaker device-selected sighash', async () => {
+    const approved = fixture();
+    approved.updateInput(0, {
+      sighashType: bitcoinjs.Transaction.SIGHASH_NONE,
+    });
+    const serializedTx = signedTransaction(approved);
+    jest.spyOn(TrezorConnect, 'signTransaction').mockResolvedValue({
+      success: true,
+      payload: { serializedTx },
+    } as any);
+    const signed = await receiver.signUtxoTransaction({}, approved, owner());
+    expect(signed.extractTransaction().toHex()).toBe(serializedTx);
+
+    const defaultAll = fixture();
+    const before = defaultAll.toBase64();
+    await expect(
+      receiver.signUtxoTransaction({}, defaultAll, owner())
+    ).rejects.toThrow(
+      'Trezor signature does not match the approved sighash type'
+    );
+    expect(defaultAll.toBase64()).toBe(before);
+  });
+
+  it('validates every returned signature before mutating any original input', async () => {
+    const psbt = fixture();
+    psbt.addInput({
+      hash: Buffer.alloc(32, 3),
+      index: 0,
+      sequence: 0,
+      witnessUtxo: { script: payment.output, value: 100000n },
+    });
+    psbt.addOutput({ address: payment.address, value: 99000n });
+    const before = psbt.toBase64();
+    const candidate = psbt.clone();
+    candidate.signAllInputs(signer);
+    candidate.finalizeAllInputs();
+    const tx = candidate.extractTransaction();
+    tx.ins[1].witness[0] = bitcoinjs.script.signature.encode(
+      Buffer.from(ecc.sign(Buffer.alloc(32, 9), privateKey)),
+      0x01
+    );
+    jest.spyOn(TrezorConnect, 'signTransaction').mockResolvedValue({
+      success: true,
+      payload: { serializedTx: tx.toHex() },
+    } as any);
+    const update = jest.spyOn(psbt, 'updateInput');
+    await expect(
+      receiver.signUtxoTransaction({}, psbt, owner())
+    ).rejects.toThrow('Invalid Trezor signature for approved transaction');
+    expect(update).not.toHaveBeenCalled();
+    expect(psbt.toBase64()).toBe(before);
+  });
+
+  it('rejects a sighash policy changed while device approval was pending', async () => {
+    const psbt = fixture();
+    const weaker = psbt.clone();
+    weaker.updateInput(0, { sighashType: bitcoinjs.Transaction.SIGHASH_NONE });
+    const serializedTx = signedTransaction(weaker);
+    jest
+      .spyOn(TrezorConnect, 'signTransaction')
+      .mockImplementationOnce(async () => {
+        psbt.updateInput(0, {
+          sighashType: bitcoinjs.Transaction.SIGHASH_NONE,
+        });
+        return { success: true, payload: { serializedTx } } as any;
+      });
+    await expect(
+      receiver.signUtxoTransaction({}, psbt, owner())
+    ).rejects.toThrow('Trezor signing PSBT changed while awaiting approval');
+    expect(psbt.data.inputs[0].partialSig).toBeUndefined();
+    expect(psbt.data.inputs[0].finalScriptWitness).toBeUndefined();
+  });
+
+  it('rejects prevout metadata changed while device approval was pending', async () => {
+    const psbt = fixture();
+    const serializedTx = signedTransaction(psbt);
+    jest
+      .spyOn(TrezorConnect, 'signTransaction')
+      .mockImplementationOnce(async () => {
+        psbt.data.inputs[0].witnessUtxo.value += 1n;
+        return { success: true, payload: { serializedTx } } as any;
+      });
+    await expect(
+      receiver.signUtxoTransaction({}, psbt, owner())
+    ).rejects.toThrow('Trezor signing PSBT changed while awaiting approval');
+    expect(psbt.data.inputs[0].partialSig).toBeUndefined();
+    expect(psbt.data.inputs[0].finalScriptWitness).toBeUndefined();
   });
 
   it('rejects omitted UTXO approval before calling the device connector', async () => {
