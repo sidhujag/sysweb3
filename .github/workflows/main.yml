@@ -41,6 +41,8 @@ jobs:
             test/unit/transactions/ethereum-trezor-schema.spec.ts \
             test/unit/transactions/ethereum-send-context.spec.ts \
             test/unit/transactions/prepared-evm.spec.ts \
+            test/unit/transactions/evm-envelope.spec.ts \
+            test/unit/transactions/ethereum-reviewed-native.spec.ts \
             test/unit/transactions/ethereum-submission-boundary.spec.ts \
             test/unit/transactions/evm-submission.spec.ts \
             test/unit/transactions/evm-envelope-binding.spec.ts \

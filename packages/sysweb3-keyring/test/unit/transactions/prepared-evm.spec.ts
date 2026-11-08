@@ -10,6 +10,10 @@ import {
   INetworkType,
   KeyringAccountType,
 } from '../../../src/software';
+import {
+  serializePreparedEvmTransaction,
+  snapshotEvmAccessList,
+} from '../../../src/transactions/evm-envelope';
 import { snapshotPreparedEvmRequest } from '../../../src/transactions/prepared-evm';
 
 import type { PreparedSoftwareEvmSigningRequest } from '../../../src/software';
@@ -41,7 +45,11 @@ function request(type: 0 | 2 = 2): PreparedSoftwareEvmSigningRequest {
       data: '0x',
       ...(type === 0
         ? { gasPrice: '20000000000' }
-        : { maxFeePerGas: '30000000000', maxPriorityFeePerGas: '1000000000' }),
+        : {
+            maxFeePerGas: '30000000000',
+            maxPriorityFeePerGas: '1000000000',
+            accessList: [],
+          }),
     } as any,
   };
 }
@@ -92,11 +100,19 @@ const mutations: Array<[string, (input: any) => void]> = [
   ['unsupported type', (v) => (v.transaction.type = 4)],
   ['string type', (v) => (v.transaction.type = '2')],
   ['missing type', (v) => delete v.transaction.type],
-  ['unknown transaction field', (v) => (v.transaction.accessList = [])],
+  ['unknown transaction field', (v) => (v.transaction.unexpected = [])],
+  ['missing access list', (v) => delete v.transaction.accessList],
+  ['invalid access list', (v) => (v.transaction.accessList = {})],
   ['unknown root field', (v) => (v.extra = true)],
-  ['contract creation', (v) => (v.transaction.to = null)],
   ['ENS recipient', (v) => (v.transaction.to = 'alice.eth')],
-  ['zero recipient', (v) => (v.transaction.to = '0x' + '0'.repeat(40))],
+  ['missing recipient', (v) => delete v.transaction.to],
+  [
+    'zero sender',
+    (v) => {
+      v.transaction.from = '0x' + '0'.repeat(40);
+      v.account.expectedAddress = v.transaction.from;
+    },
+  ],
   [
     'invalid checksum',
     (v) => (v.transaction.from = '0x9858EFFD232B4033E47d90003D41EC34EcaEda94'),
@@ -121,7 +137,10 @@ const mutations: Array<[string, (input: any) => void]> = [
   ['odd hex data', (v) => (v.transaction.data = '0x1')],
   ['non-hex data', (v) => (v.transaction.data = '0xgg')],
   ['unprefixed data', (v) => (v.transaction.data = 'abcd')],
-  ['oversized data', (v) => (v.transaction.data = '0x' + 'ab'.repeat(16385))],
+  [
+    'oversized data',
+    (v) => (v.transaction.data = '0x' + 'ab'.repeat(512 * 1024 + 1)),
+  ],
 ];
 
 it.each(mutations)('rejects %s before signing', (_name, mutate) => {
@@ -191,18 +210,97 @@ it('normalizes and detaches the complete admitted request at the maximum calldat
   const input = request() as any;
   input.account.expectedAddress = ADDRESS.toLowerCase();
   input.transaction.from = ADDRESS.toLowerCase();
-  input.transaction.data = '0x' + 'AB'.repeat(16384);
+  input.transaction.data = '0x' + 'AB'.repeat(512 * 1024);
   const copy = snapshotPreparedEvmRequest(input);
   input.transaction.nonce = '8';
   input.account.id = 1;
   expect(copy.transaction.nonce).toBe('7');
   expect(copy.account.id).toBe(0);
   expect(copy.transaction.from).toBe(ADDRESS);
-  expect(copy.transaction.data).toBe('0x' + 'ab'.repeat(16384));
+  expect(copy.transaction.data).toBe('0x' + 'ab'.repeat(512 * 1024));
   expect(Object.isFrozen(copy)).toBe(true);
   expect(Object.isFrozen(copy.transaction)).toBe(true);
   expect(Object.isFrozen(copy.account)).toBe(true);
   expect(Object.isFrozen(copy.network)).toBe(true);
+});
+
+it('requires access lists only on type-2 envelopes', () => {
+  const legacy = request(0) as any;
+  legacy.transaction.accessList = [];
+  expect(() => snapshotPreparedEvmRequest(legacy)).toThrow();
+  const typed = request(2) as any;
+  delete typed.transaction.accessList;
+  expect(() => snapshotPreparedEvmRequest(typed)).toThrow();
+  expect(() => serializePreparedEvmTransaction(typed.transaction)).toThrow();
+});
+
+it('uses the same canonical unsigned fields for contract creation and access-list calls', () => {
+  const input = request(2) as any;
+  input.transaction.to = null;
+  input.transaction.data = '0x6080';
+  input.transaction.accessList = [
+    { address: RECIPIENT, storageKeys: ['0x' + '11'.repeat(32)] },
+  ];
+  const serialized = serializePreparedEvmTransaction(input.transaction);
+  const decoded = Transaction.from(serialized);
+  expect(decoded.to).toBeNull();
+  expect(decoded.data).toBe(input.transaction.data);
+  expect(decoded.accessList).toEqual(input.transaction.accessList);
+  expect(decoded.isSigned()).toBe(false);
+  expect(serialized).toBe(
+    Transaction.from({ ...input.transaction, from: undefined, nonce: 7 })
+      .unsignedSerialized
+  );
+});
+
+it('copies access-list order and duplicates and freezes every nested value', () => {
+  const key = '0x' + 'AB'.repeat(32);
+  const entry = { address: ADDRESS.toLowerCase(), storageKeys: [key, key] };
+  const input = [entry, entry];
+  const copy = snapshotEvmAccessList(input);
+  entry.address = RECIPIENT;
+  entry.storageKeys[0] = '0x' + '00'.repeat(32);
+  input.pop();
+  expect(copy).toEqual([
+    { address: ADDRESS, storageKeys: [key.toLowerCase(), key.toLowerCase()] },
+    { address: ADDRESS, storageKeys: [key.toLowerCase(), key.toLowerCase()] },
+  ]);
+  expect(Object.isFrozen(copy)).toBe(true);
+  expect(copy.every((item) => Object.isFrozen(item))).toBe(true);
+  expect(copy.every((item) => Object.isFrozen(item.storageKeys))).toBe(true);
+});
+
+it('rejects malformed, sparse or accessor access lists without invoking getters', () => {
+  const getter = jest.fn();
+  const entry = { address: RECIPIENT, storageKeys: [] };
+  Object.defineProperty(entry, 'address', { get: getter, enumerable: true });
+  const indexed = [RECIPIENT];
+  Object.defineProperty(indexed, 0, { get: getter, enumerable: true });
+  for (const input of [
+    undefined,
+    {},
+    [entry],
+    new Array(1),
+    [{ address: RECIPIENT, storageKeys: indexed }],
+    [{ address: RECIPIENT, storageKeys: ['0x1'] }],
+    [{ address: RECIPIENT, storageKeys: [], extra: true }],
+  ])
+    expect(() => snapshotEvmAccessList(input)).toThrow();
+  expect(getter).not.toHaveBeenCalled();
+});
+
+it('bounds total copied access-list entries and storage keys', () => {
+  const key = '0x' + 'ab'.repeat(32);
+  expect(
+    snapshotEvmAccessList([
+      { address: RECIPIENT, storageKeys: Array(9_999).fill(key) },
+    ])[0].storageKeys
+  ).toHaveLength(9_999);
+  expect(() =>
+    snapshotEvmAccessList([
+      { address: RECIPIENT, storageKeys: Array(10_000).fill(key) },
+    ])
+  ).toThrow();
 });
 
 describe('software-only prepared signing authority', () => {
@@ -266,6 +364,14 @@ describe('software-only prepared signing authority', () => {
       const reference = await referenceWallet.signTransaction({
         ...input.transaction,
         nonce: 7,
+        ...(input.transaction.type === 2
+          ? {
+              accessList: input.transaction.accessList.map((item) => ({
+                address: item.address,
+                storageKeys: [...item.storageKeys],
+              })),
+            }
+          : {}),
       });
       expect(result.rawTransaction).toBe(reference);
       const decoded = Transaction.from(result.rawTransaction);
@@ -282,6 +388,75 @@ describe('software-only prepared signing authority', () => {
       expect(guard).toHaveBeenCalledTimes(2);
     }
   );
+
+  it.each([0, 2] as const)(
+    'signs a type-%i contract creation with its exact initcode',
+    async (type) => {
+      const input = request(type) as any;
+      input.transaction.to = null;
+      input.transaction.data = '0x' + '60'.repeat(32 * 1024);
+      input.transaction.gasLimit = '2000000';
+      const result = keyring.signPreparedEvmTransaction(input, {
+        assertCurrent: guard,
+      });
+      const reference = await referenceWallet.signTransaction({
+        ...input.transaction,
+        nonce: 7,
+      });
+      expect(result.rawTransaction).toBe(reference);
+      const decoded = Transaction.from(result.rawTransaction);
+      expect(decoded.to).toBeNull();
+      expect(decoded.data).toBe(input.transaction.data);
+      expect(provider).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+    }
+  );
+
+  it('signs an explicit zero destination while refusing a zero sender', () => {
+    const input = request() as any;
+    input.transaction.to = '0x' + '0'.repeat(40);
+    const signed = keyring.signPreparedEvmTransaction(input, {
+      assertCurrent: guard,
+    });
+    expect(Transaction.from(signed.rawTransaction).to).toBe(
+      input.transaction.to
+    );
+    input.account.expectedAddress = input.transaction.from =
+      input.transaction.to;
+    expect(() =>
+      keyring.signPreparedEvmTransaction(input, { assertCurrent: guard })
+    ).toThrow();
+    expect(sign).toHaveBeenCalledTimes(1);
+  });
+
+  it('signs the captured ordered access list even when a host callback mutates it', async () => {
+    const input = request(2) as any;
+    const entry = {
+      address: RECIPIENT,
+      storageKeys: ['0x' + '11'.repeat(32), '0x' + '11'.repeat(32)],
+    };
+    input.transaction.accessList = [entry, entry];
+    const expected = structuredClone(input.transaction);
+    guard.mockImplementation(() => {
+      entry.address = ADDRESS;
+      entry.storageKeys[0] = '0x' + '22'.repeat(32);
+      input.transaction.accessList.pop();
+    });
+    const result = keyring.signPreparedEvmTransaction(input, {
+      assertCurrent: guard,
+    });
+    const reference = await referenceWallet.signTransaction({
+      ...expected,
+      nonce: 7,
+    });
+    expect(result.rawTransaction).toBe(reference);
+    expect(Transaction.from(result.rawTransaction).accessList).toEqual(
+      expected.accessList
+    );
+    expect(result.transaction).toEqual(expected);
+    expect(provider).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
 
   it.each([0, 2] as const)(
     'refuses to sign an over-cap type %i envelope even without estimation',

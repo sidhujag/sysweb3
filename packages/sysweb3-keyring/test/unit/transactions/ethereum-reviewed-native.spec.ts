@@ -24,6 +24,7 @@ const request = () => ({
   type: 2 as const,
   maxFeePerGas: '9007199254740999',
   maxPriorityFeePerGas: '0',
+  accessList: [],
 });
 
 function fixture(withPersistence = true) {
@@ -112,6 +113,20 @@ it('rejects incomplete approved fields and a missing durable port before chain I
     expect(f.key).not.toHaveBeenCalled();
     expect(f.provider.sendTransaction).not.toHaveBeenCalled();
   }
+});
+
+it.each([
+  { to: null },
+  { to: `0x${'00'.repeat(20)}` },
+  { accessList: [{ address: wallet.address, storageKeys: [] }] },
+])('retains ordinary native-send restrictions for %p', async (change) => {
+  const { sdk, key, provider } = fixture();
+  await expect(
+    sdk.sendFormattedTransaction({ ...request(), ...change }, false, approve)
+  ).rejects.toMatchObject({ transactionNotBroadcast: true });
+  expect(provider.verifyConfiguredChainId).not.toHaveBeenCalled();
+  expect(key).not.toHaveBeenCalled();
+  expect(provider.sendTransaction).not.toHaveBeenCalled();
 });
 
 it('signs the captured exact reviewed bytes after durable admission, without nonce or fee autofill', async () => {

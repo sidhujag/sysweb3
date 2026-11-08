@@ -401,6 +401,7 @@ it('preserves the reviewed native nonce through capture when the caller object c
       gasLimit: '42000',
       data: '0x',
       type: 2,
+      accessList: [],
       maxFeePerGas: '3',
       maxPriorityFeePerGas: '1',
     },

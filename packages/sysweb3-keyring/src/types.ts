@@ -23,7 +23,7 @@ import { SyscoinHDSigner } from './signers';
 import { TrezorKeyring } from './trezor';
 
 import type { KeyringCore } from './keyring-core';
-import type { PreparedEvmTransaction } from './transactions/prepared-evm';
+import type { PreparedEvmTransaction } from './transactions/evm-envelope';
 import type { OwnedUtxoRpcVerification } from '@sidhujag/sysweb3-network';
 
 export type AccessListish =

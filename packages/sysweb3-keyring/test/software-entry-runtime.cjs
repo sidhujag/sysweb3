@@ -149,6 +149,7 @@ const storage = () => {
           data: '0x',
           maxFeePerGas: '2',
           maxPriorityFeePerGas: '1',
+          accessList: [],
         },
       },
       { assertCurrent() {} }
