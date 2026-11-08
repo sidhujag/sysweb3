@@ -1,3 +1,4 @@
+import { withEvmSendIdentity } from '../../helpers/evm-send-identity';
 import { Transaction } from 'ethers';
 
 import { BigNumber } from '../../../src/ethers-v6';
@@ -114,7 +115,7 @@ it.each(['healthy', 'lock', 'account-change'] as const)(
             nonce: 7,
           } as any,
           true,
-          specializedApproval
+          withEvmSendIdentity(ring.ethereumTransaction, specializedApproval)
         )
         .catch((e) => e);
       await Promise.race([

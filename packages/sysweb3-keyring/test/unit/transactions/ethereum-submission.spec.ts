@@ -1,3 +1,4 @@
+import { withEvmSendIdentity } from '../../helpers/evm-send-identity';
 // Reload the shared setup's SDK imports so this file uses its real provider response wrapper.
 jest.resetModules();
 (global as any).window.location = { href: 'http://localhost/' };
@@ -219,10 +220,10 @@ function fixture(kind: KeyringAccountType, capture?: CaptureEvmSubmission) {
           maxPriorityFeePerGas: 1,
         } as any,
         false,
-        {
+        withEvmSendIdentity(sdk, {
           ...specializedApproval,
           walletNonce: { nonce: 7, source: 'automatic' },
-        }
+        })
       );
     const request = {
       networkUrl: network.url,
@@ -406,13 +407,13 @@ it('preserves the reviewed native nonce through capture when the caller object c
       maxPriorityFeePerGas: '1',
     },
     false,
-    {
+    withEvmSendIdentity(sdk, {
       mode: 'reviewed-native',
       assertCurrent() {
         nonceApproval.nonce = 99;
       },
       walletNonce: nonceApproval,
-    }
+    })
   );
   const expected = { nonce: 0, source: 'manual' };
   expect(capture).toHaveBeenCalledWith(
@@ -452,7 +453,7 @@ it.each([undefined, 1])(
           maxPriorityFeePerGas: 1,
         } as any,
         false,
-        { ...specializedApproval, walletNonce: { nonce: 0, source: 'manual' } }
+        withEvmSendIdentity(f.sdk, { ...specializedApproval, walletNonce: { nonce: 0, source: 'manual' } })
       )
     ).rejects.toThrow('EVM transaction nonce does not match wallet approval');
     expect(f.provider.getTransactionCount).not.toHaveBeenCalled();

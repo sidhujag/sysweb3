@@ -1,3 +1,4 @@
+import { withEvmSendIdentity } from '../../helpers/evm-send-identity';
 import { execFileSync } from 'child_process';
 import { admitTestSignedDispatch } from '../../helpers/evm-submission';
 import { Transaction } from 'ethers/transaction';
@@ -158,7 +159,7 @@ it.each([
         gasPrice,
       } as any,
       true,
-      specializedApproval
+      withEvmSendIdentity(sdk, specializedApproval)
     );
     await expect(finishDeviceRequest(pending)).resolves.toHaveProperty('hash');
     expect(connect.ethereumSignTransaction).toHaveBeenCalledTimes(1);
@@ -197,7 +198,7 @@ it('keeps every EIP1559 quantity in the published Connect schema after request c
       ],
     } as any,
     false,
-    specializedApproval
+    withEvmSendIdentity(sdk, specializedApproval)
   );
   await expect(finishDeviceRequest(pending)).resolves.toHaveProperty('hash');
   const wire = requests[0].transaction;
@@ -228,7 +229,7 @@ it('formats autofilled EIP1559 fees, gas and nonce for the real Connect schema',
       data: '0x',
     } as any,
     false,
-    specializedApproval
+    withEvmSendIdentity(sdk, specializedApproval)
   );
   await expect(finishDeviceRequest(pending)).resolves.toHaveProperty('hash');
   const wire = requests[0].transaction;

@@ -1,6 +1,6 @@
 import ecc from '@bitcoinerlab/secp256k1';
 import { keccak256 } from 'ethers/crypto';
-import { Transaction } from 'ethers/transaction';
+import { Transaction, recoverAddress } from 'ethers/transaction';
 import { HDNodeWallet, Wallet } from 'ethers/wallet';
 
 import { EvmGasLimitError } from '../../../src/evm-fees';
@@ -32,6 +32,7 @@ const referenceWallet = HDNodeWallet.fromPhrase(
 
 function request(type: 0 | 2 = 2): PreparedSoftwareEvmSigningRequest {
   return {
+    selectedAccount: { id: 0, type: 'HDAccount', expectedAddress: ADDRESS },
     account: { id: 0, type: 'HDAccount', expectedAddress: ADDRESS },
     network: { kind: 'ethereum', chainId: '1', slip44: 60, url: URL },
     transaction: {
@@ -485,6 +486,98 @@ describe('software-only prepared signing authority', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it('refuses replacing the host state getter after its initial binding', () => {
+    const replacement = jest.fn(() => state);
+    expect(() => keyring.setVaultStateGetter(replacement)).toThrow(
+      'already bound'
+    );
+    expect(replacement).not.toHaveBeenCalled();
+    expect(
+      keyring.signPreparedEvmTransaction(request(), { assertCurrent: guard })
+        .from
+    ).toBe(ADDRESS);
+  });
+
+  function selectSmartAccount() {
+    state.accounts.SmartAccount[7] = {
+      id: 7,
+      address: RECIPIENT,
+      isSmartAccount: true,
+      xprv: '',
+    };
+    state.activeAccount = { id: 7, type: KeyringAccountType.SmartAccount };
+    return { id: 7, type: 'SmartAccount' as const, expectedAddress: RECIPIENT };
+  }
+
+  it('signs for the explicit software payer while preserving selected smart-account identity', () => {
+    const selectedAccount = selectSmartAccount();
+    const input = { ...request(), selectedAccount };
+    const signed = keyring.signPreparedEvmTransaction(input, {
+      assertCurrent: guard,
+    });
+    expect(signed.from).toBe(ADDRESS);
+    expect(state.activeAccount).toEqual({
+      id: 7,
+      type: KeyringAccountType.SmartAccount,
+    });
+    expect(provider).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(['selected', 'payer', 'key'])(
+    'rejects changes to the %s binding before an explicit-target signature',
+    (field) => {
+      const selectedAccount = selectSmartAccount();
+      guard.mockImplementationOnce(() => {
+        if (field === 'selected')
+          state.accounts.SmartAccount[7].address = ADDRESS;
+        if (field === 'payer') state.accounts.HDAccount[0].address = RECIPIENT;
+        if (field === 'key') state.accounts.HDAccount[0].xprv = 'changed';
+      });
+      expect(() =>
+        keyring.signPreparedEvmTransaction(
+          { ...request(), selectedAccount },
+          { assertCurrent: guard }
+        )
+      ).toThrow();
+      expect(sign).not.toHaveBeenCalled();
+      expect(provider).not.toHaveBeenCalled();
+    }
+  );
+
+  it('signs the same raw digest for the explicit owner without selecting it', async () => {
+    const selectedAccount = selectSmartAccount();
+    const digest = '0x' + '12'.repeat(32);
+    const signature = await keyring.ethereumTransaction.ethSign(
+      [ADDRESS, digest],
+      {
+        selectedAccount,
+        targetAccount: request().account,
+        assertCurrent: guard,
+      }
+    );
+    expect(recoverAddress(digest, signature)).toBe(ADDRESS);
+    expect(state.activeAccount.type).toBe(KeyringAccountType.SmartAccount);
+    expect(provider).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects missing or asynchronous digest authority before signing', async () => {
+    const selectedAccount = selectSmartAccount();
+    const digest = '0x' + '12'.repeat(32);
+    await expect(
+      keyring.ethereumTransaction.ethSign([ADDRESS, digest], undefined as never)
+    ).rejects.toThrow();
+    await expect(
+      keyring.ethereumTransaction.ethSign([ADDRESS, digest], {
+        selectedAccount,
+        targetAccount: request().account,
+        assertCurrent: async () => undefined,
+      })
+    ).rejects.toThrow();
+    expect(sign).not.toHaveBeenCalled();
+  });
+
   it('signs an imported software account without exposing its key', async () => {
     const wallet = new Wallet(
       '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
@@ -499,6 +592,7 @@ describe('software-only prepared signing authority', () => {
       expectedAddress: account.address,
     };
     input.transaction.from = account.address;
+    input.selectedAccount = { ...input.account };
     const result = keyring.signPreparedEvmTransaction(input, {
       assertCurrent: guard,
     });

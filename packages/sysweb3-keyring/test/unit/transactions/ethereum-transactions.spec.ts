@@ -1,3 +1,4 @@
+import { withEvmSendIdentity } from '../../helpers/evm-send-identity';
 import {
   encrypt,
   recoverPersonalSignature,
@@ -63,7 +64,7 @@ describe('Ethereum Transactions', () => {
         await keyringManager.ethereumTransaction.sendFormattedTransaction(
           tx,
           undefined,
-          specializedApproval
+          withEvmSendIdentity(keyringManager.ethereumTransaction, specializedApproval)
         );
       expect(result).toBeDefined();
       expect(result.hash).toBeDefined();
@@ -100,7 +101,7 @@ describe('Ethereum Transactions', () => {
         keyringManager.ethereumTransaction.sendFormattedTransaction(
           tx,
           undefined,
-          specializedApproval
+          withEvmSendIdentity(keyringManager.ethereumTransaction, specializedApproval)
         )
       ).resolves.toMatchObject({ hash, blockNumber: null });
       expect(provider.getTransaction).not.toHaveBeenCalled();
@@ -308,7 +309,7 @@ describe('Ethereum Transactions', () => {
       await keyringManager.ethereumTransaction.sendFormattedTransaction(
         tx,
         undefined,
-        specializedApproval
+        withEvmSendIdentity(keyringManager.ethereumTransaction, specializedApproval)
       );
 
       const signedTx = provider.sendTransaction.mock.calls.at(-1)?.[0];
@@ -332,7 +333,7 @@ describe('Ethereum Transactions', () => {
       await keyringManager.ethereumTransaction.sendFormattedTransaction(
         tx,
         undefined,
-        specializedApproval
+        withEvmSendIdentity(keyringManager.ethereumTransaction, specializedApproval)
       );
 
       expect(provider.estimateGas).toHaveBeenLastCalledWith(
@@ -357,7 +358,7 @@ describe('Ethereum Transactions', () => {
         keyringManager.ethereumTransaction.sendFormattedTransaction(
           tx,
           undefined,
-          specializedApproval
+          withEvmSendIdentity(keyringManager.ethereumTransaction, specializedApproval)
         )
       ).rejects.toMatchObject({ transactionNotBroadcast: true });
       expect(provider.estimateGas).not.toHaveBeenCalled();
@@ -372,7 +373,11 @@ describe('Ethereum Transactions', () => {
       const signature = await keyringManager.ethereumTransaction.ethSign([
         keyringManager.getActiveAccount().activeAccount.address,
         message,
-      ]);
+      ], {
+        selectedAccount: { id: 0, type: 'HDAccount', expectedAddress: keyringManager.getActiveAccount().activeAccount.address },
+        targetAccount: { id: 0, type: 'HDAccount', expectedAddress: keyringManager.getActiveAccount().activeAccount.address },
+        assertCurrent: () => undefined,
+      });
 
       expect(signature).toBeDefined();
       expect(signature.startsWith('0x')).toBe(true);
@@ -665,7 +670,7 @@ describe('Ethereum Transactions', () => {
         await keyringManager.ethereumTransaction.sendFormattedTransaction(
           tx,
           undefined,
-          specializedApproval
+          withEvmSendIdentity(keyringManager.ethereumTransaction, specializedApproval)
         );
       expect(result).toBeDefined();
       expect(result.hash).toBeDefined();

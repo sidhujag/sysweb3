@@ -1,3 +1,4 @@
+import { withEvmSendIdentity } from '../../helpers/evm-send-identity';
 jest.resetModules();
 (global as any).window.location = { href: 'http://localhost/' };
 jest.mock('../../../src/providers', () => ({
@@ -64,7 +65,7 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
       sdk.sendFormattedTransaction(
         request(legacy),
         legacy,
-        specializedApproval
+        withEvmSendIdentity(sdk, specializedApproval)
       );
 
     beforeEach(() => {
@@ -179,7 +180,7 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
           await sdk.sendFormattedTransaction(
             { ...request(legacy), nonce: value } as any,
             legacy,
-            specializedApproval
+            withEvmSendIdentity(sdk, specializedApproval)
           );
           expect(device).toHaveBeenCalledTimes(1);
           expect(Transaction.from(device.mock.calls[0][0]).nonce).toBe(
@@ -200,7 +201,7 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
           await sdk.sendFormattedTransaction(
             { ...request(legacy), nonce } as any,
             legacy,
-            specializedApproval
+            withEvmSendIdentity(sdk, specializedApproval)
           );
           expect(provider.getTransactionCount).toHaveBeenCalledWith(
             wallet.address,
@@ -228,7 +229,7 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
         const sending = sdk.sendFormattedTransaction(
           params,
           legacy,
-          specializedApproval
+          withEvmSendIdentity(sdk, specializedApproval)
         );
         await entered.promise;
         params.nonce = 99;
@@ -268,7 +269,7 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
         const pending = sdk.sendFormattedTransaction(
           params,
           legacy,
-          specializedApproval
+          withEvmSendIdentity(sdk, specializedApproval)
         );
         await entered.promise;
         params.to = wallet.address;
@@ -316,7 +317,7 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
           sdk.sendFormattedTransaction(
             { ...request(), nonce: 0 } as any,
             false,
-            specializedApproval
+            withEvmSendIdentity(sdk, specializedApproval)
           )
         ).rejects.toMatchObject({ transactionNotBroadcast: true });
         expect(persistSigned).not.toHaveBeenCalled();
@@ -327,7 +328,7 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
       'rejects a missing request %s before transaction work',
       async (params) => {
         await expect(
-          sdk.sendFormattedTransaction(params as any, true, specializedApproval)
+          sdk.sendFormattedTransaction(params as any, true, withEvmSendIdentity(sdk, specializedApproval))
         ).rejects.toMatchObject({ transactionNotBroadcast: true });
         expect(device).not.toHaveBeenCalled();
         expect(provider.sendTransaction).not.toHaveBeenCalled();
@@ -339,7 +340,7 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
       await sdk.sendFormattedTransaction(
         { ...request(true), nonce: 0, gasPrice: '0x0' } as any,
         true,
-        specializedApproval
+        withEvmSendIdentity(sdk, specializedApproval)
       );
       expect(
         Transaction.from(provider.sendTransaction.mock.calls[0][0]).gasPrice
@@ -366,7 +367,7 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
             [field]: malformed,
           };
           await expect(
-            sdk.sendFormattedTransaction(params, true, specializedApproval)
+            sdk.sendFormattedTransaction(params, true, withEvmSendIdentity(sdk, specializedApproval))
           ).rejects.toMatchObject({ transactionNotBroadcast: true });
         }
         expect(provider.getTransactionCount).not.toHaveBeenCalled();
@@ -382,7 +383,7 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
           sdk.sendFormattedTransaction(
             { ...request(), nonce } as any,
             false,
-            specializedApproval
+            withEvmSendIdentity(sdk, specializedApproval)
           )
         ).rejects.toMatchObject({ transactionNotBroadcast: true });
         expect(provider.getTransactionCount).not.toHaveBeenCalled();
@@ -487,7 +488,7 @@ describe.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
         const signing = sdk.sendFormattedTransaction(
           params,
           false,
-          specializedApproval
+          withEvmSendIdentity(sdk, specializedApproval)
         );
         const rejection = expect(signing).rejects.toMatchObject({
           transactionNotBroadcast: true,

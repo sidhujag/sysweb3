@@ -16,6 +16,7 @@ import {
   getErc21Abi,
   getErc55Abi,
 } from '@sidhujag/sysweb3-utils';
+import { getAddress } from 'ethers/address';
 import { accessListify, Transaction } from 'ethers/transaction';
 import { hexlify } from 'ethers/utils';
 import omit from 'lodash/omit';
@@ -67,6 +68,7 @@ import {
   assertEvmCancellationEnvelope,
   authenticateRetainedCancellation,
 } from './evm-cancellation';
+import { readEvmOwnData, type PreparedEvmTransaction } from './evm-envelope';
 import {
   deriveEvmAccountFromMnemonic,
   parsePersonalMessage as parseLocalPersonalMessage,
@@ -90,10 +92,14 @@ import {
 import {
   signPreparedEvmEnvelope,
   snapshotPreparedEvmRequest,
+  snapshotEvmSigningIdentity,
+  preparedEvmGuard,
+  type EvmDigestSignOptions,
+  type PreparedSoftwareEvmSigningRequest,
+  type PreparedEvmSigningOptions,
 } from './prepared-evm';
 import { getAddressDerivationPath } from '../utils/derivation-paths';
 
-import type { PreparedEvmTransaction } from './evm-envelope';
 import type { LedgerKeyring } from '../ledger';
 import type { TrezorKeyring } from '../trezor';
 import type { EthereumTransactionEIP1559 } from '@trezor/connect-webextension';
@@ -389,7 +395,7 @@ export class EthereumTransactions<
       );
   };
 
-  private captureEvmSigningContext = (
+  private captureEvmAccountContext = (
     target?: IEvmReplacementOptions['targetAccount']
   ) => {
     this.assertHardwareSignerAvailable(target);
@@ -406,7 +412,6 @@ export class EthereumTransactions<
     const account = { address: selectedAccount.address };
     const network = { ...state.activeNetwork };
     const assertSession = this.captureSessionGuard();
-    const provider = this.web3Provider;
     const assertCurrent = () => {
       assertSession();
       const current = this.getState();
@@ -425,8 +430,7 @@ export class EthereumTransactions<
             selected.chainId !== network.chainId ||
             selected.slip44 !== network.slip44 ||
             selected.url !== network.url
-        ) ||
-        this.web3Provider !== provider
+        )
       )
         throw new Error('Wallet signing context changed');
     };
@@ -436,9 +440,22 @@ export class EthereumTransactions<
       activeAccountType,
       activeAccountId,
       activeNetwork: network,
-      provider,
       assertCurrent,
     };
+  };
+
+  private captureEvmSigningContext = (
+    target?: IEvmReplacementOptions['targetAccount']
+  ) => {
+    const context = this.captureEvmAccountContext(target);
+    const provider = this.web3Provider;
+    const assertCurrent = () => {
+      context.assertCurrent();
+      if (this.web3Provider !== provider)
+        throw new Error('Wallet signing context changed');
+    };
+    assertCurrent();
+    return { ...context, provider, assertCurrent };
   };
 
   private captureSubmission = (
@@ -643,11 +660,115 @@ export class EthereumTransactions<
     }
   };
 
-  ethSign = async (params: string[]) => {
-    const { address, decryptedPrivateKey } = this.getDecryptedPrivateKey();
-    const { accounts, activeAccountId, activeAccountType, activeNetwork } =
-      this.getState();
-    const activeAccount = accounts[activeAccountType][activeAccountId];
+  public signPreparedEvmTransaction(
+    input: PreparedSoftwareEvmSigningRequest,
+    options: PreparedEvmSigningOptions
+  ) {
+    const selected = this.captureEvmAccountContext();
+    const request = snapshotPreparedEvmRequest(input);
+    const target = {
+      id: request.account.id,
+      type: request.account.type as KeyringAccountType,
+    };
+    const context = this.captureEvmAccountContext(target);
+    const hostGuard = preparedEvmGuard(options);
+    const targetRecord = this.getState().accounts[target.type]?.[target.id];
+    const encryptedKey = targetRecord?.xprv;
+    const assertCurrent = () => {
+      selected.assertCurrent();
+      context.assertCurrent();
+      const live = this.getState().accounts[target.type]?.[target.id];
+      if (
+        !live ||
+        live.id !== target.id ||
+        live.isSmartAccount ||
+        live.isLedgerWallet ||
+        live.isTrezorWallet ||
+        typeof encryptedKey !== 'string' ||
+        !encryptedKey ||
+        live.xprv !== encryptedKey ||
+        selected.activeAccountId !== request.selectedAccount.id ||
+        selected.activeAccountType !== request.selectedAccount.type ||
+        getAddress(selected.activeAccount.address) !==
+          request.selectedAccount.expectedAddress ||
+        getAddress(context.activeAccount.address) !==
+          request.account.expectedAddress ||
+        context.activeNetwork.kind !== 'ethereum' ||
+        context.activeNetwork.slip44 !== 60 ||
+        String(context.activeNetwork.chainId) !== request.network.chainId ||
+        context.activeNetwork.url !== request.network.url
+      )
+        throw new Error(
+          'Prepared EVM signing context changed or is unsupported'
+        );
+    };
+    assertCurrent();
+    hostGuard();
+    assertCurrent();
+    const key = this.getDecryptedPrivateKey(target);
+    if (getAddress(key.address) !== request.account.expectedAddress)
+      throw new Error('Prepared EVM signer address mismatch');
+    const { signed } = signPreparedEvmEnvelope(
+      request.transaction,
+      key.decryptedPrivateKey
+    );
+    hostGuard();
+    assertCurrent();
+    return signed;
+  }
+
+  ethSign = async (params: string[], input: EvmDigestSignOptions) => {
+    const selected = this.captureEvmAccountContext();
+    if (!Array.isArray(params) || params.length !== 2)
+      throw new Error('Invalid digest request');
+    const first = Object.getOwnPropertyDescriptor(params, '0');
+    const second = Object.getOwnPropertyDescriptor(params, '1');
+    if (
+      !first ||
+      !second ||
+      !('value' in first) ||
+      !('value' in second) ||
+      typeof first.value !== 'string' ||
+      typeof second.value !== 'string'
+    )
+      throw new Error('Invalid digest request');
+    params = [first.value, second.value];
+    const options = readEvmOwnData(input, [
+      'selectedAccount',
+      'targetAccount',
+      'assertCurrent',
+    ]);
+    const selectedAccount = snapshotEvmSigningIdentity(options.selectedAccount);
+    const targetAccount = snapshotEvmSigningIdentity(options.targetAccount);
+    const hostGuard = preparedEvmGuard({
+      assertCurrent: options.assertCurrent,
+    });
+    const target = {
+      id: targetAccount.id,
+      type: targetAccount.type as KeyringAccountType,
+    };
+    const context = this.captureEvmAccountContext(target);
+    const assertCurrent = () => {
+      selected.assertCurrent();
+      context.assertCurrent();
+      hostGuard();
+      if (
+        selected.activeAccountId !== selectedAccount.id ||
+        selected.activeAccountType !== selectedAccount.type ||
+        getAddress(selected.activeAccount.address) !==
+          selectedAccount.expectedAddress ||
+        getAddress(context.activeAccount.address) !==
+          targetAccount.expectedAddress ||
+        targetAccount.type === 'SmartAccount'
+      )
+        throw new Error('EVM digest signing context changed');
+    };
+    assertCurrent();
+
+    const { address, decryptedPrivateKey } =
+      this.getDecryptedPrivateKey(target);
+    const { activeAccountId, activeAccountType, activeNetwork, activeAccount } =
+      context;
 
     // Validate that the derived address matches the active account to prevent race conditions
     if (address.toLowerCase() !== activeAccount.address.toLowerCase()) {
@@ -724,14 +845,19 @@ export class EthereumTransactions<
       }
     };
 
+    let signature: string;
     switch (activeAccountType) {
       case KeyringAccountType.Trezor:
-        return await signWithTrezor();
+        signature = await signWithTrezor();
+        break;
       case KeyringAccountType.Ledger:
-        return await signWithLedger();
+        signature = await signWithLedger();
+        break;
       default:
-        return sign();
+        signature = sign();
     }
+    assertCurrent();
+    return signature;
   };
 
   signPersonalMessage = async (params: string[]) => {
@@ -1723,6 +1849,10 @@ export class EthereumTransactions<
       // Capture once; later caller mutations cannot replace this invocation's
       // admission decision while chain checks or device approval are pending.
       const { assertCurrent: assertHostCurrent, mode, walletNonce } = options;
+      const selectedAccount = snapshotEvmSigningIdentity(
+        options.selectedAccount
+      );
+      const targetAccount = snapshotEvmSigningIdentity(options.targetAccount);
       const nonceApproval =
         walletNonce === undefined ? undefined : { ...walletNonce };
       const assertApproved = () => {
@@ -1744,7 +1874,9 @@ export class EthereumTransactions<
         },
         assertApproved,
         mode,
-        nonceApproval
+        nonceApproval,
+        selectedAccount,
+        targetAccount
       );
     } catch (error) {
       // A broadcast transport error may mean the node accepted the signed
@@ -1773,10 +1905,19 @@ export class EthereumTransactions<
     beforeBroadcast: () => void,
     assertHostCurrent: () => void,
     mode: IEvmSendOptions['mode'],
-    walletNonce: IEvmSendOptions['walletNonce']
+    walletNonce: IEvmSendOptions['walletNonce'],
+    selectedIdentity: IEvmSendOptions['selectedAccount'],
+    targetIdentity: IEvmSendOptions['targetAccount']
   ) => {
     // Hardware approval may outlive the selected account, network or unlocked
     // session. Keep immutable identities and one provider for this invocation.
+    const selectedContext = this.captureEvmAccountContext();
+    const targetAccount = {
+      id: targetIdentity.id,
+      type: targetIdentity.type as KeyringAccountType,
+    };
+    if (targetAccount.type === KeyringAccountType.SmartAccount)
+      throw new Error('Invalid EVM payer');
     const {
       activeAccount,
       activeAccountType,
@@ -1784,11 +1925,21 @@ export class EthereumTransactions<
       activeNetwork,
       provider,
       assertCurrent: assertKeyringCurrent,
-    } = this.captureEvmSigningContext();
+    } = this.captureEvmSigningContext(targetAccount);
     const assertSigningCurrent = () => {
       assertHostCurrent();
+      selectedContext.assertCurrent();
       assertKeyringCurrent();
+      if (
+        selectedContext.activeAccountId !== selectedIdentity.id ||
+        selectedContext.activeAccountType !== selectedIdentity.type ||
+        getAddress(selectedContext.activeAccount.address) !==
+          selectedIdentity.expectedAddress ||
+        getAddress(activeAccount.address) !== targetIdentity.expectedAddress
+      )
+        throw new Error('EVM payer approval context changed');
     };
+    assertSigningCurrent();
     const assertBeforeBroadcast = () => {
       assertCurrent();
       beforeBroadcast();
@@ -1811,6 +1962,7 @@ export class EthereumTransactions<
 
     if (mode === 'reviewed-native') {
       const { transaction } = snapshotPreparedEvmRequest({
+        selectedAccount: selectedIdentity,
         account: {
           id: activeAccountId,
           type: activeAccountType,
@@ -1843,7 +1995,8 @@ export class EthereumTransactions<
       assertCurrent();
       if (this.gasOverrides.minGasLimit !== minimum)
         throw new Error('Reviewed native gas policy changed');
-      const { address, decryptedPrivateKey } = this.getDecryptedPrivateKey();
+      const { address, decryptedPrivateKey } =
+        this.getDecryptedPrivateKey(targetAccount);
       if (address.toLowerCase() !== transaction.from.toLowerCase())
         throw new Error(
           'Reviewed native signer does not match the approved account'
@@ -2205,7 +2358,8 @@ export class EthereumTransactions<
 
     const sendEVMTransaction = async () => {
       assertCurrent();
-      const { address, decryptedPrivateKey } = this.getDecryptedPrivateKey();
+      const { address, decryptedPrivateKey } =
+        this.getDecryptedPrivateKey(targetAccount);
 
       // Validate that we have the correct private key for the active account to prevent race conditions
       // This is critical for transaction security during account switches

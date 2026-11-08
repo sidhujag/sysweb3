@@ -1,3 +1,4 @@
+import { withEvmSendIdentity } from '../../helpers/evm-send-identity';
 import { SignTypedDataVersion } from '@metamask/eth-sig-util';
 
 import { KeyringCore } from '../../../src/keyring-core';
@@ -214,14 +215,14 @@ describe.each(missingHardwareCases)(
         (sdk) => sdk.signTypedData(address, {} as any, SignTypedDataVersion.V4),
       ],
       ['personal message', (sdk) => sdk.signPersonalMessage(['0x11', address])],
-      ['eth_sign', (sdk) => sdk.ethSign([address, '0x11'])],
+      ['eth_sign', (sdk) => sdk.ethSign([address, '0x11'], { selectedAccount: { id: 0, type, expectedAddress: address }, targetAccount: { id: 0, type, expectedAddress: address }, assertCurrent: () => undefined })],
       [
         'transaction',
         (sdk) =>
           sdk.sendFormattedTransaction(
             {} as any,
             undefined,
-            specializedApproval
+            withEvmSendIdentity(sdk, specializedApproval)
           ),
       ],
       [

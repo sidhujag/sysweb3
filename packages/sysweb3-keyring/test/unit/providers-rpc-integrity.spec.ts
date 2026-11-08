@@ -1,3 +1,4 @@
+import { withEvmSendIdentity } from '../helpers/evm-send-identity';
 jest.unmock('../../src/providers');
 jest.resetModules();
 (global as any).window.location = { href: 'http://localhost/' };
@@ -139,10 +140,10 @@ describe('JSON-RPC response correlation', () => {
       );
       try {
         await expect(
-          sdk.sendFormattedTransaction({ to: FROM }, true, {
+          sdk.sendFormattedTransaction({ to: FROM }, true, withEvmSendIdentity(sdk, {
             mode: 'specialized',
             assertCurrent: () => undefined,
-          })
+          }))
         ).rejects.toMatchObject({
           message: expect.stringContaining('synchronous'),
           transactionNotBroadcast: true,
@@ -279,12 +280,12 @@ describe('JSON-RPC response correlation', () => {
           value: '1',
         },
         true,
-        {
+        withEvmSendIdentity(sdk, {
           mode: 'specialized',
           assertCurrent() {
             if (!live) throw new Error('Review closed');
           },
-        }
+        })
       );
       if (scenario === 'before-sign') {
         await expect(sending).rejects.toMatchObject({

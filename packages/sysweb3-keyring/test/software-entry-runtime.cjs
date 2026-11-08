@@ -131,6 +131,7 @@ const storage = () => {
     const address = aState.accounts.HDAccount[0].address;
     const prepared = a.signPreparedEvmTransaction(
       {
+        selectedAccount: { id: 0, type: 'HDAccount', expectedAddress: address },
         account: { id: 0, type: 'HDAccount', expectedAddress: address },
         network: {
           kind: 'ethereum',

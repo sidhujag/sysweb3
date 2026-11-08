@@ -1,3 +1,4 @@
+import { withEvmSendIdentity } from '../../helpers/evm-send-identity';
 import { Transaction } from 'ethers/transaction';
 import { Wallet } from 'ethers/wallet';
 
@@ -87,7 +88,7 @@ it.each([
   async (options) => {
     const { sdk, key, provider } = fixture();
     await expect(
-      sdk.sendFormattedTransaction(request(), false, options as any)
+      sdk.sendFormattedTransaction(request(), false, withEvmSendIdentity(sdk, options as any))
     ).rejects.toMatchObject({
       transactionNotBroadcast: true,
     });
@@ -105,7 +106,7 @@ it('rejects incomplete approved fields and a missing durable port before chain I
     [malformed, { ...request(), nonce: undefined }],
   ] as const) {
     await expect(
-      f.sdk.sendFormattedTransaction(tx as any, false, approve)
+      f.sdk.sendFormattedTransaction(tx as any, false, withEvmSendIdentity(f.sdk, approve))
     ).rejects.toMatchObject({
       transactionNotBroadcast: true,
     });
@@ -122,7 +123,7 @@ it.each([
 ])('retains ordinary native-send restrictions for %p', async (change) => {
   const { sdk, key, provider } = fixture();
   await expect(
-    sdk.sendFormattedTransaction({ ...request(), ...change }, false, approve)
+    sdk.sendFormattedTransaction({ ...request(), ...change }, false, withEvmSendIdentity(sdk, approve))
   ).rejects.toMatchObject({ transactionNotBroadcast: true });
   expect(provider.verifyConfiguredChainId).not.toHaveBeenCalled();
   expect(key).not.toHaveBeenCalled();
@@ -139,7 +140,7 @@ it('signs the captured exact reviewed bytes after durable admission, without non
       })
   );
   const input = request();
-  const sending = sdk.sendFormattedTransaction(input, false, approve);
+  const sending = sdk.sendFormattedTransaction(input, false, withEvmSendIdentity(sdk, approve));
   input.nonce = '12';
   input.maxFeePerGas = '999999999999999999';
   input.value = '1';
@@ -166,7 +167,7 @@ it('refuses a valid signature over a different nonce before retaining or broadca
     }));
   try {
     await expect(
-      sdk.sendFormattedTransaction(request(), false, approve)
+      sdk.sendFormattedTransaction(request(), false, withEvmSendIdentity(sdk, approve))
     ).rejects.toMatchObject({
       message:
         'Signed EVM transaction does not match expected unsigned envelope',
