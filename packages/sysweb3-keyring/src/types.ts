@@ -362,6 +362,7 @@ export interface IKeyringManager {
     needsAccountCreation?: boolean;
   }>;
   isUnlocked: () => boolean;
+  captureUnlockedSessionGuard: () => () => void;
   logout: () => void;
   ledgerSigner: LedgerKeyring;
   trezorSigner: TrezorKeyring;

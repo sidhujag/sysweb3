@@ -312,6 +312,15 @@ it.each([
   }
 );
 
+it('revokes browser-host wallet authority when its session transfers', async () => {
+  const sourceGuard = source.captureUnlockedSessionGuard();
+  expect(sourceGuard()).toBeUndefined();
+  const transfer = await source.prepareSessionTransfer(target, () => undefined);
+  transfer.transfer();
+  expect(sourceGuard).toThrow();
+  expect(target.captureUnlockedSessionGuard()()).toBeUndefined();
+});
+
 it.each(['connected', 'rejected'] as const)(
   'joins a pending direct DMK picker before transfer after the vendor %s',
   async (result) => {
