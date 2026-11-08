@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.7
+
+- Share canonical EVM envelope validation and serialization through the lightweight `cjs/transactions/evm-envelope` entry.
+- Preserve explicit contract-creation destinations and ordered access lists in prepared signing. Ordinary reviewed native transfers retain their existing restrictions.
+
 ## 2.1.5
 
 - Normalize the signed PSBT bytes before comparing them with the approved transaction in browser hosts.
