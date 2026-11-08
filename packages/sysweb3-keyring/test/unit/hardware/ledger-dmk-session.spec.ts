@@ -397,3 +397,62 @@ describe('Ledger DMK session ownership', () => {
     expect(session.getStatus().connected).toBe(false);
   });
 });
+
+describe('Ledger connection status observation', () => {
+  it('reports selected handoff and physical disconnect exactly once', async () => {
+    const { session, state } = mockDmk(true);
+    const observed: boolean[] = [];
+    const unsubscribe = session.subscribeStatus(() =>
+      observed.push(session.getStatus().connected)
+    );
+    expect(session.getStatus().connected).toBe(false);
+    await session.beginDeviceSelection()(candidate());
+    expect(observed).toEqual([true]);
+    state.complete();
+    expect(observed).toEqual([true, false]);
+    await session.disconnect();
+    expect(observed).toEqual([true, false]);
+    unsubscribe();
+  });
+
+  it('publishes error and explicit disconnection without observer control over cleanup', async () => {
+    for (const event of ['error', 'disconnect'] as const) {
+      const { session, state, dmk } = mockDmk(true);
+      const observed: boolean[] = [];
+      session.subscribeStatus(() => {
+        throw new Error('Observer failure');
+      });
+      const unsubscribe = session.subscribeStatus(() =>
+        observed.push(session.getStatus().connected)
+      );
+      await session.beginDeviceSelection()(candidate());
+      if (event === 'error') state.error(new Error('Disconnected'));
+      else await session.disconnect();
+      await tick();
+      expect(observed).toEqual([true, false]);
+      expect(session.getStatus().connected).toBe(false);
+      expect(dmk.disconnect).toHaveBeenCalledTimes(1);
+      unsubscribe();
+    }
+  });
+
+  it('unsubscribes observers and ignores an earlier connection stream after reconnect', async () => {
+    const { session, state, dmk } = mockDmk(true);
+    const nextState = new Subject<any>();
+    const observed: boolean[] = [];
+    const unsubscribe = session.subscribeStatus(() =>
+      observed.push(session.getStatus().connected)
+    );
+    await session.beginDeviceSelection()(candidate());
+    await session.disconnect();
+    dmk.getDeviceSessionState.mockReturnValue(nextState);
+    await session.beginDeviceSelection()(candidate('next'));
+    expect(observed).toEqual([true, false, true]);
+    state.complete();
+    expect(session.getStatus().connected).toBe(true);
+    expect(observed).toEqual([true, false, true]);
+    unsubscribe();
+    nextState.complete();
+    expect(observed).toEqual([true, false, true]);
+  });
+});

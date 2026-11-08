@@ -84,6 +84,8 @@ export class LedgerDmkSession {
   private connectionAbort: AbortController | undefined;
   private deviceSelection: object | undefined;
   private readonly invalidationListeners = new Set<() => void>();
+  private readonly statusListeners = new Set<() => void>();
+  private reportedConnected = false;
 
   constructor(
     readonly dmk: DeviceManagementKit,
@@ -97,6 +99,26 @@ export class LedgerDmkSession {
 
   getStatus() {
     return { connected: this.readyConnection !== undefined };
+  }
+
+  subscribeStatus(listener: () => void): () => void {
+    this.statusListeners.add(listener);
+    return () => {
+      this.statusListeners.delete(listener);
+    };
+  }
+
+  private publishStatus(): void {
+    const connected = this.getStatus().connected;
+    if (connected === this.reportedConnected) return;
+    this.reportedConnected = connected;
+    for (const listener of this.statusListeners) {
+      try {
+        listener();
+      } catch {
+        /* Observation cannot change device ownership. */
+      }
+    }
   }
 
   onInvalidated(listener: () => void): () => void {
@@ -145,6 +167,7 @@ export class LedgerDmkSession {
         if (connection?.pendingSelection !== selection)
           throw ledgerCancelledError();
         connection.pendingSelection = undefined;
+        this.publishStatus();
       } finally {
         if (this.deviceSelection === selection)
           this.deviceSelection = undefined;
@@ -302,6 +325,7 @@ export class LedgerDmkSession {
             this.invalidate();
             this.activeAbort?.abort();
             this.activeCancel?.();
+            this.publishStatus();
           }
         },
       });
@@ -313,6 +337,7 @@ export class LedgerDmkSession {
     }
     this.connection = connection;
     this.stateSubscription = subscription;
+    this.publishStatus();
   }
 
   /** Cancel revokes the result and closes I/O; it cannot undo on-device approval. */
@@ -331,6 +356,7 @@ export class LedgerDmkSession {
       if (sessionId)
         await this.dmk.disconnect({ sessionId }).catch(() => undefined);
     });
+    this.publishStatus();
     return this.closing;
   }
 

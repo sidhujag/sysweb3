@@ -1,5 +1,3 @@
-import type { DeviceManagementKit } from '@ledgerhq/device-management-kit';
-
 import { createLedgerEvmAdapter } from './dmk-evm';
 import { LedgerDmkSession } from './dmk-session';
 import { createLedgerUtxoAdapter } from './dmk-utxo';
@@ -9,7 +7,11 @@ import {
   type LedgerHost,
 } from './host-types';
 
+import type { DeviceManagementKit } from '@ledgerhq/device-management-kit';
+
 export interface LedgerDmkHost extends LedgerHost {
+  /** Observe connection changes; read getStatus() in the callback. */
+  subscribeStatus(listener: () => void): () => void;
   /** Start before enumerating. The returned capability is single use. */
   beginDeviceSelection(
     signal?: AbortSignal
@@ -50,6 +52,7 @@ export function createLedgerHostForDmk(
     beginDeviceSelection: (signal) => session.beginDeviceSelection(signal),
     disconnect: () => session.disconnect(),
     getStatus: () => session.getStatus(),
+    subscribeStatus: (listener) => session.subscribeStatus(listener),
     evm: createLedgerEvmAdapter(session, config),
     utxo: createLedgerUtxoAdapter(session),
   };
