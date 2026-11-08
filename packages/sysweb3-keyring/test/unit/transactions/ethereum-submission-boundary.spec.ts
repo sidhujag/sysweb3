@@ -1,10 +1,10 @@
-import { withEvmSendIdentity } from '../../helpers/evm-send-identity';
 import { INetworkType } from '@sidhujag/sysweb3-network';
 import { Transaction, Wallet } from 'ethers';
 
 import { BigNumber, serializeTransaction } from '../../../src/ethers-v6';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import { KeyringAccountType } from '../../../src/types';
+import { withEvmSendIdentity } from '../../helpers/evm-send-identity';
 import { createTestSubmissionCapture } from '../../helpers/evm-submission';
 
 const specializedApproval = {
@@ -38,6 +38,7 @@ describe('formatted EVM transaction submission boundary', () => {
     const network = {
       kind: INetworkType.Ethereum,
       chainId: 1,
+      slip44: 60,
       url: 'https://rpc.ankr.com/eth',
       currency: 'eth',
     } as any;
@@ -175,7 +176,11 @@ describe('formatted EVM transaction submission boundary', () => {
       Error('RPC chain id changed')
     );
     await expect(
-      transaction.sendFormattedTransaction(request(), true, withEvmSendIdentity(transaction, specializedApproval))
+      transaction.sendFormattedTransaction(
+        request(),
+        true,
+        withEvmSendIdentity(transaction, specializedApproval)
+      )
     ).rejects.toMatchObject({ transactionNotBroadcast: true });
     expect(provider.sendTransaction).not.toHaveBeenCalled();
   });
@@ -253,7 +258,11 @@ describe('formatted EVM transaction submission boundary', () => {
   ])('preserves the successful %s response', async (type) => {
     state.activeAccountType = type;
     await expect(
-      transaction.sendFormattedTransaction(request(), true, withEvmSendIdentity(transaction, specializedApproval))
+      transaction.sendFormattedTransaction(
+        request(),
+        true,
+        withEvmSendIdentity(transaction, specializedApproval)
+      )
     ).resolves.toEqual({ hash: HASH });
     expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
   });
