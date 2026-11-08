@@ -1,3 +1,4 @@
+import { withEvmSendIdentity } from '../../helpers/evm-send-identity';
 import ecc from '@bitcoinerlab/secp256k1';
 import { INetworkType } from '@sidhujag/sysweb3-network';
 
@@ -35,9 +36,9 @@ describe('formatted EVM transaction host admission', () => {
     sdk.sendFormattedTransaction(
       request(),
       true,
-      options && typeof options === 'object' && !Array.isArray(options)
+      withEvmSendIdentity(sdk, options && typeof options === 'object' && !Array.isArray(options)
         ? Object.assign(options, { mode: 'specialized' })
-        : options
+        : options)
     );
 
   beforeEach(() => {

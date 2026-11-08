@@ -1,3 +1,4 @@
+import { withEvmSendIdentity } from '../../helpers/evm-send-identity';
 jest.resetModules();
 (global as any).window.location = { href: 'http://localhost/' };
 jest.mock('../../../src/transactions/evm-local-signer', () => ({
@@ -409,7 +410,7 @@ describe('formatted standard transaction fee-model retention', () => {
             maxPriorityFeePerGas: priority,
           } as any,
           false,
-          specializedApproval
+          withEvmSendIdentity(sdk, specializedApproval)
         )
       ).resolves.toMatchObject({ hash: HASH });
       const sent = localSend.mock.calls[0][2];
@@ -450,7 +451,7 @@ describe('formatted standard transaction fee-model retention', () => {
             maxPriorityFeePerGas: { hex: '0x0' },
           } as any,
           false,
-          specializedApproval
+          withEvmSendIdentity(sdk, specializedApproval)
         )
       ).rejects.toMatchObject({ transactionNotBroadcast: true });
       expect(getKey).not.toHaveBeenCalled();
@@ -469,7 +470,7 @@ describe('formatted standard transaction fee-model retention', () => {
           maxPriorityFeePerGas: '0',
         } as any,
         true,
-        specializedApproval
+        withEvmSendIdentity(sdk, specializedApproval)
       )
     ).rejects.toMatchObject({ transactionNotBroadcast: true });
     expect(getKey).not.toHaveBeenCalled();
@@ -488,7 +489,7 @@ describe('formatted standard transaction fee-model retention', () => {
             maxPriorityFeePerGas: zero,
           } as any,
           false,
-          specializedApproval
+          withEvmSendIdentity(sdk, specializedApproval)
         )
       ).resolves.toMatchObject({ hash: HASH });
       const sent = localSend.mock.calls[0][2];
@@ -513,7 +514,7 @@ describe('formatted standard transaction fee-model retention', () => {
         sdk.sendFormattedTransaction(
           { ...transaction, type: 2, ...fields } as any,
           false,
-          specializedApproval
+          withEvmSendIdentity(sdk, specializedApproval)
         )
       ).rejects.toMatchObject({ transactionNotBroadcast: true });
       expect(getKey).not.toHaveBeenCalled();
@@ -532,7 +533,7 @@ describe('formatted standard transaction fee-model retention', () => {
       sdk.sendFormattedTransaction(
         { ...transaction, type: 2 } as any,
         false,
-        specializedApproval
+        withEvmSendIdentity(sdk, specializedApproval)
       )
     ).rejects.toMatchObject({ transactionNotBroadcast: true });
     expect(getKey).not.toHaveBeenCalled();
@@ -550,7 +551,7 @@ describe('formatted standard transaction fee-model retention', () => {
       await sdk.sendFormattedTransaction(
         { ...transaction, ...fields } as any,
         legacy,
-        specializedApproval
+        withEvmSendIdentity(sdk, specializedApproval)
       );
       const sent = localSend.mock.calls[0][2];
       if (legacy) expect(BigNumber.from(sent.gasPrice).toString()).toBe('7');

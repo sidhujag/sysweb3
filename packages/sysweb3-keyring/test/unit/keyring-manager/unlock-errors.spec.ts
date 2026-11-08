@@ -31,6 +31,7 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
   let sourceCrypto: typeof CryptoJS;
   let keyring: KeyringManager;
   let internals: any;
+  let stateGetter: jest.Mock;
   let cryptoDescriptor: PropertyDescriptor | undefined;
   let locationDescriptor: PropertyDescriptor | undefined;
 
@@ -100,11 +101,12 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
       .mockImplementation(async (password) => {
         return password === 'correct' ? key : wrongKey;
       });
-    keyring.setVaultStateGetter(() => ({
+    stateGetter = jest.fn(() => ({
       activeAccount: { id: 0, type: 'HDAccount' },
       activeNetwork: { kind: 'ethereum' },
       accounts: { HDAccount: { 0: {} } },
     }));
+    keyring.setVaultStateGetter(stateGetter);
   });
 
   afterEach(async () => {
@@ -211,7 +213,7 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
     const error = new Error('account state not ready');
     let passwordBuffer: any;
     let mnemonicBuffer: any;
-    keyring.setVaultStateGetter(() => {
+    stateGetter.mockImplementation(() => {
       passwordBuffer = internals.sessionPassword;
       mnemonicBuffer = internals.sessionMnemonic;
       throw error;
@@ -248,7 +250,7 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
     const error = new Error('account state not ready');
     let passwordBuffer: any;
     let mnemonicBuffer: any;
-    keyring.setVaultStateGetter(() => {
+    stateGetter.mockImplementation(() => {
       passwordBuffer = internals.sessionPassword;
       mnemonicBuffer = internals.sessionMnemonic;
       jest

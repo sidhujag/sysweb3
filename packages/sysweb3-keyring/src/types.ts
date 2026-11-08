@@ -67,6 +67,8 @@ export type EvmWalletNonce = Readonly<{
 }>;
 
 export interface IEvmSendOptions {
+  selectedAccount: import('./transactions/prepared-evm').EvmSigningIdentity;
+  targetAccount: import('./transactions/prepared-evm').EvmSigningIdentity;
   /** Synchronous host admission, rechecked immediately before signing and broadcast. */
   assertCurrent: () => void;
   mode: 'reviewed-native' | 'specialized';
@@ -143,7 +145,14 @@ export interface IEthereumTransactions {
     transaction?: TransactionResponse;
   }>;
   decryptMessage: (msgParams: string[]) => string;
-  ethSign: (params: string[]) => Promise<string>;
+  ethSign: (
+    params: string[],
+    options: import('./transactions/prepared-evm').EvmDigestSignOptions
+  ) => Promise<string>;
+  signPreparedEvmTransaction: (
+    request: import('./transactions/prepared-evm').PreparedSoftwareEvmSigningRequest,
+    options: import('./transactions/prepared-evm').PreparedEvmSigningOptions
+  ) => import('./transactions/prepared-evm').SignedPreparedEvmTransaction;
   getBalance: (address: string) => Promise<number>;
   getEncryptedPubKey: () => string;
   getErc20TokensByAddress?: (

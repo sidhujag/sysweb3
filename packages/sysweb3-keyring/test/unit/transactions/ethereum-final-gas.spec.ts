@@ -1,3 +1,4 @@
+import { withEvmSendIdentity } from '../../helpers/evm-send-identity';
 import ecc from '@bitcoinerlab/secp256k1';
 import { Transaction, Wallet } from 'ethers';
 
@@ -125,7 +126,7 @@ describe('shared final EVM gas admission', () => {
           f.sdk.sendFormattedTransaction(
             f.request(cap + 1n, legacy),
             legacy,
-            specializedApproval
+            withEvmSendIdentity(f.sdk, specializedApproval)
           )
         ).rejects.toMatchObject({
           code: 'SYSWEB3_EVM_GAS_LIMIT_EXCEEDED',
@@ -145,7 +146,7 @@ describe('shared final EVM gas admission', () => {
         await f.sdk.sendFormattedTransaction(
           f.request(cap, legacy),
           legacy,
-          specializedApproval
+          withEvmSendIdentity(f.sdk, specializedApproval)
         );
         const signed = Transaction.from(
           f.provider.sendTransaction.mock.calls[0][0]
@@ -164,7 +165,7 @@ describe('shared final EVM gas admission', () => {
         await f.sdk.sendFormattedTransaction(
           f.request(cap + 1n, legacy),
           legacy,
-          specializedApproval
+          withEvmSendIdentity(f.sdk, specializedApproval)
         );
         const signed = Transaction.from(
           f.provider.sendTransaction.mock.calls[0][0]
@@ -252,7 +253,7 @@ describe('shared final EVM gas admission', () => {
       f.sdk.sendFormattedTransaction(
         f.request(cap, false),
         false,
-        specializedApproval
+        withEvmSendIdentity(f.sdk, specializedApproval)
       )
     ).rejects.toMatchObject({ transactionNotBroadcast: true });
     expect(f.provider.sendTransaction).not.toHaveBeenCalled();

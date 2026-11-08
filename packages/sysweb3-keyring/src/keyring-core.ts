@@ -26,7 +26,7 @@ const SLH_DSA_SETUP_SECRET_HEX_LENGTH = 64;
 const SLH_DSA_PARAMETER_SET = 'SLH-DSA-SHA2-128-24';
 
 import { currentVaultRefusals } from './current-vault-refusal';
-import { getAddress, isHexString } from './ethers-v6';
+import { isHexString } from './ethers-v6';
 import {
   initialActiveImportedAccountState,
   initialActiveLedgerAccountState,
@@ -49,11 +49,7 @@ import {
   deriveEvmAccountFromMnemonic,
   privateKeyToAccount,
 } from './transactions/evm-local-signer';
-import {
-  preparedEvmGuard,
-  signPreparedEvmEnvelope,
-  snapshotPreparedEvmRequest,
-} from './transactions/prepared-evm';
+import { preparedEvmGuard } from './transactions/prepared-evm';
 import {
   SyscoinTransactionsCore,
   captureOwnedSyscoinRead,
@@ -279,6 +275,10 @@ export class KeyringCore<
 
   // Method to inject store getter from Pali side
   public setVaultStateGetter = (getter: () => any) => {
+    if (typeof getter !== 'function')
+      throw new TypeError('Vault state getter must be a function');
+    if (this.getVaultState)
+      throw new Error('Vault state getter is already bound');
     this.getVaultState = getter;
   };
 
@@ -2341,58 +2341,7 @@ export class KeyringCore<
     input: PreparedSoftwareEvmSigningRequest,
     options: PreparedEvmSigningOptions
   ): SignedPreparedEvmTransaction {
-    // Capture authority before parsing caller data or invoking host callbacks.
-    const assertSession = this.capturePsbtSigningContext();
-    const vault = this.getVault();
-    const selected = { ...vault.activeAccount };
-    const selectedAccount = vault.accounts[selected.type]?.[selected.id];
-    const encryptedKey = selectedAccount?.xprv;
-    const request = snapshotPreparedEvmRequest(input);
-    const hostGuard = preparedEvmGuard(options);
-    const assertCurrent = () => {
-      assertSession();
-      const current = this.getVault();
-      const account = current.accounts[selected.type]?.[selected.id];
-      if (
-        (selected.type !== KeyringAccountType.HDAccount &&
-          selected.type !== KeyringAccountType.Imported) ||
-        !account ||
-        account.id !== selected.id ||
-        account.isLedgerWallet ||
-        account.isTrezorWallet ||
-        account.isSmartAccount ||
-        typeof encryptedKey !== 'string' ||
-        encryptedKey.length === 0 ||
-        account.xprv !== encryptedKey ||
-        request.account.type !== selected.type ||
-        request.account.id !== selected.id ||
-        request.account.expectedAddress !== getAddress(account.address) ||
-        current.activeNetwork.kind !== INetworkType.Ethereum ||
-        current.activeNetwork.slip44 !== 60 ||
-        !Number.isSafeInteger(current.activeNetwork.chainId) ||
-        current.activeNetwork.chainId <= 0 ||
-        BigInt(current.activeNetwork.chainId).toString() !==
-          request.network.chainId ||
-        current.activeNetwork.url !== request.network.url
-      )
-        throw new Error(
-          'Prepared EVM signing context changed or is unsupported'
-        );
-    };
-    assertCurrent();
-    hostGuard();
-    assertCurrent();
-    const key = this.getDecryptedPrivateKey();
-    if (getAddress(key.address) !== request.account.expectedAddress)
-      throw new Error('Prepared EVM signer address mismatch');
-    assertCurrent();
-    const { signed } = signPreparedEvmEnvelope(
-      request.transaction,
-      key.decryptedPrivateKey
-    );
-    hostGuard();
-    assertCurrent();
-    return signed;
+    return this.ethereumTransaction.signPreparedEvmTransaction(input, options);
   }
 
   private getSigner = (): {

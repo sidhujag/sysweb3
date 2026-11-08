@@ -112,9 +112,10 @@ function fixture() {
     createKeyringHost(storage, {
       deviceUnlock: { readCredential, writeCredential },
     });
+  const stateGetter = jest.fn(() => state);
   const attach = (ring: SoftwareKeyring) => {
     rings.push(ring);
-    ring.setVaultStateGetter(() => state);
+    ring.setVaultStateGetter(stateGetter);
     return ring;
   };
   const open = (host = createHost()) => {
@@ -146,6 +147,7 @@ function fixture() {
     attach,
     open,
     create,
+    stateGetter,
   };
 }
 
@@ -669,7 +671,7 @@ it.each(['newly installed', 'unchanged'])(
     let passwordBuffer: any;
     let mnemonicBuffer: any;
     const error = new Error('Account state unavailable');
-    ring.setVaultStateGetter(() => {
+    f.stateGetter.mockImplementation(() => {
       passwordBuffer = (ring as any).sessionPassword;
       mnemonicBuffer = (ring as any).sessionMnemonic;
       throw error;

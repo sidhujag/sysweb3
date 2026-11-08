@@ -13,7 +13,40 @@ import type { PreparedEvmTransaction } from './evm-envelope';
 
 const invalid = () => new TypeError('Invalid prepared EVM signing request');
 
+export type EvmSigningIdentity = Readonly<{
+  id: number;
+  type: 'HDAccount' | 'Imported' | 'Ledger' | 'Trezor' | 'SmartAccount';
+  expectedAddress: string;
+}>;
+
+export function snapshotEvmSigningIdentity(input: unknown): EvmSigningIdentity {
+  const identity = readEvmOwnData(input, ['id', 'type', 'expectedAddress']);
+  if (
+    !Number.isSafeInteger(identity.id) ||
+    (identity.id as number) < 0 ||
+    (identity.id as number) > 0x7fffffff ||
+    !['HDAccount', 'Imported', 'Ledger', 'Trezor', 'SmartAccount'].includes(
+      identity.type as string
+    ) ||
+    typeof identity.expectedAddress !== 'string' ||
+    !/^0x[0-9a-fA-F]{40}$/.test(identity.expectedAddress)
+  )
+    throw invalid();
+  return Object.freeze({
+    id: identity.id as number,
+    type: identity.type as EvmSigningIdentity['type'],
+    expectedAddress: getAddress(identity.expectedAddress),
+  });
+}
+
+export type EvmDigestSignOptions = Readonly<{
+  selectedAccount: EvmSigningIdentity;
+  targetAccount: EvmSigningIdentity;
+  assertCurrent(): void;
+}>;
+
 export type PreparedSoftwareEvmSigningRequest = Readonly<{
+  selectedAccount: EvmSigningIdentity;
   account: Readonly<{
     id: number;
     type: 'HDAccount' | 'Imported';
@@ -46,7 +79,13 @@ export type SignedPreparedEvmTransaction = Readonly<{
 export function snapshotPreparedEvmRequest(
   input: unknown
 ): PreparedSoftwareEvmSigningRequest {
-  const root = readEvmOwnData(input, ['account', 'network', 'transaction']);
+  const root = readEvmOwnData(input, [
+    'selectedAccount',
+    'account',
+    'network',
+    'transaction',
+  ]);
+  const selectedAccount = snapshotEvmSigningIdentity(root.selectedAccount);
   const account = readEvmOwnData(root.account, [
     'id',
     'type',
@@ -87,6 +126,7 @@ export function snapshotPreparedEvmRequest(
   if (transaction.from !== expectedAddress || network.chainId !== chainId)
     throw invalid();
   return Object.freeze({
+    selectedAccount,
     account: Object.freeze({
       id: account.id as number,
       type: account.type,
