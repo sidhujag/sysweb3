@@ -436,3 +436,73 @@ it('requires an explicit EVM submission mode for software-only instances', () =>
     () => new SoftwareKeyring(host, { captureEvmSubmission: null })
   ).not.toThrow();
 });
+
+it('keeps wallet authority across display changes and revokes it before lock completes', async () => {
+  const host = createKeyringHost(memoryStorage().storage);
+  const keyring = new SoftwareKeyring(host, { captureEvmSubmission: null });
+  const state = vaultState();
+  keyring.setVaultStateGetter(() => state);
+  try {
+    expect(() => keyring.captureUnlockedSessionGuard()).toThrow();
+    state.accounts.HDAccount[0] = await keyring.initializeWalletSecurely(
+      mnemonic,
+      password
+    );
+    const guard = keyring.captureUnlockedSessionGuard();
+    expect(guard()).toBeUndefined();
+
+    state.activeAccount = { id: 1, type: KeyringAccountType.Imported };
+    state.activeNetwork = { ...state.activeNetwork, chainId: 137 };
+    expect(guard()).toBeUndefined();
+    state.activeAccount = { id: 0, type: KeyringAccountType.HDAccount };
+    state.activeNetwork = { ...state.activeNetwork, chainId: 1 };
+    expect(guard()).toBeUndefined();
+
+    const locking = keyring.lockWallet();
+    expect(guard).toThrow();
+    await locking;
+    await keyring.unlock(password);
+    expect(guard).toThrow();
+    const renewed = keyring.captureUnlockedSessionGuard();
+    expect(renewed()).toBeUndefined();
+    await keyring.destroy();
+    expect(renewed).toThrow();
+  } finally {
+    await keyring.destroy();
+  }
+});
+
+it('does not revive captured wallet authority after a round-trip session transfer', async () => {
+  const host = createKeyringHost(memoryStorage().storage);
+  const source = new SoftwareKeyring(host, { captureEvmSubmission: null });
+  const target = new SoftwareKeyring(host, { captureEvmSubmission: null });
+  const state = vaultState();
+  source.setVaultStateGetter(() => state);
+  target.setVaultStateGetter(() => state);
+  try {
+    state.accounts.HDAccount[0] = await source.initializeWalletSecurely(
+      mnemonic,
+      password
+    );
+    const sourceGuard = source.captureUnlockedSessionGuard();
+    const transfer = await source.prepareSessionTransfer(
+      target,
+      () => undefined
+    );
+    transfer.transfer();
+    expect(sourceGuard).toThrow();
+    const targetGuard = target.captureUnlockedSessionGuard();
+    expect(targetGuard()).toBeUndefined();
+    const returnTransfer = await target.prepareSessionTransfer(
+      source,
+      () => undefined
+    );
+    returnTransfer.transfer();
+    expect(targetGuard).toThrow();
+    expect(sourceGuard).toThrow();
+    expect(source.captureUnlockedSessionGuard()()).toBeUndefined();
+  } finally {
+    await source.destroy();
+    await target.destroy();
+  }
+});

@@ -580,6 +580,17 @@ export class KeyringCore<
   public isUnlocked = () =>
     !!this.sessionPassword && !this.sessionPassword.isCleared();
 
+  /** Capture wallet-session authority without binding an account or network. */
+  public captureUnlockedSessionGuard(): () => void {
+    const assertOwner = this.#captureSessionGuard();
+    const assertCurrent = () => {
+      assertOwner();
+      if (!this.isUnlocked()) throw new Error('Wallet unlock session changed');
+    };
+    assertCurrent();
+    return assertCurrent;
+  }
+
   public lockWallet = async () => {
     this.retireSessionLifetime();
     // Clear secure session data
