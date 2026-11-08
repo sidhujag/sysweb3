@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.8
+
+- Allow native and browser hosts to supply their Ledger transport through the same keyring engine and explicit session authority.
+- Share exact Ledger EVM envelope signing across reviewed transaction paths, preserving approved nonces, fees, account identity and cancellation guards.
+- Require explicit selected-account and signing-target identities for prepared EVM transactions, digest signing and formatted sends. Bind the vault-state getter once per keyring instance.
+
 ## 2.1.7
 
 - Share canonical EVM envelope validation and serialization through the lightweight `cjs/transactions/evm-envelope` entry.
