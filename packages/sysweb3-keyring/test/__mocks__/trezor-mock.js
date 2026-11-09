@@ -105,6 +105,14 @@ for (const method of [
 module.exports.createTrezorConnection = (host) => {
   if (!host) throw new TypeError('Trezor requires explicit host capabilities');
   host.subscribe = (...args) => module.exports.subscribeTrezorEvents(...args);
+  host.withOwnedSigning = async (authority, operation) => {
+    authority.assertCurrent();
+    if (authority.signal.aborted) throw new Error('Trezor operation cancelled');
+    const result = await operation(host);
+    authority.assertCurrent();
+    if (authority.signal.aborted) throw new Error('Trezor operation cancelled');
+    return result;
+  };
   return host;
 };
 

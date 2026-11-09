@@ -551,6 +551,7 @@ describe('software-only prepared signing authority', () => {
     const signature = await keyring.ethereumTransaction.ethSign(
       [ADDRESS, digest],
       {
+        signal: new AbortController().signal,
         selectedAccount,
         targetAccount: request().account,
         assertCurrent: guard,
@@ -569,6 +570,7 @@ describe('software-only prepared signing authority', () => {
     });
     await expect(
       keyring.ethereumTransaction.ethSign([ADDRESS, '0x' + '12'.repeat(32)], {
+        signal: new AbortController().signal,
         selectedAccount,
         targetAccount: request().account,
         assertCurrent: guard,
@@ -586,6 +588,7 @@ describe('software-only prepared signing authority', () => {
       params[1] = '0x' + '34'.repeat(32);
     });
     const signature = await keyring.ethereumTransaction.ethSign(params, {
+      signal: new AbortController().signal,
       selectedAccount,
       targetAccount: request().account,
       assertCurrent: guard,
@@ -601,6 +604,7 @@ describe('software-only prepared signing authority', () => {
     ).rejects.toThrow();
     await expect(
       keyring.ethereumTransaction.ethSign([ADDRESS, digest], {
+        signal: new AbortController().signal,
         selectedAccount,
         targetAccount: request().account,
         assertCurrent: async () => undefined,

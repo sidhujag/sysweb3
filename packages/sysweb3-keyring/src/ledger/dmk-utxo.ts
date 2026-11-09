@@ -393,8 +393,9 @@ export function createLedgerUtxoAdapter(
         },
         options
       ),
-    signMessage: (request, options) =>
-      run(
+    signMessage: (request, options) => {
+      const owner = captureHardwareTransactionAuthority(options);
+      return run(
         request,
         UserInteractionRequired.SignPersonalMessage,
         async (client, _operation, approved) => {
@@ -412,8 +413,9 @@ export function createLedgerUtxoAdapter(
             )
           );
         },
-        options
-      ),
+        { ...options, ...owner }
+      );
+    },
     signPsbt: async (request, authority) => {
       const owner = captureHardwareTransactionAuthority(authority);
       const options = { ...owner, onProgress: authority.onProgress };

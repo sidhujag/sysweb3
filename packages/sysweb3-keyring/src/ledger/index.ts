@@ -8,6 +8,7 @@ import {
   Transaction,
 } from 'ethers';
 
+import { captureHardwareSigningData } from '../hardware-signing-data';
 import {
   assertHardwareOperationCurrent,
   captureHardwareTransactionAuthority,
@@ -15,6 +16,7 @@ import {
 import { ConnectionStatus, HardwareWalletType } from '../hardware-wallet-types';
 import { ledgerCancelledError, ledgerHostError } from './host-types';
 
+import type { HardwareTransactionAuthority } from '../hardware-transaction-authority';
 import type { HardwareWalletManager } from '../hardware-wallet-manager';
 import type {
   LedgerHost,
@@ -79,43 +81,6 @@ const checkedSignature = (
     throw invalidSignature();
   }
 };
-// Detach the approved typed data before connection or host code can await/mutate it.
-const copyTypedData = (
-  value: unknown,
-  seen = new WeakSet<object>(),
-  depth = 0
-): any => {
-  if (depth > 64) throw invalidRequest();
-  if (value === null || typeof value === 'string' || typeof value === 'boolean')
-    return value;
-  if (typeof value === 'bigint') return value.toString();
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) throw invalidRequest();
-    return value;
-  }
-  if (value instanceof Uint8Array)
-    return `0x${Buffer.from(value).toString('hex')}`;
-  if (!value || typeof value !== 'object' || seen.has(value))
-    throw invalidRequest();
-  const array = Array.isArray(value);
-  const prototype = Object.getPrototypeOf(value);
-  if (!array && prototype !== Object.prototype && prototype !== null)
-    throw invalidRequest();
-  seen.add(value);
-  try {
-    const result: any = array ? [] : Object.create(null);
-    for (const key of Object.keys(value)) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
-      if (!('value' in descriptor)) throw invalidRequest();
-      if (descriptor.value !== undefined)
-        result[key] = copyTypedData(descriptor.value, seen, depth + 1);
-    }
-    return Object.freeze(result);
-  } finally {
-    seen.delete(value);
-  }
-};
-
 /** Small authority-side facade. Device SDKs belong exclusively in ledger-host. */
 export class LedgerKeyring {
   public readonly evm: IEvmMethods;
@@ -191,7 +156,8 @@ export class LedgerKeyring {
           throw error;
         }
       },
-      signPersonalMessage: async (request) => {
+      signPersonalMessage: async (request, authority) => {
+        const owner = captureHardwareTransactionAuthority(authority);
         const expected = approvedAddress(request.expectedAddress);
         const messageHex = Buffer.from(hexBytes(request.message)).toString(
           'hex'
@@ -202,16 +168,17 @@ export class LedgerKeyring {
           expectedAddress: expected,
           messageHex,
         };
-        return this.run(
-          async (host) =>
-            checkedSignature(
-              await host.evm.signPersonalMessage(approved),
-              digest,
-              expected
-            ).serialized
-        );
+        return this.run(async (host, assertCurrent) => {
+          const result = await host.evm.signPersonalMessage(approved, {
+            ...owner,
+            assertCurrent,
+          });
+          assertCurrent();
+          return checkedSignature(result, digest, expected).serialized;
+        }, owner);
       },
-      signTypedData: async (request) => {
+      signTypedData: async (request, authority) => {
+        const owner = captureHardwareTransactionAuthority(authority);
         const { version } = request;
         if (
           version !== SignTypedDataVersion.V3 &&
@@ -222,7 +189,7 @@ export class LedgerKeyring {
         const index = accountIndex(request.accountIndex);
         let data: LedgerTypedData, digest: string;
         try {
-          data = copyTypedData(request.data);
+          data = captureHardwareSigningData(request.data, invalidRequest);
           digest = `0x${TypedDataUtils.eip712Hash(
             data as any,
             version
@@ -236,14 +203,14 @@ export class LedgerKeyring {
           data,
           version,
         };
-        return this.run(
-          async (host) =>
-            checkedSignature(
-              await host.evm.signTypedData(approved),
-              digest,
-              expected
-            ).serialized
-        );
+        return this.run(async (host, assertCurrent) => {
+          const result = await host.evm.signTypedData(approved, {
+            ...owner,
+            assertCurrent,
+          });
+          assertCurrent();
+          return checkedSignature(result, digest, expected).serialized;
+        }, owner);
       },
     };
     this.utxo = {
@@ -281,17 +248,27 @@ export class LedgerKeyring {
   ): Promise<T> {
     const generation = this.generation;
     const host = this.requireHost();
-    hostActivity.set(host, (hostActivity.get(host) ?? 0) + 1);
-    // A visible platform host owns discovery, permission and device selection.
-    if (!host.getStatus().connected) {
-      const request = { useGrantedDevices: true };
-      await (options ? host.connect(request, options) : host.connect(request));
-    }
     const assertCurrent = () => {
-      if (generation !== this.generation) throw ledgerCancelledError();
+      if (generation !== this.generation || options?.signal?.aborted)
+        throw ledgerCancelledError();
+      if (options?.assertCurrent)
+        assertHardwareOperationCurrent(options.assertCurrent);
+      if (generation !== this.generation || options?.signal?.aborted)
+        throw ledgerCancelledError();
     };
     assertCurrent();
+    hostActivity.set(host, (hostActivity.get(host) ?? 0) + 1);
     try {
+      // A visible platform host owns discovery, permission and device selection.
+      if (!host.getStatus().connected) {
+        assertCurrent();
+        const request = { useGrantedDevices: true };
+        await (options
+          ? host.connect(request, { ...options, assertCurrent })
+          : host.connect(request));
+        assertCurrent();
+      }
+      assertCurrent();
       const result = await operation(host, assertCurrent);
       assertCurrent();
       return result;
@@ -319,8 +296,10 @@ export class LedgerKeyring {
     );
 
   public signUtxoMessage = (
-    request: Parameters<LedgerUtxoHost['signMessage']>[0]
+    request: Parameters<LedgerUtxoHost['signMessage']>[0],
+    authority: HardwareTransactionAuthority
   ): Promise<string> => {
+    const owner = captureHardwareTransactionAuthority(authority);
     const approved = Object.freeze({
       currency: request.currency,
       slip44: request.slip44,
@@ -330,7 +309,11 @@ export class LedgerKeyring {
       change: request.change,
       accountXpub: request.accountXpub,
     });
-    return this.run((host) => host.utxo.signMessage(approved));
+    return this.run(
+      (host, assertCurrent) =>
+        host.utxo.signMessage(approved, { ...owner, assertCurrent }),
+      owner
+    );
   };
 
   public signPsbt = async (

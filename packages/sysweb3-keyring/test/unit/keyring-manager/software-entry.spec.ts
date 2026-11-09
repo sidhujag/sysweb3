@@ -13,6 +13,11 @@ import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import { withEvmSendIdentity } from '../../helpers/evm-send-identity';
 
 import type { KeyringStoragePort } from '../../../src/software';
+
+const messageAuthority = () => ({
+  assertCurrent: () => undefined,
+  signal: new AbortController().signal,
+});
 const tokenApproval = {
   nonce: 7,
   assertCurrent: () => undefined,
@@ -212,13 +217,23 @@ describe.each(missingHardwareCases)(
     > = [
       [
         'typed data',
-        (sdk) => sdk.signTypedData(address, {} as any, SignTypedDataVersion.V4),
+        (sdk) =>
+          sdk.signTypedData(
+            address,
+            {} as any,
+            SignTypedDataVersion.V4,
+            messageAuthority()
+          ),
       ],
-      ['personal message', (sdk) => sdk.signPersonalMessage(['0x11', address])],
+      [
+        'personal message',
+        (sdk) => sdk.signPersonalMessage(['0x11', address], messageAuthority()),
+      ],
       [
         'eth_sign',
         (sdk) =>
           sdk.ethSign([address, '0x11'], {
+            signal: new AbortController().signal,
             selectedAccount: { id: 0, type, expectedAddress: address },
             targetAccount: { id: 0, type, expectedAddress: address },
             assertCurrent: () => undefined,

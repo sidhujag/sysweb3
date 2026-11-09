@@ -58,22 +58,21 @@ export interface IEvmMethods {
     s: string;
     v: string;
   }>;
-  signPersonalMessage: ({
-    message,
-    accountIndex,
-  }: {
-    accountIndex: number;
-    message: string;
-    expectedAddress: string;
-  }) => Promise<string>;
-  signTypedData: ({
-    version,
-    data,
-    accountIndex,
-  }: {
-    accountIndex: number;
-    data: any;
-    expectedAddress: string;
-    version: SignTypedDataVersion;
-  }) => Promise<string>;
+  signPersonalMessage: (
+    request: {
+      accountIndex: number;
+      message: string;
+      expectedAddress: string;
+    },
+    authority: HardwareTransactionAuthority
+  ) => Promise<string>;
+  signTypedData: (
+    request: {
+      accountIndex: number;
+      data: any;
+      expectedAddress: string;
+      version: SignTypedDataVersion;
+    },
+    authority: HardwareTransactionAuthority
+  ) => Promise<string>;
 }

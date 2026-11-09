@@ -40,6 +40,7 @@ export function snapshotEvmSigningIdentity(input: unknown): EvmSigningIdentity {
 }
 
 export type EvmDigestSignOptions = Readonly<{
+  signal: AbortSignal;
   selectedAccount: EvmSigningIdentity;
   targetAccount: EvmSigningIdentity;
   assertCurrent(): void;

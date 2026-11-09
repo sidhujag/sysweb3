@@ -10,6 +10,11 @@ import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
 
 import type { LedgerHost } from '../../../src/ledger/host-types';
 
+const messageAuthority = () => ({
+  assertCurrent: () => undefined,
+  signal: new AbortController().signal,
+});
+
 const wallet = new Wallet(`0x${'11'.repeat(32)}`);
 const transactionHex = Transaction.from({
   type: 2,
@@ -337,46 +342,67 @@ describe('Ledger authority facade', () => {
   it('forwards message bytes and typed-data version without changing their payload', async () => {
     const { host } = mockHost();
     const ledger = new LedgerKeyring(undefined, host as LedgerHost);
-    await ledger.evm.signPersonalMessage({
-      accountIndex: 1,
-      message: '00ff',
-      expectedAddress: address,
-    });
-    expect(host.evm.signPersonalMessage).toHaveBeenCalledWith({
-      accountIndex: 1,
-      messageHex: '00ff',
-      expectedAddress: address,
-    });
+    await ledger.evm.signPersonalMessage(
+      {
+        accountIndex: 1,
+        message: '00ff',
+        expectedAddress: address,
+      },
+      messageAuthority()
+    );
+    expect(host.evm.signPersonalMessage).toHaveBeenCalledWith(
+      {
+        accountIndex: 1,
+        messageHex: '00ff',
+        expectedAddress: address,
+      },
+      expect.objectContaining({
+        assertCurrent: expect.any(Function),
+        signal: expect.any(AbortSignal),
+      })
+    );
     const data = {
       domain: {},
       types: { EIP712Domain: [] },
       primaryType: 'EIP712Domain',
       message: {},
     };
-    await ledger.evm.signTypedData({
-      accountIndex: 1,
-      data,
-      version: SignTypedDataVersion.V4,
-      expectedAddress: address,
-    });
-    expect(host.evm.signTypedData).toHaveBeenCalledWith({
-      accountIndex: 1,
-      data,
-      version: 'V4',
-      expectedAddress: address,
-    });
+    await ledger.evm.signTypedData(
+      {
+        accountIndex: 1,
+        data,
+        version: SignTypedDataVersion.V4,
+        expectedAddress: address,
+      },
+      messageAuthority()
+    );
+    expect(host.evm.signTypedData).toHaveBeenCalledWith(
+      {
+        accountIndex: 1,
+        data,
+        version: 'V4',
+        expectedAddress: address,
+      },
+      expect.objectContaining({
+        assertCurrent: expect.any(Function),
+        signal: expect.any(AbortSignal),
+      })
+    );
   });
 
   it('rejects legacy typed data before reaching the host', async () => {
     const { host } = mockHost();
     const ledger = new LedgerKeyring(undefined, host as LedgerHost);
     await expect(
-      ledger.evm.signTypedData({
-        accountIndex: 0,
-        data: [] as any,
-        version: SignTypedDataVersion.V1,
-        expectedAddress: address,
-      })
+      ledger.evm.signTypedData(
+        {
+          accountIndex: 0,
+          data: [] as any,
+          version: SignTypedDataVersion.V1,
+          expectedAddress: address,
+        },
+        messageAuthority()
+      )
     ).rejects.toMatchObject({ code: 'LEDGER_INVALID_REQUEST' });
     expect(host.evm.signTypedData).not.toHaveBeenCalled();
   });

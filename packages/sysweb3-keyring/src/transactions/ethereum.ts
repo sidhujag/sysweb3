@@ -94,6 +94,11 @@ import {
   type EvmSubmissionBoundary,
   type EvmSubmissionContext,
 } from './evm-submission';
+import { captureHardwareSigningData } from '../hardware-signing-data';
+import {
+  captureHardwareTransactionAuthority,
+  type HardwareTransactionAuthority,
+} from '../hardware-transaction-authority';
 import { signLedgerEvmTransaction } from './ledger-signing';
 import {
   signPreparedEvmEnvelope,
@@ -534,14 +539,41 @@ export class EthereumTransactions<
     }
   }
 
+  private captureMessageSigning = (authority: HardwareTransactionAuthority) => {
+    const owner = captureHardwareTransactionAuthority(authority);
+    const context = this.captureEvmAccountContext();
+    const ledger = this.ledgerSigner,
+      trezor = this.trezorSigner;
+    const assertCurrent = () => {
+      owner.assertCurrent();
+      context.assertCurrent();
+      if (this.ledgerSigner !== ledger || this.trezorSigner !== trezor)
+        throw new Error('Wallet signing SDK changed');
+      owner.assertCurrent();
+    };
+    assertCurrent();
+    return {
+      context,
+      authority: Object.freeze({ assertCurrent, signal: owner.signal }),
+    };
+  };
+
   signTypedData = async (
     addr: string,
     typedData: TypedDataV1 | TypedMessage<any>,
-    version: SignTypedDataVersion
+    version: SignTypedDataVersion,
+    authority: HardwareTransactionAuthority
   ) => {
+    const captured = this.captureMessageSigning(authority);
+    const owner = captured.authority;
+    const { activeAccountType, activeAccountId, activeAccount } =
+      captured.context;
     const { address, decryptedPrivateKey } = this.getDecryptedPrivateKey();
-    const { activeAccountType, accounts, activeAccountId } = this.getState();
-    const activeAccount = accounts[activeAccountType][activeAccountId];
+    owner.assertCurrent();
+    const approvedData = captureHardwareSigningData(
+      typedData,
+      () => new Error('Invalid typed signing request')
+    );
 
     // Validate that the derived address matches the active account to prevent race conditions
     if (address.toLowerCase() !== activeAccount.address.toLowerCase()) {
@@ -559,7 +591,7 @@ export class EthereumTransactions<
       const privKey = Buffer.from(stripHexPrefix(decryptedPrivateKey), 'hex');
       return signTypedDataUtil({
         privateKey: privKey,
-        data: typedData as any,
+        data: approvedData,
         version,
       });
     };
@@ -569,12 +601,15 @@ export class EthereumTransactions<
         throw {
           message: 'Decrypting for wrong address, change activeAccount maybe',
         };
-      return await this.requireLedgerSigner().evm.signTypedData({
-        version,
-        accountIndex: activeAccountId,
-        expectedAddress: activeAccount.address,
-        data: typedData,
-      });
+      return await this.requireLedgerSigner().evm.signTypedData(
+        {
+          version,
+          accountIndex: activeAccountId,
+          expectedAddress: activeAccount.address,
+          data: approvedData,
+        },
+        owner
+      );
     };
 
     const signTypedDataWithTrezor = async () => {
@@ -582,21 +617,35 @@ export class EthereumTransactions<
         throw {
           message: 'Decrypting for wrong address, change activeAccount maybe',
         };
-      return await this.requireTrezorSigner().signTypedData({
-        version,
-        address: addr,
-        data: typedData,
-        index: activeAccountId,
-      });
+      return await this.requireTrezorSigner().signTypedData(
+        {
+          version,
+          address: addr,
+          data: approvedData,
+          index: activeAccountId,
+        },
+        owner
+      );
     };
 
-    switch (activeAccountType) {
-      case KeyringAccountType.Trezor:
-        return await signTypedDataWithTrezor();
-      case KeyringAccountType.Ledger:
-        return await signTypedDataWithLedger();
-      default:
-        return signTypedDataLocal();
+    try {
+      owner.assertCurrent();
+      let result: string;
+      switch (activeAccountType) {
+        case KeyringAccountType.Trezor:
+          result = await signTypedDataWithTrezor();
+          break;
+        case KeyringAccountType.Ledger:
+          result = await signTypedDataWithLedger();
+          break;
+        default:
+          result = signTypedDataLocal();
+      }
+      owner.assertCurrent();
+      return result;
+    } catch (error) {
+      owner.assertCurrent();
+      throw error;
     }
   };
 
@@ -718,12 +767,15 @@ export class EthereumTransactions<
       'selectedAccount',
       'targetAccount',
       'assertCurrent',
+      'signal',
     ]);
     const selectedAccount = snapshotEvmSigningIdentity(options.selectedAccount);
     const targetAccount = snapshotEvmSigningIdentity(options.targetAccount);
-    const hostGuard = preparedEvmGuard({
-      assertCurrent: options.assertCurrent,
+    const owner = captureHardwareTransactionAuthority({
+      assertCurrent: options.assertCurrent as () => void,
+      signal: options.signal as AbortSignal,
     });
+    const hostGuard = owner.assertCurrent;
     const target = {
       id: targetAccount.id,
       type: targetAccount.type as KeyringAccountType,
@@ -746,10 +798,20 @@ export class EthereumTransactions<
     };
     assertCurrent();
 
+    if (
+      context.activeAccountType === KeyringAccountType.Ledger ||
+      context.activeAccountType === KeyringAccountType.Trezor
+    )
+      throw Object.assign(
+        new Error(
+          'Hardware raw-digest signing is unsupported; use owned typed-data signing'
+        ),
+        { code: 'HARDWARE_RAW_DIGEST_UNSUPPORTED' }
+      );
+
     const { address, decryptedPrivateKey } =
       this.getDecryptedPrivateKey(target);
-    const { activeAccountId, activeAccountType, activeNetwork, activeAccount } =
-      context;
+    const { activeAccount } = context;
 
     // Validate that the derived address matches the active account to prevent race conditions
     if (address.toLowerCase() !== activeAccount.address.toLowerCase()) {
@@ -794,58 +856,29 @@ export class EthereumTransactions<
       }
     };
 
-    const signWithLedger = async () => {
-      try {
-        const response =
-          await this.requireLedgerSigner().evm.signPersonalMessage({
-            accountIndex: activeAccountId,
-            expectedAddress: activeAccount.address,
-            message: msg,
-          });
-        return response;
-      } catch (error) {
-        throw error;
-      }
-    };
-
-    const signWithTrezor = async () => {
-      try {
-        // For EVM networks, Trezor expects 'eth' regardless of the network's currency
-        const trezorCoin =
-          activeNetwork.slip44 === 60 ? 'eth' : activeNetwork.currency;
-        const response: any = await this.requireTrezorSigner().signMessage({
-          coin: trezorCoin,
-          address: activeAccount.address,
-          index: activeAccountId,
-          message: msg,
-          slip44: activeNetwork.slip44,
-        });
-        return response.signature as string;
-      } catch (error) {
-        throw error;
-      }
-    };
-
-    let signature: string;
-    switch (activeAccountType) {
-      case KeyringAccountType.Trezor:
-        signature = await signWithTrezor();
-        break;
-      case KeyringAccountType.Ledger:
-        signature = await signWithLedger();
-        break;
-      default:
-        signature = sign();
-    }
+    const signature = sign();
     assertCurrent();
     return signature;
   };
 
-  signPersonalMessage = async (params: string[]) => {
+  signPersonalMessage = async (
+    params: string[],
+    authority: HardwareTransactionAuthority
+  ) => {
+    const captured = this.captureMessageSigning(authority);
+    const owner = captured.authority;
+    if (!Array.isArray(params) || params.length !== 2)
+      throw new Error('Invalid personal message request');
+    params = [0, 1].map((index) => {
+      const field = Object.getOwnPropertyDescriptor(params, String(index));
+      if (!field || !('value' in field) || typeof field.value !== 'string')
+        throw new Error('Invalid personal message request');
+      return field.value;
+    });
     const { address, decryptedPrivateKey } = this.getDecryptedPrivateKey();
-    const { accounts, activeAccountId, activeAccountType, activeNetwork } =
-      this.getState();
-    const activeAccount = accounts[activeAccountType][activeAccountId];
+    owner.assertCurrent();
+    const { activeAccountId, activeAccountType, activeNetwork, activeAccount } =
+      captured.context;
 
     // Validate that the derived address matches the active account to prevent race conditions
     if (address.toLowerCase() !== activeAccount.address.toLowerCase()) {
@@ -901,11 +934,14 @@ export class EthereumTransactions<
         }
 
         const response =
-          await this.requireLedgerSigner().evm.signPersonalMessage({
-            accountIndex: activeAccountId,
-            expectedAddress: activeAccount.address,
-            message: messageForLedger,
-          });
+          await this.requireLedgerSigner().evm.signPersonalMessage(
+            {
+              accountIndex: activeAccountId,
+              expectedAddress: activeAccount.address,
+              message: messageForLedger,
+            },
+            owner
+          );
         return response;
       } catch (error) {
         throw error;
@@ -927,26 +963,40 @@ export class EthereumTransactions<
         // For EVM networks, Trezor expects 'eth' regardless of the network's currency
         const trezorCoin =
           activeNetwork.slip44 === 60 ? 'eth' : activeNetwork.currency;
-        const response: any = await this.requireTrezorSigner().signMessage({
-          coin: trezorCoin,
-          address: activeAccount.address,
-          index: activeAccountId,
-          message: messageForTrezor,
-          slip44: activeNetwork.slip44,
-        });
+        const response: any = await this.requireTrezorSigner().signMessage(
+          {
+            coin: trezorCoin,
+            address: activeAccount.address,
+            index: activeAccountId,
+            message: messageForTrezor,
+            slip44: activeNetwork.slip44,
+          },
+          owner
+        );
         return response.signature as string;
       } catch (error) {
         throw error;
       }
     };
 
-    switch (activeAccountType) {
-      case KeyringAccountType.Trezor:
-        return await signPersonalMessageWithTrezor();
-      case KeyringAccountType.Ledger:
-        return await signPersonalMessageWithLedger();
-      default:
-        return signPersonalMessageWithDefaultWallet();
+    try {
+      owner.assertCurrent();
+      let result: string;
+      switch (activeAccountType) {
+        case KeyringAccountType.Trezor:
+          result = await signPersonalMessageWithTrezor();
+          break;
+        case KeyringAccountType.Ledger:
+          result = await signPersonalMessageWithLedger();
+          break;
+        default:
+          result = signPersonalMessageWithDefaultWallet();
+      }
+      owner.assertCurrent();
+      return result;
+    } catch (error) {
+      owner.assertCurrent();
+      throw error;
     }
   };
 

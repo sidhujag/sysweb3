@@ -92,7 +92,7 @@ export interface LedgerEvmHost {
       messageHex: string;
       expectedAddress: string;
     },
-    options?: LedgerOperationOptions
+    authority: LedgerPsbtAuthority
   ): Promise<string>;
   signTypedData(
     request: {
@@ -101,7 +101,7 @@ export interface LedgerEvmHost {
       data: LedgerTypedData;
       expectedAddress: string;
     },
-    options?: LedgerOperationOptions
+    authority: LedgerPsbtAuthority
   ): Promise<string>;
 }
 
@@ -125,7 +125,7 @@ export interface LedgerUtxoHost {
       change?: boolean;
       accountXpub: string;
     },
-    options?: LedgerOperationOptions
+    authority: LedgerPsbtAuthority
   ): Promise<string>;
   signPsbt(
     request: LedgerUtxoAccount & {

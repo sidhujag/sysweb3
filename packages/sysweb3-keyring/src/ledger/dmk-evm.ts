@@ -17,6 +17,7 @@ import {
   Transaction,
 } from 'ethers';
 
+import { captureHardwareTransactionAuthority } from '../hardware-transaction-authority';
 import {
   ledgerHostError,
   type LedgerEvmHost,
@@ -291,23 +292,29 @@ export function createLedgerEvmAdapter(
     },
 
     async signPersonalMessage(request, options) {
+      const owner = captureHardwareTransactionAuthority(options);
       const path = accountPath(request.accountIndex);
       const address = expectedAddress(request.expectedAddress);
       const bytes = hexBytes(request.messageHex, 'personal message');
       const digest = hashMessage(bytes);
-      return session.runExclusive(async (operation) => {
-        const signer = signerFor(operation);
-        await verifySigner(operation, signer, path, address);
-        // Strings in the DSK use ASCII encoding; pass the reviewed bytes directly.
-        const output = await operation.runAction(() =>
-          signer.signMessage(path, bytes)
-        );
-        operation.assertCurrent();
-        return normalizeSignature(output, digest, address).signature.serialized;
-      }, options);
+      return session.runExclusive(
+        async (operation) => {
+          const signer = signerFor(operation);
+          await verifySigner(operation, signer, path, address);
+          // Strings in the DSK use ASCII encoding; pass the reviewed bytes directly.
+          const output = await operation.runAction(() =>
+            signer.signMessage(path, bytes)
+          );
+          operation.assertCurrent();
+          return normalizeSignature(output, digest, address).signature
+            .serialized;
+        },
+        { ...options, ...owner }
+      );
     },
 
     async signTypedData(request, options) {
+      const owner = captureHardwareTransactionAuthority(options);
       if (!policy.confirmBlindSigning) throw unavailable();
       const path = accountPath(request.accountIndex);
       const address = expectedAddress(request.expectedAddress);
@@ -332,18 +339,22 @@ export function createLedgerEvmAdapter(
         data: copyTypedValue(data),
         digest,
       };
-      return session.runExclusive(async (operation) => {
-        const signer = signerFor(operation);
-        await verifySigner(operation, signer, path, address);
-        await approveBlindCapability(operation, policy, intent);
-        // The DSK parser may add EIP712Domain; do not expose that mutation to callers or approval UI.
-        const deviceData = copyTypedValue(data) as TypedData;
-        const output = await operation.runAction(() =>
-          signer.signTypedData(path, deviceData)
-        );
-        operation.assertCurrent();
-        return normalizeSignature(output, digest, address).signature.serialized;
-      }, options);
+      return session.runExclusive(
+        async (operation) => {
+          const signer = signerFor(operation);
+          await verifySigner(operation, signer, path, address);
+          await approveBlindCapability(operation, policy, intent);
+          // The DSK parser may add EIP712Domain; do not expose that mutation to callers or approval UI.
+          const deviceData = copyTypedValue(data) as TypedData;
+          const output = await operation.runAction(() =>
+            signer.signTypedData(path, deviceData)
+          );
+          operation.assertCurrent();
+          return normalizeSignature(output, digest, address).signature
+            .serialized;
+        },
+        { ...options, ...owner }
+      );
     },
   };
 }

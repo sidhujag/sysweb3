@@ -1,11 +1,16 @@
 import { EventEmitter } from 'events';
 
+import { assertHardwareOperationCurrent } from './hardware-transaction-authority';
 import { ConnectionStatus, HardwareWalletType } from './hardware-wallet-types';
 import { ledgerCancelledError, ledgerHostError } from './ledger/host-types';
 
 import type { HardwareWalletStatus } from './hardware-wallet-types';
 import type { LedgerHost } from './ledger/host-types';
-import type { TrezorConnection } from './trezor/connect';
+import type { TrezorConnection, TrezorSigningSession } from './trezor/connect';
+type OwnedTrezorInitialization = Readonly<{
+  session: TrezorSigningSession;
+  assertCurrent(): void;
+}>;
 
 interface ConnectionPoolEntry {
   status: ConnectionStatus;
@@ -163,6 +168,23 @@ export class HardwareWalletManager extends EventEmitter {
    * Initialize Trezor with retry logic
    */
   async initializeTrezor(): Promise<boolean> {
+    return this.initializeTrezorInternal();
+  }
+
+  async initializeTrezorOwned(
+    session: TrezorSigningSession,
+    assertCurrent: () => void
+  ): Promise<boolean> {
+    assertHardwareOperationCurrent(assertCurrent);
+    return this.initializeTrezorInternal(
+      Object.freeze({ session, assertCurrent })
+    );
+  }
+
+  private async initializeTrezorInternal(
+    owned?: OwnedTrezorInitialization
+  ): Promise<boolean> {
+    if (owned) assertHardwareOperationCurrent(owned.assertCurrent);
     this.requireTrezor();
     if (this.destruction) {
       throw Object.assign(new Error('Trezor connection is closing'), {
@@ -190,6 +212,7 @@ export class HardwareWalletManager extends EventEmitter {
       );
       // Wait a bit and check again
       await this.delay(1000);
+      if (owned) assertHardwareOperationCurrent(owned.assertCurrent);
       if (generation !== this.lifecycleGeneration || this.destruction)
         return false;
       const updated = this.connectionPool.get(key);
@@ -199,7 +222,12 @@ export class HardwareWalletManager extends EventEmitter {
     const owner = {};
     this.trezorInitialization = owner;
     try {
-      return await this.initializeTrezorWithRetry(key, owner, generation);
+      return await this.initializeTrezorWithRetry(
+        key,
+        owner,
+        generation,
+        owned
+      );
     } finally {
       if (this.trezorInitialization === owner)
         this.trezorInitialization = undefined;
@@ -212,7 +240,8 @@ export class HardwareWalletManager extends EventEmitter {
   private async initializeTrezorWithRetry(
     key: string,
     owner: object,
-    generation: number
+    generation: number,
+    owned?: OwnedTrezorInitialization
   ): Promise<boolean> {
     const entry: ConnectionPoolEntry = {
       status: ConnectionStatus.CONNECTING,
@@ -220,11 +249,16 @@ export class HardwareWalletManager extends EventEmitter {
       retryCount: 0,
     };
     this.connectionPool.set(key, entry);
-    const isCurrent = () =>
-      generation === this.lifecycleGeneration &&
-      this.trezorInitialization === owner &&
-      this.connectionPool.get(key) === entry &&
-      !this.destruction;
+    const isCurrent = () => {
+      if (owned) assertHardwareOperationCurrent(owned.assertCurrent);
+      return (
+        generation === this.lifecycleGeneration &&
+        this.trezorInitialization === owner &&
+        this.connectionPool.get(key) === entry &&
+        !this.destruction
+      );
+    };
+    const connection = owned?.session ?? this.requireTrezor();
 
     let lastError: Error | undefined;
 
@@ -246,7 +280,7 @@ export class HardwareWalletManager extends EventEmitter {
 
         // Dispose the previous Suite connection before initialization
         try {
-          await this.requireTrezor().dispose();
+          await connection.dispose();
         } catch (disposeError) {
           console.log(
             '[HardwareWalletManager] Dispose error (safe to ignore):',
@@ -255,7 +289,7 @@ export class HardwareWalletManager extends EventEmitter {
         }
         if (!isCurrent()) return false;
 
-        await this.requireTrezor().init();
+        await connection.init();
         if (!isCurrent()) return false;
 
         entry.status = ConnectionStatus.CONNECTED;
@@ -290,7 +324,7 @@ export class HardwareWalletManager extends EventEmitter {
           // Instead of just marking as connected, verify the connection
           try {
             // Test the connection with a simple call
-            const testResponse = await this.requireTrezor().getFeatures();
+            const testResponse = await connection.getFeatures();
             if (!isCurrent()) return false;
             if (testResponse.success) {
               entry.status = ConnectionStatus.CONNECTED;
@@ -309,7 +343,7 @@ export class HardwareWalletManager extends EventEmitter {
 
           // If test failed, dispose and retry
           try {
-            await this.requireTrezor().dispose();
+            await connection.dispose();
             if (!isCurrent()) return false;
             await this.delay(500);
           } catch (disposeError) {
@@ -335,7 +369,7 @@ export class HardwareWalletManager extends EventEmitter {
 
           // Try to dispose and reinitialize
           try {
-            await this.requireTrezor().dispose();
+            await connection.dispose();
             if (!isCurrent()) return false;
             await this.delay(2000); // Wait 2 seconds before retry
           } catch (disposeError) {
@@ -381,7 +415,7 @@ export class HardwareWalletManager extends EventEmitter {
 
     // Clean up on failure
     try {
-      await this.requireTrezor().dispose();
+      await connection.dispose();
     } catch (disposeError) {
       console.log(
         '[HardwareWalletManager] Failed to dispose on error:',

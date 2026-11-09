@@ -12,6 +12,11 @@ import {
   type LedgerTypedData,
 } from '../../../src/ledger/host-types';
 
+const messageAuthority = () => ({
+  assertCurrent: () => undefined,
+  signal: new AbortController().signal,
+});
+
 const mockContexts: unknown[] = [];
 const mockSigner = {
   getAddress: jest.fn(),
@@ -179,12 +184,15 @@ it('denies transaction and typed signing without trusted per-operation approval'
     })
   ).rejects.toMatchObject({ code: 'HARDWARE_CLEAR_SIGNING_UNAVAILABLE' });
   await expect(
-    host.signTypedData({
-      accountIndex: 0,
-      expectedAddress: address,
-      data: typed(),
-      version: 'V4',
-    })
+    host.signTypedData(
+      {
+        accountIndex: 0,
+        expectedAddress: address,
+        data: typed(),
+        version: 'V4',
+      },
+      messageAuthority()
+    )
   ).rejects.toMatchObject({ code: 'HARDWARE_CLEAR_SIGNING_UNAVAILABLE' });
   expect(current.runExclusive).not.toHaveBeenCalled();
   expect(mockSigner.signTransaction).not.toHaveBeenCalled();
@@ -294,11 +302,14 @@ it.each([
   Buffer.from('Unicode 雪 / \u0000', 'utf8').toString('hex'),
 ])('signs the exact personal-message bytes %s offline', async (messageHex) => {
   const host = createLedgerEvmAdapter(session().value);
-  const result = await host.signPersonalMessage({
-    accountIndex: 1,
-    expectedAddress: address,
-    messageHex,
-  });
+  const result = await host.signPersonalMessage(
+    {
+      accountIndex: 1,
+      expectedAddress: address,
+      messageHex,
+    },
+    messageAuthority()
+  );
   expect(result).toBe(await wallet.signMessage(Buffer.from(messageHex, 'hex')));
   expect(mockSigner.signMessage).toHaveBeenCalledWith(
     "44'/60'/0'/0/1",
@@ -349,12 +360,15 @@ it.each(['V3', 'V4'] as const)(
     const host = createLedgerEvmAdapter(session().value, {
       confirmBlindSigning: approve,
     });
-    const result = await host.signTypedData({
-      accountIndex: 0,
-      expectedAddress: address,
-      version,
-      data,
-    });
+    const result = await host.signTypedData(
+      {
+        accountIndex: 0,
+        expectedAddress: address,
+        version,
+        data,
+      },
+      messageAuthority()
+    );
     expect(result).toBe(
       wallet.signingKey.sign(typedDigest(data, version)).serialized
     );
@@ -371,27 +385,36 @@ it('rejects V3 arrays, unsupported versions and malformed bytes before any signi
   data.types.Request = [{ name: 'values', type: 'uint256[]' }];
   data.message = { values: ['1', '2'] };
   await expect(
-    host.signTypedData({
-      accountIndex: 0,
-      expectedAddress: address,
-      version: 'V3',
-      data,
-    })
+    host.signTypedData(
+      {
+        accountIndex: 0,
+        expectedAddress: address,
+        version: 'V3',
+        data,
+      },
+      messageAuthority()
+    )
   ).rejects.toMatchObject({ code: 'LEDGER_INVALID_REQUEST' });
   await expect(
-    host.signTypedData({
-      accountIndex: 0,
-      expectedAddress: address,
-      version: 'V1' as any,
-      data,
-    })
+    host.signTypedData(
+      {
+        accountIndex: 0,
+        expectedAddress: address,
+        version: 'V1' as any,
+        data,
+      },
+      messageAuthority()
+    )
   ).rejects.toMatchObject({ code: 'LEDGER_INVALID_REQUEST' });
   await expect(
-    host.signPersonalMessage({
-      accountIndex: 0,
-      expectedAddress: address,
-      messageHex: '0x123',
-    })
+    host.signPersonalMessage(
+      {
+        accountIndex: 0,
+        expectedAddress: address,
+        messageHex: '0x123',
+      },
+      messageAuthority()
+    )
   ).rejects.toMatchObject({ code: 'LEDGER_INVALID_REQUEST' });
   expect(mockSigner.signTypedData).not.toHaveBeenCalled();
   expect(mockSigner.signMessage).not.toHaveBeenCalled();
@@ -431,11 +454,14 @@ it('rejects mismatched device identity and a signature from a different key', as
     confirmBlindSigning: async () => true,
   });
   await expect(
-    host.signPersonalMessage({
-      accountIndex: 0,
-      expectedAddress: new Wallet(`0x${'22'.repeat(32)}`).address,
-      messageHex: '01',
-    })
+    host.signPersonalMessage(
+      {
+        accountIndex: 0,
+        expectedAddress: new Wallet(`0x${'22'.repeat(32)}`).address,
+        messageHex: '01',
+      },
+      messageAuthority()
+    )
   ).rejects.toMatchObject({ code: 'HARDWARE_ACCOUNT_MISMATCH' });
   expect(mockSigner.signMessage).not.toHaveBeenCalled();
   const other = new Wallet(`0x${'22'.repeat(32)}`);
@@ -443,11 +469,14 @@ it('rejects mismatched device identity and a signature from a different key', as
     Signature.from(await other.signMessage(Uint8Array.of(1)))
   );
   await expect(
-    host.signPersonalMessage({
-      accountIndex: 0,
-      expectedAddress: address,
-      messageHex: '01',
-    })
+    host.signPersonalMessage(
+      {
+        accountIndex: 0,
+        expectedAddress: address,
+        messageHex: '01',
+      },
+      messageAuthority()
+    )
   ).rejects.toMatchObject({ code: 'LEDGER_INVALID_SIGNATURE' });
 });
 
@@ -507,10 +536,13 @@ it('rejects malformed signature fields instead of exposing a partially formatted
     v: 27,
   });
   await expect(
-    host.signPersonalMessage({
-      accountIndex: 0,
-      expectedAddress: address,
-      messageHex: '01',
-    })
+    host.signPersonalMessage(
+      {
+        accountIndex: 0,
+        expectedAddress: address,
+        messageHex: '01',
+      },
+      messageAuthority()
+    )
   ).rejects.toMatchObject({ code: 'LEDGER_INVALID_SIGNATURE' });
 });
