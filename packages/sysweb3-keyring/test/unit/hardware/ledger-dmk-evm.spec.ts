@@ -546,3 +546,31 @@ it('rejects malformed signature fields instead of exposing a partially formatted
     )
   ).rejects.toMatchObject({ code: 'LEDGER_INVALID_SIGNATURE' });
 });
+
+it('refuses expanded typed-data DAG work at the shared boundary before device use', async () => {
+  const active = session();
+  const approve = jest.fn(async () => true);
+  const host = createLedgerEvmAdapter(active.value, {
+    confirmBlindSigning: approve,
+  });
+  let repeated: unknown = { memo: 'leaf' };
+  for (let depth = 0; depth < 40; depth++)
+    repeated = { left: repeated, right: repeated };
+  const request = typed();
+  request.message = repeated as any;
+  await expect(
+    host.signTypedData(
+      {
+        accountIndex: 0,
+        expectedAddress: address,
+        version: 'V4',
+        data: request,
+      },
+      messageAuthority()
+    )
+  ).rejects.toMatchObject({ code: 'LEDGER_INVALID_REQUEST' });
+  expect(active.runExclusive).not.toHaveBeenCalled();
+  expect(approve).not.toHaveBeenCalled();
+  expect(mockSigner.getAddress).not.toHaveBeenCalled();
+  expect(mockSigner.signTypedData).not.toHaveBeenCalled();
+});

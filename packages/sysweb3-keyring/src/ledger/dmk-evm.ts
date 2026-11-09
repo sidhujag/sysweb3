@@ -17,6 +17,7 @@ import {
   Transaction,
 } from 'ethers';
 
+import { captureHardwareSigningData } from '../hardware-signing-data';
 import { captureHardwareTransactionAuthority } from '../hardware-transaction-authority';
 import {
   ledgerHostError,
@@ -74,49 +75,6 @@ const expectedAddress = (value: string): string => {
     throw invalid('Invalid expected Ledger address');
   }
 };
-
-function copyTypedValue(
-  value: unknown,
-  seen = new WeakSet<object>(),
-  depth = 0
-): any {
-  if (depth > 64) throw invalid('Typed data nesting is too deep');
-  if (typeof value === 'bigint') return value.toString();
-  if (value === null || typeof value === 'string' || typeof value === 'boolean')
-    return value;
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) throw invalid('Invalid typed data number');
-    return value;
-  }
-  if (value instanceof Uint8Array)
-    return `0x${Buffer.from(value).toString('hex')}`;
-  if (typeof value !== 'object' || value === undefined)
-    throw invalid('Invalid typed data value');
-  if (seen.has(value)) throw invalid('Circular typed data');
-  const prototype = Object.getPrototypeOf(value);
-  if (
-    !Array.isArray(value) &&
-    prototype !== Object.prototype &&
-    prototype !== null
-  )
-    throw invalid('Invalid typed data object');
-  seen.add(value);
-  try {
-    if (Array.isArray(value))
-      return value.map((item) => copyTypedValue(item, seen, depth + 1));
-    const result: Record<string, unknown> = Object.create(null);
-    for (const key of Object.keys(value)) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
-      if (!('value' in descriptor))
-        throw invalid('Typed data accessors are not supported');
-      if (descriptor.value !== undefined)
-        result[key] = copyTypedValue(descriptor.value, seen, depth + 1);
-    }
-    return result;
-  } finally {
-    seen.delete(value);
-  }
-}
 
 function freezeDeep<T>(value: T): T {
   if (value && typeof value === 'object') {
@@ -322,7 +280,9 @@ export function createLedgerEvmAdapter(
         throw invalid('Ledger supports typed data V3 and V4 only');
       let data: LedgerTypedData, digest: string;
       try {
-        data = copyTypedValue(request.data);
+        data = captureHardwareSigningData(request.data, () =>
+          invalid('Invalid Ledger typed data')
+        );
         digest = `0x${TypedDataUtils.eip712Hash(
           data as any,
           request.version as SignTypedDataVersion.V3 | SignTypedDataVersion.V4
@@ -336,7 +296,7 @@ export function createLedgerEvmAdapter(
         derivationPath: path,
         expectedAddress: address,
         version: request.version,
-        data: copyTypedValue(data),
+        data,
         digest,
       };
       return session.runExclusive(
@@ -345,7 +305,7 @@ export function createLedgerEvmAdapter(
           await verifySigner(operation, signer, path, address);
           await approveBlindCapability(operation, policy, intent);
           // The DSK parser may add EIP712Domain; do not expose that mutation to callers or approval UI.
-          const deviceData = copyTypedValue(data) as TypedData;
+          const deviceData = JSON.parse(JSON.stringify(data)) as TypedData;
           const output = await operation.runAction(() =>
             signer.signTypedData(path, deviceData)
           );

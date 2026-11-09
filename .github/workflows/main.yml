@@ -88,6 +88,8 @@ jobs:
         # The preceding build produces the plain-Node Connect protocol fixture.
         run: |
           NODE_ENV=test node ../../node_modules/jest/bin/jest.js --config jest.config.js --runInBand --silent \
+            test/unit/hardware/owned-messages.spec.ts \
+            test/unit/hardware/hardware-signing-data.spec.ts \
             test/unit/hardware/trezor-connect-adapter.spec.ts \
             test/unit/hardware/trezor-host.spec.ts \
             test/unit/keyring-manager/session-transfer.spec.ts \

@@ -229,8 +229,16 @@ export class HardwareWalletManager extends EventEmitter {
         owned
       );
     } finally {
-      if (this.trezorInitialization === owner)
+      if (this.trezorInitialization === owner) {
+        // A revoked authority may throw before the retry path can mark failure.
+        // Retire only this attempt; a late completion must not remove a successor.
+        if (
+          generation === this.lifecycleGeneration &&
+          this.connectionPool.get(key)?.status === ConnectionStatus.CONNECTING
+        )
+          this.connectionPool.delete(key);
         this.trezorInitialization = undefined;
+      }
     }
   }
 

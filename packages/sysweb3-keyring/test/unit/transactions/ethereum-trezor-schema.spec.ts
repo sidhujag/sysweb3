@@ -4,6 +4,7 @@ import { Wallet } from 'ethers/wallet';
 import path from 'path';
 
 import { BigNumber, serializeTransaction } from '../../../src/ethers-v6';
+import { captureHardwareTransactionAuthority } from '../../../src/hardware-transaction-authority';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import { TrezorKeyring } from '../../../src/trezor';
 import { KeyringAccountType } from '../../../src/types';
@@ -89,7 +90,16 @@ beforeEach(() => {
     })),
   };
   const trezor = Object.create(TrezorKeyring.prototype);
-  trezor.connection = connect;
+  trezor.connection = {
+    // Schema assertions below still run against the published Connect package;
+    // the actual owned init/drain lifecycle has separate adapter coverage.
+    async withOwnedSigning(authority, operation) {
+      const owner = captureHardwareTransactionAuthority(authority);
+      const result = await operation(connect);
+      owner.assertCurrent();
+      return result;
+    },
+  };
   // Hardware initialization/retry are isolated; the real keyring method and
   // HD path construction still pass the exact request to the Connect boundary.
   trezor.executeWithRetry = jest.fn((operation) => operation());

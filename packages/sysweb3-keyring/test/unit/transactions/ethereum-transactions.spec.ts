@@ -52,6 +52,10 @@ describe('Ethereum Transactions', () => {
     );
   });
 
+  afterEach(async () => {
+    await keyringManager?.destroy();
+  });
+
   describe('Transaction Signing', () => {
     it('should sign a transaction', async () => {
       const tx = {

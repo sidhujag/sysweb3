@@ -1,6 +1,7 @@
 import { SignTypedDataVersion } from '@metamask/eth-sig-util';
 import { hashMessage, Wallet } from 'ethers';
 
+import { HardwareWalletManager } from '../../../src/hardware-wallet-manager';
 import { LedgerKeyring } from '../../../src/ledger';
 import { EthereumTransactions } from '../../../src/transactions/ethereum';
 import { TrezorKeyring } from '../../../src/trezor';
@@ -177,6 +178,134 @@ test('owned Trezor raw-call cancellation drains before a successor and cannot re
   await ring.retire();
 });
 
+test.each(['success', 'error'] as const)(
+  'cancelled manager initialization retires its pool entry after raw %s and permits a fresh owner',
+  async (outcome) => {
+    const device = host(),
+      connection = createTrezorConnection(device),
+      manager = new HardwareWalletManager(undefined, connection),
+      old = authority(),
+      held = deferred();
+    (device.init as jest.Mock).mockImplementationOnce(
+      async (check: () => void) => {
+        await held.promise;
+        if (outcome === 'error')
+          throw new Error('Late old initialization error');
+        check();
+      }
+    );
+    try {
+      const work = connection.withOwnedSigning(old, (session) =>
+        manager.initializeTrezorOwned(session, old.assertCurrent)
+      );
+      const rejected = expect(work).rejects.toMatchObject({
+        code: 'HARDWARE_REQUEST_CANCELLED',
+      });
+      await jest.advanceTimersByTimeAsync(1);
+      expect(device.init).toHaveBeenCalledTimes(1);
+      expect(
+        manager.getStatus().find((entry) => entry.type === 'trezor')?.status
+      ).toBe('connecting');
+      old.abort();
+      await expect(
+        connection.withOwnedSigning(authority(), async () => true)
+      ).rejects.toMatchObject({ code: 'HARDWARE_SIGNER_BUSY' });
+      held.resolve();
+      await rejected;
+      expect(
+        manager.getStatus().find((entry) => entry.type === 'trezor')?.status
+      ).toBe('disconnected');
+      const next = authority();
+      await expect(
+        connection.withOwnedSigning(next, (session) =>
+          manager.initializeTrezorOwned(session, next.assertCurrent)
+        )
+      ).resolves.toBe(true);
+      expect(device.init).toHaveBeenCalledTimes(2);
+      old.abort();
+      expect(manager.isConnected('trezor' as any)).toBe(true);
+    } finally {
+      held.resolve();
+      await manager.destroy();
+    }
+  }
+);
+
+test.each([
+  'Device_Disconnected',
+  'Device_NotFound',
+  'Desktop_ConnectionMissing',
+  'Transport_Missing',
+])('owned Trezor preserves the current %s failure code', async (code) => {
+  const device = host(),
+    connection = createTrezorConnection(device);
+  (device.ethereumSignTypedData as jest.Mock).mockResolvedValueOnce({
+    success: false,
+    error: { code, message: 'Device transport unavailable' },
+  });
+  try {
+    await expect(
+      connection.withOwnedSigning(authority(), async (session) => {
+        await session.init();
+        return session.ethereumSignTypedData({} as any);
+      })
+    ).resolves.toMatchObject({
+      success: false,
+      payload: { code, error: 'Device transport unavailable' },
+    });
+    expect(device.ethereumSignTypedData).toHaveBeenCalledTimes(1);
+    await expect(connection.getFeatures()).rejects.toMatchObject({
+      code: 'Init_NotInitialized',
+    });
+  } finally {
+    await connection.dispose();
+  }
+});
+
+test.each(['dispose', 'abort'] as const)(
+  'owned Trezor disconnect failure cannot survive an observer %s',
+  async (action) => {
+    const device = host(),
+      connection = createTrezorConnection(device),
+      owner = authority();
+    let dispatched = false;
+    const unsubscribe = connection.subscribe((event) => {
+      if (event.type !== 'disconnected' || !dispatched) return;
+      dispatched = false;
+      if (action === 'abort') owner.abort();
+      else void connection.dispose();
+    });
+    (device.ethereumSignTypedData as jest.Mock).mockImplementationOnce(
+      async () => {
+        dispatched = true;
+        return {
+          success: false,
+          error: {
+            code: 'Device_Disconnected',
+            message: 'Device disconnected',
+          },
+        };
+      }
+    );
+    try {
+      await expect(
+        connection.withOwnedSigning(owner, async (session) => {
+          await session.init();
+          return session.ethereumSignTypedData({} as any);
+        })
+      ).rejects.toMatchObject({
+        code:
+          action === 'abort'
+            ? 'HARDWARE_REQUEST_CANCELLED'
+            : 'Method_Interrupted',
+      });
+    } finally {
+      unsubscribe();
+      await connection.dispose();
+    }
+  }
+);
+
 test('Trezor exports no unowned message signing forwards', () => {
   const connection = createTrezorConnection(host());
   for (const method of [
@@ -185,6 +314,157 @@ test('Trezor exports no unowned message signing forwards', () => {
     'ethereumSignTypedData',
   ])
     expect(connection).not.toHaveProperty(method);
+});
+
+test.each(['personal', 'utxo'] as const)(
+  'owned Trezor %s snapshots the original message and derivation target',
+  async (kind) => {
+    const device = host();
+    (device.ethereumSignMessage as jest.Mock).mockResolvedValue({
+      success: true,
+      payload: { address: wallet.address, signature: 'ab'.repeat(65) },
+    });
+    const ring = new TrezorKeyring(createTrezorConnection(device));
+    const input = {
+      address: wallet.address,
+      coin: kind === 'personal' ? 'eth' : 'sys',
+      slip44: kind === 'personal' ? 60 : 57,
+      index: 2,
+      message: kind === 'personal' ? '0x01' : 'approved',
+    };
+    const work = ring.signMessage(input, authority());
+    input.index = 9;
+    input.coin = 'btc';
+    input.slip44 = 0;
+    input.message = 'changed';
+    input.address = '0x' + '22'.repeat(20);
+    await jest.advanceTimersByTimeAsync(4300);
+    await expect(work).resolves.toMatchObject({ success: true });
+    const selected =
+      kind === 'personal' ? device.ethereumSignMessage : device.signMessage;
+    expect(selected).toHaveBeenCalledWith(
+      expect.any(Function),
+      kind === 'personal'
+        ? { path: "m/44'/60'/0'/0/2", message: '01', hex: true }
+        : { path: "m/84'/57'/2'", coin: 'sys', message: 'approved' }
+    );
+    expect(
+      kind === 'personal' ? device.signMessage : device.ethereumSignMessage
+    ).not.toHaveBeenCalled();
+    await ring.retire();
+  }
+);
+
+test.each(['missing', 'asynchronous', 'revoked'] as const)(
+  'Trezor rejects %s authority before initialization or message dispatch',
+  async (kind) => {
+    const device = host(),
+      ring = new TrezorKeyring(createTrezorConnection(device));
+    const owner = authority();
+    const invalid =
+      kind === 'missing'
+        ? undefined
+        : kind === 'asynchronous'
+        ? { signal: owner.signal, assertCurrent: async () => undefined }
+        : owner;
+    if (kind === 'revoked') owner.revoke();
+    for (const invoke of [
+      () => Reflect.apply(ring.signTypedData, ring, [typed(), invalid]),
+      () =>
+        Reflect.apply(ring.signMessage, ring, [
+          {
+            address: wallet.address,
+            coin: 'eth',
+            slip44: 60,
+            index: 2,
+            message: '01',
+          },
+          invalid,
+        ]),
+    ])
+      await expect(invoke()).rejects.toMatchObject({
+        code: 'HARDWARE_REQUEST_CANCELLED',
+      });
+    expect(device.init).not.toHaveBeenCalled();
+    expect(device.ethereumSignTypedData).not.toHaveBeenCalled();
+    expect(device.ethereumSignMessage).not.toHaveBeenCalled();
+    await ring.retire();
+  }
+);
+
+test('Trezor personal cancellation holds the signing slot until raw settlement, including a different-family successor', async () => {
+  const device = host(),
+    ring = new TrezorKeyring(createTrezorConnection(device)),
+    old = authority(),
+    held = deferred();
+  (device.ethereumSignMessage as jest.Mock).mockImplementationOnce(
+    async (check: () => void) => {
+      await held.promise;
+      check();
+      return {
+        success: true,
+        payload: { address: wallet.address, signature: 'ab'.repeat(65) },
+      };
+    }
+  );
+  const work = ring.signMessage(
+    {
+      address: wallet.address,
+      coin: 'eth',
+      slip44: 60,
+      index: 2,
+      message: '01',
+    },
+    old
+  );
+  const rejected = expect(work).rejects.toMatchObject({
+    code: 'HARDWARE_REQUEST_CANCELLED',
+  });
+  await jest.advanceTimersByTimeAsync(4300);
+  expect(device.ethereumSignMessage).toHaveBeenCalledTimes(1);
+  old.abort();
+  let settled = false;
+  void work.catch(() => {
+    settled = true;
+  });
+  await jest.advanceTimersByTimeAsync(1);
+  expect(settled).toBe(false);
+  await expect(ring.signTypedData(typed(), authority())).rejects.toMatchObject({
+    code: 'HARDWARE_SIGNER_BUSY',
+  });
+  held.resolve();
+  await rejected;
+  const successor = ring.signTypedData(typed(), authority());
+  old.abort();
+  await jest.advanceTimersByTimeAsync(2200);
+  await expect(successor).resolves.toBe('0x' + 'ab'.repeat(65));
+  expect(device.ethereumSignTypedData).toHaveBeenCalledTimes(1);
+  await ring.retire();
+});
+
+test('a synchronous owner revocation during held Trezor init cannot become a retry', async () => {
+  const device = host(),
+    ring = new TrezorKeyring(createTrezorConnection(device)),
+    owner = authority(),
+    held = deferred();
+  (device.init as jest.Mock).mockImplementationOnce(
+    async (check: () => void) => {
+      await held.promise;
+      check();
+    }
+  );
+  const work = ring.signTypedData(typed(), owner),
+    rejected = expect(work).rejects.toMatchObject({
+      code: 'HARDWARE_REQUEST_CANCELLED',
+    });
+  await jest.advanceTimersByTimeAsync(100);
+  owner.revoke();
+  held.resolve();
+  await jest.advanceTimersByTimeAsync(10000);
+  await rejected;
+  expect(device.init).toHaveBeenCalledTimes(1);
+  expect(device.ethereumSignTypedData).not.toHaveBeenCalled();
+  await ring.retire();
 });
 
 test.each(['personal', 'typed', 'utxo'] as const)(

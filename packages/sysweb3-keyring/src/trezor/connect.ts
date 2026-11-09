@@ -144,7 +144,11 @@ export function createTrezorConnection(host: TrezorHost): TrezorConnection {
   };
 
   /** Keep the SDK's established failure payload while preserving Connect 10 codes. */
-  const normalize = (response: any, method: Method): any => {
+  const normalize = (
+    response: any,
+    method: Method,
+    scope?: SigningScope
+  ): any => {
     if (response?.success === false) {
       const error = response.error;
       const code = typeof error?.code === 'string' ? error.code : undefined;
@@ -154,7 +158,15 @@ export function createTrezorConnection(host: TrezorHost): TrezorConnection {
         code === 'Desktop_ConnectionMissing' ||
         code === 'Transport_Missing'
       ) {
-        invalidate();
+        // This failure itself retires the connection, not the caller's approval.
+        // Preserve its typed error only for this exact still-owned invalidation.
+        const invalidated = invalidate();
+        if (scope) {
+          scope.authority.assertCurrent();
+          if (signing !== scope || scope.closed || generation !== invalidated)
+            throw interrupted();
+          scope.generation = invalidated;
+        }
       }
       return {
         ...response,
@@ -271,7 +283,7 @@ export function createTrezorConnection(host: TrezorHost): TrezorConnection {
       scope
     );
     checkSigning(scope);
-    const normalized = normalize(response, method);
+    const normalized = normalize(response, method, scope);
     checkSigning(scope);
     return normalized;
   };
