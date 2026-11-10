@@ -388,6 +388,16 @@ export interface IKeyringManager {
   syscoinTransaction: ISyscoinTransactions;
   isSeedValid: (seedPhrase: string) => boolean;
   getSeed: (pwd: string) => Promise<string>;
+  createPublicSessionCheckpoint: (
+    input: import('./public-session').PublicSessionCheckpointRequest,
+    assertCurrent: () => void
+  ) => Promise<import('./private-records').IEncryptedPrivateRecord>;
+  restorePublicSession: <T>(
+    credential: import('./keyring-core').SecretOperationCredentialPort,
+    input: import('./public-session').PublicSessionRestoreRequest,
+    options: import('./keyring-core').SecretOperationOptions,
+    work: (authenticatedPublicState: Uint8Array) => T | Promise<T>
+  ) => Promise<T>;
   createPrivateRecordAccess: (
     domains: readonly string[],
     options: PrivateRecordAccessOptions

@@ -73,3 +73,9 @@ export type {
   SecretOperationOptions,
 } from './keyring-core';
 export type { SecretLifetimePolicy } from './keyring-host';
+
+export type {
+  PublicSessionCheckpointRequest,
+  PublicSessionRestoreRequest,
+} from './public-session';
+export { MAX_PUBLIC_SESSION_STATE_BYTES } from './public-session';

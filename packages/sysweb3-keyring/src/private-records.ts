@@ -129,20 +129,24 @@ async function profileId(key: CryptoKey, guard: Guard): Promise<string> {
   return `0x${Buffer.from(bits).toString('hex')}`;
 }
 
+function domainParameters(domain: string): HkdfParams {
+  return {
+    name: 'HKDF',
+    hash: 'SHA-256',
+    salt: bufferSource(encoder.encode(NAMESPACE)),
+    info: bufferSource(
+      encoder.encode(JSON.stringify([NAMESPACE, 'encryption-key', domain]))
+    ),
+  };
+}
+
 async function domainKey(
   key: CryptoKey,
   domain: string,
   guard: Guard
 ): Promise<CryptoKey> {
   const derived = await cryptoProvider().subtle.deriveKey(
-    {
-      name: 'HKDF',
-      hash: 'SHA-256',
-      salt: bufferSource(encoder.encode(NAMESPACE)),
-      info: bufferSource(
-        encoder.encode(JSON.stringify([NAMESPACE, 'encryption-key', domain]))
-      ),
-    },
+    domainParameters(domain),
     key,
     { name: 'AES-GCM', length: 256 },
     false,
@@ -467,5 +471,174 @@ export async function createPrivateRecordAccess(
     throw error;
   } finally {
     root = undefined;
+  }
+}
+
+// This separate HKDF domain cannot decrypt the vault. Checkpoints contain only
+// explicitly selected record-domain keys, never the mnemonic or vault key.
+const PUBLIC_SESSION_DOMAIN = 'sysweb3.public-session.v1';
+const CHECKPOINT_HEADER = new Uint8Array([0x50, 0x53, 0x43, 1]);
+const CHECKPOINT_FIXED_BYTES = 4 + 32 + 32 + 32 + 1;
+type PublicRecordCheckpointContext = Readonly<{
+  walletBindingId: string;
+  pairFingerprint: string;
+  stateDigest: Uint8Array;
+  domains: readonly string[];
+}>;
+const sameBytes = (left: Uint8Array, right: Uint8Array) => {
+  let difference = left.length ^ right.length;
+  for (let i = 0; i < left.length; i++) difference |= left[i] ^ (right[i] ?? 0);
+  return difference === 0;
+};
+function checkpointContext(context: PublicRecordCheckpointContext) {
+  if (
+    !/^[0-9a-f]{64}$/.test(context.walletBindingId) ||
+    !/^[0-9a-f]{64}$/.test(context.pairFingerprint) ||
+    !(context.stateDigest instanceof Uint8Array) ||
+    context.stateDigest.length !== 32
+  )
+    throw new Error('Invalid public record checkpoint context');
+  return JSON.parse(privateRecordDomainSet(context.domains)) as string[];
+}
+
+/** Internal sealing only. No record key or extractable CryptoKey leaves this module. */
+export async function sealPublicRecordCheckpoint(
+  rootSecret: Uint8Array,
+  wrappingSecret: Uint8Array,
+  context: PublicRecordCheckpointContext,
+  guard: Guard
+): Promise<IEncryptedPrivateRecord> {
+  const domains = checkpointContext(context);
+  const payload = new Uint8Array(
+    CHECKPOINT_FIXED_BYTES +
+      domains.reduce((size, domain) => size + 1 + domain.length + 32, 0)
+  );
+  let derived: Uint8Array | undefined;
+  try {
+    const root = await importRoot(rootSecret, guard);
+    payload.set(CHECKPOINT_HEADER);
+    payload.set(Buffer.from(context.pairFingerprint, 'hex'), 4);
+    payload.set(context.stateDigest, 36);
+    payload.set(
+      Buffer.from((await profileId(root, guard)).slice(2), 'hex'),
+      68
+    );
+    payload[100] = domains.length;
+    let offset = CHECKPOINT_FIXED_BYTES;
+    for (const domain of domains) {
+      const name = encoder.encode(domain);
+      payload[offset++] = name.length;
+      payload.set(name, offset);
+      offset += name.length;
+      // Same v1 HKDF inputs as domainKey, imported non-extractably on restore.
+      derived = new Uint8Array(
+        await cryptoProvider().subtle.deriveBits(
+          domainParameters(domain),
+          root,
+          256
+        )
+      );
+      guard();
+      payload.set(derived, offset);
+      offset += 32;
+      derived.fill(0);
+      derived = undefined;
+    }
+    return await encryptPrivateRecordBytes(
+      wrappingSecret,
+      {
+        domain: PUBLIC_SESSION_DOMAIN,
+        recordId: context.walletBindingId,
+        plaintext: payload,
+      },
+      guard
+    );
+  } finally {
+    derived?.fill(0);
+    payload.fill(0);
+  }
+}
+
+/** Internal restore imports only the sealed exact domain set as non-extractable keys. */
+export async function restorePublicRecordCheckpoint(
+  wrappingSecret: Uint8Array,
+  envelope: IEncryptedPrivateRecord,
+  context: PublicRecordCheckpointContext,
+  guard: Guard,
+  authority: object
+): Promise<IPrivateRecordAccess> {
+  const domains = checkpointContext(context);
+  const owner: RecordAccessOwner = {
+    active: true,
+    domainSet: privateRecordDomainSet(domains),
+    keys: new Map(),
+    guard,
+    profile: '',
+    transferable: true,
+    authority,
+  };
+  let payload: Uint8Array | undefined, material: Uint8Array | undefined;
+  try {
+    payload = await decryptPrivateRecordBytes(
+      wrappingSecret,
+      {
+        domain: PUBLIC_SESSION_DOMAIN,
+        recordId: context.walletBindingId,
+        envelope,
+      },
+      guard
+    );
+    if (
+      payload.length < CHECKPOINT_FIXED_BYTES ||
+      !sameBytes(payload.subarray(0, 4), CHECKPOINT_HEADER) ||
+      !sameBytes(
+        payload.subarray(4, 36),
+        new Uint8Array(Buffer.from(context.pairFingerprint, 'hex'))
+      ) ||
+      !sameBytes(payload.subarray(36, 68), context.stateDigest) ||
+      payload[100] !== domains.length
+    )
+      throw new Error('Public session checkpoint context changed');
+    owner.profile = `0x${Buffer.from(payload.subarray(68, 100)).toString(
+      'hex'
+    )}`;
+    let offset = CHECKPOINT_FIXED_BYTES;
+    for (const domain of domains) {
+      const length = payload[offset++];
+      if (
+        length !== domain.length ||
+        offset + length + 32 > payload.length ||
+        !sameBytes(
+          payload.subarray(offset, offset + length),
+          encoder.encode(domain)
+        )
+      )
+        throw new Error('Public session checkpoint domains changed');
+      offset += length;
+      material = new Uint8Array(payload.subarray(offset, offset + 32));
+      offset += 32;
+      const key = await cryptoProvider().subtle.importKey(
+        'raw',
+        bufferSource(material),
+        { name: 'AES-GCM' },
+        false,
+        ['encrypt', 'decrypt']
+      );
+      material.fill(0);
+      material = undefined;
+      guard();
+      owner.keys.set(domain, key);
+    }
+    if (offset !== payload.length)
+      throw new Error('Invalid public session checkpoint');
+    guard();
+    return bindRecordAccess(owner);
+  } catch (error) {
+    owner.active = false;
+    owner.keys.clear();
+    throw error;
+  } finally {
+    payload?.fill(0);
+    material?.fill(0);
   }
 }

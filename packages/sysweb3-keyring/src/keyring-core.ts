@@ -39,6 +39,8 @@ import {
 import { takeKeyringHostBinding } from './keyring-host';
 import {
   decryptPrivateRecordBytes,
+  sealPublicRecordCheckpoint,
+  restorePublicRecordCheckpoint,
   encryptPrivateRecordBytes,
   privateRecordProfileId,
   createPrivateRecordAccess,
@@ -52,6 +54,13 @@ import {
   IEncryptedPrivateRecord,
   IEncryptPrivateRecordParams,
 } from './private-records';
+import {
+  capturePublicSessionRequest,
+  capturePublicSessionCheckpoint,
+  publicSessionStateDigest,
+  PublicSessionCheckpointRequest,
+  PublicSessionRestoreRequest,
+} from './public-session';
 import { getSyscoinSigners, SyscoinHDSigner } from './signers';
 import { snapshotEvmHdIndex } from './software-hd-account';
 import { decryptCurrentVault, VaultAuthenticationError } from './storage-core';
@@ -803,6 +812,233 @@ export class KeyringCore<
       }
       retire();
       authority.signal.removeEventListener('abort', retire);
+      if (this.secretOperation === operation) this.secretOperation = undefined;
+    }
+  }
+
+  /** Seal a host-validated immutable public manifest from a currently authorized secret session. */
+  public async createPublicSessionCheckpoint(
+    input: PublicSessionCheckpointRequest,
+    assertCurrent: () => void
+  ): Promise<IEncryptedPrivateRecord> {
+    this.assertSecretAccess();
+    const request = capturePublicSessionRequest(input);
+    const session = this.privateRecordSession();
+    const password = this.sessionPassword;
+    const readPair = this.storage.readDeviceUnlockVaultPair;
+    if (!password || typeof readPair !== 'function') {
+      session.secret.fill(0);
+      throw new Error('Public session requires atomic wallet storage');
+    }
+    const check = () => {
+      this.assertSecretAccess();
+      session.assertCurrent();
+      assertHardwareOperationCurrent(assertCurrent);
+      this.assertSecretAccess();
+      session.assertCurrent();
+    };
+    let wrappingSecret: Uint8Array | undefined;
+    try {
+      check();
+      const pair = await readCurrentVaultPair(readPair.bind(this.storage));
+      check();
+      if (!pair) throw new Error('Public session wallet is unavailable');
+      wrappingSecret = this.hexToBytes(password.toString());
+      // A checkpoint must never attest a different pair using an old live root.
+      const payload = await decryptCurrentVault(
+        pair.vault,
+        password.toString()
+      );
+      check();
+      if (
+        !payload ||
+        typeof payload !== 'object' ||
+        Object.getOwnPropertyDescriptor(payload, 'mnemonic')?.value?.normalize(
+          'NFKD'
+        ) !== new TextDecoder().decode(session.secret)
+      )
+        throw new Error('Public session wallet changed');
+      const digest = await publicSessionStateDigest(request.publicState, check);
+      const checkpoint = await sealPublicRecordCheckpoint(
+        session.secret,
+        wrappingSecret,
+        {
+          walletBindingId: request.walletBindingId,
+          pairFingerprint: pair.pairFingerprint,
+          stateDigest: digest,
+          domains: request.recordDomains,
+        },
+        check
+      );
+      const current = await readCurrentVaultPair(readPair.bind(this.storage));
+      check();
+      if (
+        !current ||
+        current.vault !== pair.vault ||
+        current.salt !== pair.salt ||
+        current.pairFingerprint !== pair.pairFingerprint
+      )
+        throw new Error('Public session wallet changed');
+      return checkpoint;
+    } finally {
+      session.secret.fill(0);
+      wrappingSecret?.fill(0);
+      request.publicState.fill(0);
+    }
+  }
+
+  /** Restore only authenticated public state and record keys. Never decrypts the vault. */
+  public async restorePublicSession<T>(
+    credential: SecretOperationCredentialPort,
+    input: PublicSessionRestoreRequest,
+    options: SecretOperationOptions,
+    work: (authenticatedPublicState: Uint8Array) => T | Promise<T>
+  ): Promise<T> {
+    if (this.secretLifetime !== 'operation')
+      throw new Error('Operation secret policy is required');
+    if (this.secretOperation || this.hasPublicSession() || this.isUnlocked())
+      throw new Error('Public session restore requires a locked wallet');
+    if (
+      !credential ||
+      typeof credential.withSecret !== 'function' ||
+      typeof work !== 'function'
+    )
+      throw new TypeError('Invalid public session restore');
+    const readPair = this.storage.readDeviceUnlockVaultPair;
+    if (typeof readPair !== 'function')
+      throw new Error('Public session requires atomic wallet storage');
+    const withSecret = credential.withSecret.bind(credential);
+    const request = capturePublicSessionRequest(input);
+    const checkpoint = capturePublicSessionCheckpoint(input);
+    const authority = captureHardwareTransactionAuthority(options);
+    const initialGuard = this.#captureSessionGuard();
+    let publicGuard: (() => void) | undefined;
+    const operation: SecretOperation = {
+      active: true,
+      working: false,
+      assertCurrent: () => {
+        if (
+          !operation.active ||
+          this.secretOperation !== operation ||
+          authority.signal.aborted
+        )
+          throw new Error('Public session restore cancelled');
+        (publicGuard ?? initialGuard)();
+        authority.assertCurrent();
+        if (
+          !operation.active ||
+          this.secretOperation !== operation ||
+          authority.signal.aborted
+        )
+          throw new Error('Public session restore cancelled');
+        (publicGuard ?? initialGuard)();
+      },
+    };
+    const check = operation.assertCurrent;
+    let restored: IPrivateRecordAccess | undefined;
+    let succeeded = false,
+      entered = false,
+      completed = false;
+    let pending: Promise<void> | undefined, result!: T;
+    const retire = () => {
+      operation.active = false;
+      if (this.secretOperation !== operation) return;
+      this.clearRecordAccess();
+      this.publicSession = false;
+      this.publicSessionRevision++;
+      this.clearSecretMaterial(false);
+    };
+    this.secretOperation = operation;
+    authority.signal.addEventListener('abort', retire, { once: true });
+    try {
+      check();
+      const pair = await readCurrentVaultPair(readPair.bind(this.storage));
+      check();
+      if (!pair) throw new Error('Public session wallet is unavailable');
+      const checkPair = async () => {
+        const current = await readCurrentVaultPair(readPair.bind(this.storage));
+        check();
+        if (
+          !current ||
+          current.vault !== pair.vault ||
+          current.salt !== pair.salt ||
+          current.pairFingerprint !== pair.pairFingerprint
+        )
+          throw new Error('Public session wallet changed');
+      };
+      const digest = await publicSessionStateDigest(request.publicState, check);
+      await withSecret(check, (secret) => {
+        if (entered) {
+          const rejected = Promise.reject(
+            new Error('Public session credential was already consumed')
+          );
+          void rejected.catch(() => undefined);
+          return rejected;
+        }
+        entered = true;
+        pending = (async () => {
+          let wrappingSecret: Uint8Array | undefined;
+          try {
+            check();
+            if (typeof secret !== 'string' || !secret)
+              throw new TypeError('Invalid public session credential');
+            wrappingSecret = this.hexToBytes(
+              await this.deriveStoredSessionKey(secret, { salt: pair.salt })
+            );
+            check();
+            restored = await restorePublicRecordCheckpoint(
+              wrappingSecret,
+              checkpoint,
+              {
+                walletBindingId: request.walletBindingId,
+                pairFingerprint: pair.pairFingerprint,
+                stateDigest: digest,
+                domains: request.recordDomains,
+              },
+              () => (publicGuard ? publicGuard() : check()),
+              this.#recordAccessOwner
+            );
+            wrappingSecret.fill(0);
+            wrappingSecret = undefined;
+            await checkPair();
+            this.clearRecordAccess();
+            this.publicSession = true;
+            this.publicSessionRevision++;
+            this.#sessionOwnership.tracker.current =
+              this.#sessionOwnership.token;
+            this.#sessionOwnership.tracker.epoch++;
+            publicGuard = this.#capturePublicSessionGuard();
+            this.#recordAccess.add(restored);
+            check();
+            // Recreate only the public transaction wrapper retired by lockWallet.
+            this.syscoinTransaction = this.createSyscoinTransactions();
+            result = await work(request.publicState);
+            check();
+            await checkPair();
+            completed = true;
+          } finally {
+            wrappingSecret?.fill(0);
+          }
+        })();
+        void pending.catch(() => undefined);
+        return pending;
+      });
+      if (pending) await pending;
+      check();
+      if (!entered || !completed)
+        throw new Error('Public session credential was not consumed');
+      succeeded = true;
+      return result;
+    } finally {
+      authority.signal.removeEventListener('abort', retire);
+      request.publicState.fill(0);
+      if (!succeeded) {
+        restored?.dispose();
+        retire();
+      } else {
+        operation.active = false;
+        this.clearSecretMaterial(true);
+      }
       if (this.secretOperation === operation) this.secretOperation = undefined;
     }
   }
