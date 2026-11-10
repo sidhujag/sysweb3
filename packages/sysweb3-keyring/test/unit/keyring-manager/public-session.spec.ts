@@ -510,3 +510,81 @@ it('fails closed when the atomic pair changes during guarded public hydration', 
     await f.ring.destroy();
   }
 });
+
+it('rejects a restore when its initial host guard synchronously locks the wallet', async () => {
+  const f = await fixture();
+  const consumed = jest.fn(credential.withSecret);
+  const delivered = jest.fn();
+  let locked: Promise<void> | undefined;
+  try {
+    await expect(
+      f.ring.restorePublicSession(
+        { withSecret: consumed },
+        { ...f.request, checkpoint: f.checkpoint },
+        {
+          signal: new AbortController().signal,
+          assertCurrent() {
+            locked ??= f.ring.lockWallet();
+          },
+        },
+        delivered
+      )
+    ).rejects.toThrow();
+    await locked;
+    expect(consumed).not.toHaveBeenCalled();
+    expect(delivered).not.toHaveBeenCalled();
+    expect(f.ring.hasPublicSession()).toBe(false);
+    expect(f.ring.isUnlocked()).toBe(false);
+  } finally {
+    await locked;
+    await f.ring.destroy();
+  }
+});
+
+it.each(['restore', 'secret'] as const)(
+  'does not replace the %s operation admitted by its initial host guard',
+  async (kind) => {
+    const f = await fixture();
+    const consumed = jest.fn(credential.withSecret),
+      delivered = jest.fn();
+    let nested: Promise<string> | undefined;
+    try {
+      const outer = f.ring.restorePublicSession(
+        { withSecret: consumed },
+        { ...f.request, checkpoint: f.checkpoint },
+        {
+          signal: new AbortController().signal,
+          assertCurrent() {
+            if (!nested) {
+              nested =
+                kind === 'restore'
+                  ? f.ring.restorePublicSession(
+                      credential,
+                      { ...f.request, checkpoint: f.checkpoint },
+                      options(),
+                      () => 'winner'
+                    )
+                  : f.ring.withSecretOperation(
+                      credential,
+                      options(),
+                      async () => 'winner'
+                    );
+              void nested.catch(() => undefined);
+            }
+          },
+        },
+        delivered
+      );
+      await expect(outer).rejects.toThrow();
+      expect(nested).toBeDefined();
+      expect(await nested).toBe('winner');
+      expect(consumed).not.toHaveBeenCalled();
+      expect(delivered).not.toHaveBeenCalled();
+      expect(f.ring.hasPublicSession()).toBe(true);
+      expect(f.ring.isUnlocked()).toBe(false);
+    } finally {
+      await nested?.catch(() => undefined);
+      await f.ring.destroy();
+    }
+  }
+);

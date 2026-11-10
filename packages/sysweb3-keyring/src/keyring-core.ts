@@ -896,6 +896,9 @@ export class KeyringCore<
   ): Promise<T> {
     if (this.secretLifetime !== 'operation')
       throw new Error('Operation secret policy is required');
+    // Capture cancellation before any caller-controlled property or guard runs.
+    const initialGuard = this.#captureSessionGuard();
+    initialGuard();
     if (this.secretOperation || this.hasPublicSession() || this.isUnlocked())
       throw new Error('Public session restore requires a locked wallet');
     if (
@@ -911,7 +914,10 @@ export class KeyringCore<
     const request = capturePublicSessionRequest(input);
     const checkpoint = capturePublicSessionCheckpoint(input);
     const authority = captureHardwareTransactionAuthority(options);
-    const initialGuard = this.#captureSessionGuard();
+    initialGuard();
+    // A reentrant host guard may have admitted a different operation.
+    if (this.secretOperation || this.hasPublicSession() || this.isUnlocked())
+      throw new Error('Public session restore requires a locked wallet');
     let publicGuard: (() => void) | undefined;
     const operation: SecretOperation = {
       active: true,
