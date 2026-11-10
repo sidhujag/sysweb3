@@ -817,3 +817,40 @@ it('record capabilities do not trust an overridden public-session guard', async 
     await target.destroy();
   }
 });
+
+it('refuses work when the host guard synchronously aborts immediately before the callback', async () => {
+  const f = fixture();
+  await f.initialize();
+  const abort = new AbortController();
+  let authenticated = false,
+    afterAuthentication = 0;
+  const unlockSession = (f.keyring as any).unlockSession.bind(f.keyring);
+  const unlock = jest
+    .spyOn(f.keyring as any, 'unlockSession')
+    .mockImplementation(async (...args) => {
+      const result = await unlockSession(...args);
+      authenticated = true;
+      return result;
+    });
+  const work = jest.fn();
+  try {
+    await expect(
+      f.keyring.withSecretOperation(
+        port,
+        {
+          signal: abort.signal,
+          assertCurrent() {
+            if (authenticated && ++afterAuthentication === 2) abort.abort();
+          },
+        },
+        work
+      )
+    ).rejects.toThrow();
+    expect(work).not.toHaveBeenCalled();
+    noBuffers(f.keyring);
+    expect(f.keyring.hasPublicSession()).toBe(true);
+  } finally {
+    unlock.mockRestore();
+    await f.keyring.destroy();
+  }
+});
