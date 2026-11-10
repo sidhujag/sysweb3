@@ -76,7 +76,11 @@ export function createKeyringHost(
   return host;
 }
 
+export type SecretLifetimePolicy = 'session' | 'operation';
+
 export type KeyringOptions = {
+  /** Session is the existing extension policy. Mobile must explicitly select operation. */
+  secretLifetime?: SecretLifetimePolicy;
   captureEvmSubmission: CaptureEvmSubmission | null;
   receiveDeviceUnlock?(controls: DeviceUnlockControls): void;
 };
@@ -89,6 +93,7 @@ export interface KeyringHostBinding {
 type PreparedHost = Omit<BoundHost, 'deviceUnlockPort'> & {
   authority: KeyringHost;
   captureEvmSubmission: CaptureEvmSubmission | null;
+  secretLifetime: SecretLifetimePolicy;
   deviceUnlock?: {
     port: DeviceUnlockPort;
     receive(controls: DeviceUnlockControls): void;
@@ -114,7 +119,13 @@ export function prepareKeyringHost(host: KeyringHost, options: KeyringOptions) {
   const bound = hosts.get(host);
   if (!bound) throw new TypeError('Invalid keyring host');
   const { deviceUnlockPort, ...storage } = bound;
-  const { captureEvmSubmission, receiveDeviceUnlock } = options ?? {};
+  const {
+    captureEvmSubmission,
+    receiveDeviceUnlock,
+    secretLifetime = 'session',
+  } = options ?? {};
+  if (secretLifetime !== 'session' && secretLifetime !== 'operation')
+    throw new TypeError('Invalid keyring secret lifetime policy');
   if (
     captureEvmSubmission !== null &&
     typeof captureEvmSubmission !== 'function'
@@ -122,7 +133,12 @@ export function prepareKeyringHost(host: KeyringHost, options: KeyringOptions) {
     throw new TypeError(
       'Keyring host requires an explicit EVM submission capability'
     );
-  const dependencies = { ...storage, authority: host, captureEvmSubmission };
+  const dependencies = {
+    ...storage,
+    authority: host,
+    captureEvmSubmission,
+    secretLifetime,
+  };
   if (receiveDeviceUnlock === undefined)
     return { binding: bindHost(dependencies) };
   if (!deviceUnlockPort || typeof receiveDeviceUnlock !== 'function')

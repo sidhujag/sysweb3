@@ -67,3 +67,9 @@ export type {
   KeyringTrezorSigner,
   PreparedSessionTransfer,
 } from './keyring-core';
+
+export type {
+  SecretOperationCredentialPort,
+  SecretOperationOptions,
+} from './keyring-core';
+export type { SecretLifetimePolicy } from './keyring-host';
