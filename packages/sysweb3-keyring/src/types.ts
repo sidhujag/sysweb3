@@ -179,7 +179,8 @@ export interface IEthereumTransactions {
   signTypedData: (
     addr: string,
     typedData: TypedDataV1 | TypedMessage<any>,
-    version: SignTypedDataVersion
+    version: SignTypedDataVersion,
+    authority: import('./hardware-transaction-authority').HardwareTransactionAuthority
   ) => Promise<string>;
 
   importAccount: (mnemonicOrPrivKey: string) => EvmLocalAccount;
@@ -216,7 +217,10 @@ export interface IEthereumTransactions {
     error?: boolean;
   }>;
 
-  signPersonalMessage: (params: string[]) => Promise<string>;
+  signPersonalMessage: (
+    params: string[],
+    authority: import('./hardware-transaction-authority').HardwareTransactionAuthority
+  ) => Promise<string>;
   verifyTypedSignature: (
     data: TypedDataV1 | TypedMessage<any>,
     signature: string,

@@ -1,11 +1,6 @@
 /* eslint-disable camelcase */
 import { verify } from '@bitcoinerlab/secp256k1';
-import {
-  TypedDataUtils,
-  TypedMessage,
-  SignTypedDataVersion,
-  TypedDataV1,
-} from '@metamask/eth-sig-util';
+import { TypedDataUtils, SignTypedDataVersion } from '@metamask/eth-sig-util';
 import bitcoinops from 'bitcoin-ops';
 import { Psbt } from 'bitcoinjs-lib';
 import bs58check from 'bs58check';
@@ -13,6 +8,7 @@ import { Buffer } from 'buffer';
 import * as syscoinjs from 'syscoinjs-lib';
 
 import { trezorResponseError } from './connect';
+import { captureHardwareSigningData } from '../hardware-signing-data';
 import { serializeWitness } from './witness';
 import {
   assertHardwareOperationCurrent,
@@ -27,7 +23,8 @@ import {
 } from '../utils/derivation-paths';
 
 import type { HardwareTransactionAuthority } from '../hardware-transaction-authority';
-import type { TrezorConnection } from './connect';
+import type { TrezorConnection, TrezorSigningSession } from './connect';
+import type { LedgerTypedData } from '../ledger/host-types';
 import type {
   AccountInfo,
   CoinSymbol,
@@ -76,15 +73,6 @@ const finalizedFields = (input: any) => {
 export interface TrezorControllerState {
   hdPath: string;
   paths: Record<string, number>;
-}
-
-interface MessageTypeProperty {
-  name: string;
-  type: string;
-}
-interface MessageTypes {
-  [additionalProperties: string]: MessageTypeProperty[];
-  EIP712Domain: MessageTypeProperty[];
 }
 
 export class TrezorKeyring {
@@ -182,18 +170,43 @@ export class TrezorKeyring {
     return result;
   }
 
+  private async initSigning(
+    session: TrezorSigningSession,
+    assertCurrent: () => void
+  ): Promise<boolean> {
+    assertHardwareOperationCurrent(assertCurrent);
+    this.retirementEpoch++;
+    const generation = this.lifecycleGeneration;
+    this.observeTrezor();
+    if (this.initialized) return true;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assertHardwareOperationCurrent(assertCurrent);
+    if (generation !== this.lifecycleGeneration) return false;
+    const result = await this.hardwareWalletManager.initializeTrezorOwned(
+      session,
+      assertCurrent
+    );
+    assertHardwareOperationCurrent(assertCurrent);
+    if (generation !== this.lifecycleGeneration) return false;
+    if (result) this.initialized = true;
+    return result;
+  }
+
   /**
    * Execute operation with automatic retry
    */
   private async executeWithRetry<T>(
     operation: () => Promise<T>,
     operationName: string,
-    assertCurrent?: () => void
+    assertCurrent?: () => void,
+    owned?: TrezorSigningSession
   ): Promise<T> {
     assertCurrent?.();
     // Ensure initialization first
     if (!this.initialized) {
-      const initResult = await this.init(assertCurrent);
+      const initResult = owned
+        ? await this.initSigning(owned, assertCurrent!)
+        : await this.init(assertCurrent);
       assertCurrent?.();
       if (!initResult) {
         throw new Error('Failed to initialize Trezor');
@@ -210,8 +223,23 @@ export class TrezorKeyring {
 
     // Use hardware wallet manager's retry mechanism with custom config
     return this.hardwareWalletManager
-      .retryOperation(operation, operationName, trezorRetryConfig)
+      .retryOperation(
+        async () => {
+          if (assertCurrent) assertHardwareOperationCurrent(assertCurrent);
+          try {
+            const result = await operation();
+            if (assertCurrent) assertHardwareOperationCurrent(assertCurrent);
+            return result;
+          } catch (error) {
+            if (assertCurrent) assertHardwareOperationCurrent(assertCurrent);
+            throw error;
+          }
+        },
+        operationName,
+        trezorRetryConfig
+      )
       .catch(async (error) => {
+        if (assertCurrent) assertHardwareOperationCurrent(assertCurrent);
         // Clean up Trezor state on failure
         const message = String(error.message || '').toLowerCase();
         if (
@@ -223,7 +251,8 @@ export class TrezorKeyring {
           this.initialized = false;
           // Dispose Trezor connection to clean up
           try {
-            await this.connection.dispose();
+            await (owned ? owned.dispose() : this.connection.dispose());
+            if (assertCurrent) assertHardwareOperationCurrent(assertCurrent);
           } catch (disposeError) {
             console.log('Failed to dispose Trezor on error:', disposeError);
           }
@@ -493,21 +522,21 @@ export class TrezorKeyring {
     const approvedSighashTypes = candidate.data.inputs.map(
       (input) => input.sighashType ?? 0x01
     );
-    const payload = await this.executeWithRetry(
-      async () => {
-        assertCurrent();
-        const response = await this.connection.signTransactionOwned(
-          utxoTransaction,
-          owner
-        );
-        assertCurrent();
-        if (!response.success) {
-          throw trezorResponseError(response, 'Trezor sign failed: ');
-        }
-        return response.payload;
-      },
-      'signUtxoTransaction',
-      assertCurrent
+    const payload = await this.connection.withOwnedSigning(owner, (session) =>
+      this.executeWithRetry(
+        async () => {
+          assertCurrent();
+          const response = await session.signTransaction(utxoTransaction);
+          assertCurrent();
+          if (!response.success) {
+            throw trezorResponseError(response, 'Trezor sign failed: ');
+          }
+          return response.payload;
+        },
+        'signUtxoTransaction',
+        assertCurrent,
+        session
+      )
     );
     assertCurrent();
 
@@ -906,34 +935,34 @@ export class TrezorKeyring {
     authority: HardwareTransactionAuthority
   ) {
     const owner = captureHardwareTransactionAuthority(authority);
-    return this.executeWithRetry(
-      async () => {
-        owner.assertCurrent();
-        // Wait between popups
-        await new Promise((resolve) =>
-          setTimeout(resolve, DELAY_BETWEEN_POPUPS)
-        );
-        owner.assertCurrent();
-
-        // Use dynamic path generation based on actual network parameters
-        this.setHdPath(coin, Number(index) || 0, slip44);
-        const request = { path: this.hdPath, transaction: tx };
-
-        try {
-          const response = await this.connection.ethereumSignTransactionOwned(
-            request,
-            owner
+    return this.connection.withOwnedSigning(owner, (session) =>
+      this.executeWithRetry(
+        async () => {
+          owner.assertCurrent();
+          // Wait between popups
+          await new Promise((resolve) =>
+            setTimeout(resolve, DELAY_BETWEEN_POPUPS)
           );
           owner.assertCurrent();
-          if (response.success) return response;
-          throw trezorResponseError(response);
-        } catch (error) {
-          owner.assertCurrent();
-          throw error;
-        }
-      },
-      'signEthTransaction',
-      owner.assertCurrent
+
+          // Use dynamic path generation based on actual network parameters
+          this.setHdPath(coin, Number(index) || 0, slip44);
+          const request = { path: this.hdPath, transaction: tx };
+
+          try {
+            const response = await session.ethereumSignTransaction(request);
+            owner.assertCurrent();
+            if (response.success) return response;
+            throw trezorResponseError(response);
+          } catch (error) {
+            owner.assertCurrent();
+            throw error;
+          }
+        },
+        'signEthTransaction',
+        owner.assertCurrent,
+        session
+      )
     );
   }
 
@@ -947,106 +976,70 @@ export class TrezorKeyring {
    * @returns signature object
    */
 
-  public async signMessage({
-    index,
-    message,
-    coin,
-    slip44,
-    address,
-  }: {
-    address: string;
-    coin: string;
-    index?: number;
-    message?: string;
-    slip44: number; // Required, not optional
-  }) {
-    return this.executeWithRetry(async () => {
-      // Wait between popups
-      await new Promise((resolve) => setTimeout(resolve, DELAY_BETWEEN_POPUPS));
-
-      if (isEvmCoin(coin, slip44) && `${index ? index : 0}` && message) {
-        return this._signEthPersonalMessage(Number(index), message, address);
-      }
-      return this._signUtxoPersonalMessage({ coin, index, slip44, message });
-    }, 'signMessage');
-  }
-
-  private async _signUtxoPersonalMessage({
-    coin,
-    index,
-    slip44,
-    message,
-  }: {
-    coin: string;
-    index?: number;
-    slip44: number;
-    message?: string;
-  }) {
-    try {
-      if (typeof message !== 'string')
-        throw new Error('Message must be a string');
-      // Use dynamic path generation instead of hardcoded switch
-      this.setHdPath(coin, index || 0, slip44);
-      const { success, payload } = await this.connection.signMessage({
-        path: this.hdPath,
-        coin: coin as CoinSymbol,
-        message,
-      });
-
-      if (success) {
-        return { success, payload };
-      }
-      return { success: false, payload };
-    } catch (error) {
-      return { error };
-    }
-  }
-
-  // For personal_sign, we need to prefix the message:
-  private async _signEthPersonalMessage(
-    index: number,
-    message: string,
-    address: string
+  public async signMessage(
+    request: {
+      address: string;
+      coin: string;
+      index: number;
+      message: string;
+      slip44: number;
+    },
+    authority: HardwareTransactionAuthority
   ) {
-    return new Promise((resolve, reject) => {
-      setTimeout(async () => {
-        try {
-          this.setHdPath('eth', index, 60);
-
-          this.connection
-            .ethereumSignMessage({
-              path: this.hdPath,
+    const owner = captureHardwareTransactionAuthority(authority);
+    const { address, coin, index, message, slip44 } = request;
+    if (
+      typeof address !== 'string' ||
+      typeof coin !== 'string' ||
+      typeof message !== 'string'
+    )
+      throw new Error('Invalid message signing request');
+    const path = isEvmCoin(coin, slip44)
+      ? getAddressDerivationPath(coin, slip44, 0, false, index)
+      : getAccountDerivationPath(coin, slip44, index);
+    return this.connection.withOwnedSigning(owner, (session) =>
+      this.executeWithRetry(
+        async () => {
+          owner.assertCurrent();
+          await new Promise((resolve) =>
+            setTimeout(resolve, DELAY_BETWEEN_POPUPS)
+          );
+          owner.assertCurrent();
+          if (isEvmCoin(coin, slip44)) {
+            // Preserve the established spacing between initialization and personal approval.
+            await new Promise((resolve) =>
+              setTimeout(resolve, DELAY_BETWEEN_POPUPS)
+            );
+            owner.assertCurrent();
+            const response = await session.ethereumSignMessage({
+              path,
               message: stripHexPrefix(message),
               hex: true,
-            })
-            .then((response: any) => {
-              if (response.success) {
-                if (
-                  address &&
-                  response.payload.address.toLowerCase() !==
-                    address.toLowerCase()
-                ) {
-                  reject(new Error('signature doesnt match the right address'));
-                }
-                const signature = `0x${response.payload.signature}`;
-                resolve({ signature, success: true });
-              } else {
-                reject(
-                  // @ts-ignore
-                  trezorResponseError(response)
-                );
-              }
-            })
-            .catch((e: any) => {
-              reject(e instanceof Error ? e : new Error(String(e)));
             });
-        } catch (error) {
-          reject(error);
-        }
-        // This is necessary to avoid popup collision
-        // between the unlock & sign trezor popups
-      }, DELAY_BETWEEN_POPUPS);
-    });
+            owner.assertCurrent();
+            if (!response.success) throw trezorResponseError(response);
+            if (
+              response.payload.address.toLowerCase() !== address.toLowerCase()
+            )
+              throw new Error('signature doesnt match the right address');
+            return {
+              signature: `0x${response.payload.signature}`,
+              success: true,
+            };
+          }
+          const response = await session.signMessage({
+            path,
+            coin: coin as CoinSymbol,
+            message,
+          });
+          owner.assertCurrent();
+          return response;
+        },
+        'signMessage',
+        owner.assertCurrent,
+        session
+      )
+    );
   }
   private _sanitizeData(data: any): any {
     switch (Object.prototype.toString.call(data)) {
@@ -1069,8 +1062,8 @@ export class TrezorKeyring {
     }
   }
 
-  private _transformTypedData = <T extends MessageTypes>(
-    data: TypedMessage<T>,
+  private _transformTypedData = (
+    data: LedgerTypedData,
     version: SignTypedDataVersion
   ) => {
     const { types, primaryType, domain, message } = this._sanitizeData(data);
@@ -1103,77 +1096,75 @@ export class TrezorKeyring {
   /**
    * EIP-712 Sign Typed Data
    */
-  public async signTypedData({
-    version,
-    address,
-    data,
-    index,
-  }: {
-    address: string;
-    data: TypedMessage<any> | TypedDataV1;
-    index: number;
-    version: SignTypedDataVersion;
-  }) {
-    return this.executeWithRetry(async () => {
-      // Wait between popups
-      await new Promise((resolve) => setTimeout(resolve, DELAY_BETWEEN_POPUPS));
-
-      this.setHdPath('eth', index, 60);
-      // Use dynamic path generation for ETH (EVM) - typed data is only used for EVM
-
-      // V1 typed data is not supported by hardware wallets
-      if (version === SignTypedDataVersion.V1) {
-        throw new Error(
-          'Trezor: V1 typed data signing is not supported. Please use V3 or V4.'
-        );
-      }
-
-      const dataWithHashes = this._transformTypedData(
-        data as TypedMessage<any>,
-        version
+  public async signTypedData(
+    request: {
+      address: string;
+      data: LedgerTypedData;
+      index: number;
+      version: SignTypedDataVersion;
+    },
+    authority: HardwareTransactionAuthority
+  ) {
+    const owner = captureHardwareTransactionAuthority(authority);
+    const { version, address, index } = request;
+    if (
+      version !== SignTypedDataVersion.V3 &&
+      version !== SignTypedDataVersion.V4
+    )
+      throw new Error(
+        'Trezor: V1 typed data signing is not supported. Please use V3 or V4.'
       );
-
-      // set default values for signTypedData
-      // Trezor is stricter than @metamask/eth-sig-util in what it accepts
-      const {
-        types,
-        message = {},
-        domain = {},
-        primaryType,
-        // snake_case since Trezor uses Protobuf naming conventions here
-        domain_separator_hash, // eslint-disable-line camelcase
-        message_hash, // eslint-disable-line camelcase
-      } = dataWithHashes;
-
-      // This is necessary to avoid popup collision
-      // between the unlock & sign trezor popups
-
-      const response = await this.connection.ethereumSignTypedData({
-        path: this.hdPath,
-        data: {
-          types: {
-            ...types,
-            EIP712Domain: types.EIP712Domain ? types.EIP712Domain : [],
-          },
-          message,
-          domain,
-          primaryType: primaryType as any,
+    if (typeof address !== 'string' || !/^0x[0-9a-f]{40}$/i.test(address))
+      throw new Error('Invalid typed-data signer address');
+    const path = getAddressDerivationPath('eth', 60, 0, false, index);
+    const data = captureHardwareSigningData(
+      request.data,
+      () => new Error('Invalid typed signing request')
+    );
+    const {
+      types,
+      message = {},
+      domain = {},
+      primaryType,
+      domain_separator_hash,
+      message_hash,
+    } = this._transformTypedData(data, version);
+    const approved = Object.freeze({
+      path,
+      data: Object.freeze({
+        types: Object.freeze({
+          ...types,
+          EIP712Domain: types.EIP712Domain ?? [],
+        }),
+        message,
+        domain,
+        primaryType: primaryType as any,
+      }),
+      metamask_v4_compat: version === SignTypedDataVersion.V4,
+      domain_separator_hash,
+      message_hash: message_hash ?? '',
+    });
+    owner.assertCurrent();
+    return this.connection.withOwnedSigning(owner, (session) =>
+      this.executeWithRetry(
+        async () => {
+          owner.assertCurrent();
+          await new Promise((resolve) =>
+            setTimeout(resolve, DELAY_BETWEEN_POPUPS)
+          );
+          owner.assertCurrent();
+          const response = await session.ethereumSignTypedData(approved);
+          owner.assertCurrent();
+          if (!response.success) throw trezorResponseError(response);
+          if (address.toLowerCase() !== response.payload.address.toLowerCase())
+            throw new Error('signature doesnt match the right address');
+          return response.payload.signature;
         },
-        metamask_v4_compat: version === SignTypedDataVersion.V4,
-        // Trezor 1 only supports blindly signing hashes
-        domain_separator_hash,
-        message_hash: message_hash ? message_hash : '',
-      });
-
-      if (response.success) {
-        if (address !== response.payload.address) {
-          throw new Error('signature doesnt match the right address');
-        }
-        return response.payload.signature;
-      }
-      // @ts-ignore
-      throw trezorResponseError(response);
-    }, 'signTypedData');
+        'signTypedData',
+        owner.assertCurrent,
+        session
+      )
+    );
   }
 
   /**

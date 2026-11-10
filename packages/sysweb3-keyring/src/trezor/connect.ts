@@ -6,12 +6,23 @@ import type { TrezorCalls, TrezorHost, TrezorMethod } from './host-types';
 
 type Client = TrezorCalls;
 type TransactionMethod = 'ethereumSignTransaction' | 'signTransaction';
-type ForwardedMethod = Exclude<TrezorMethod, TransactionMethod>;
+type SigningMethod =
+  | TransactionMethod
+  | 'signMessage'
+  | 'ethereumSignMessage'
+  | 'ethereumSignTypedData';
+type ForwardedMethod = Exclude<TrezorMethod, SigningMethod>;
 const methods = TREZOR_METHODS.filter(
   (method): method is ForwardedMethod =>
-    method !== 'ethereumSignTransaction' && method !== 'signTransaction'
+    ![
+      'ethereumSignTransaction',
+      'signTransaction',
+      'signMessage',
+      'ethereumSignMessage',
+      'ethereumSignTypedData',
+    ].includes(method)
 );
-type Method = ForwardedMethod | TransactionMethod;
+type Method = TrezorMethod;
 type Compatible<T> = T extends { success: false }
   ? T & { payload: { error: string; code?: string } }
   : T;
@@ -30,7 +41,18 @@ type Calls = { [Name in ForwardedMethod]: CompatibleCall<Client[Name]> };
 export type ConnectionEvent =
   | { type: 'disconnected' }
   | { type: 'model'; model: string };
+export type TrezorSigningSession = {
+  [Name in SigningMethod]: CompatibleCall<Client[Name]>;
+} & {
+  init(): Promise<void>;
+  dispose(): Promise<void>;
+  getFeatures: CompatibleCall<Client['getFeatures']>;
+};
 export type TrezorConnection = Calls & {
+  withOwnedSigning<Result>(
+    authority: HardwareTransactionAuthority,
+    operation: (session: TrezorSigningSession) => Promise<Result>
+  ): Promise<Result>;
   ethereumSignTransactionOwned: (
     request: Parameters<Client['ethereumSignTransaction']>[0],
     authority: HardwareTransactionAuthority
@@ -66,6 +88,25 @@ export function createTrezorConnection(host: TrezorHost): TrezorConnection {
   let cleanupPromise = Promise.resolve();
   let cleanupPending = false;
   const inFlight = new Set<Promise<unknown>>();
+  type SigningScope = {
+    authority: HardwareTransactionAuthority;
+    generation: number;
+    closed: boolean;
+    calls: Set<Promise<unknown>>;
+  };
+  let signing: SigningScope | undefined;
+  const busy = () =>
+    Object.assign(
+      new Error('Previous Trezor signing request is still pending'),
+      { code: 'HARDWARE_SIGNER_BUSY' }
+    );
+  const checkSigning = (scope: SigningScope) => {
+    if (signing !== scope || scope.closed || scope.generation !== generation)
+      throw interrupted();
+    scope.authority.assertCurrent();
+    if (signing !== scope || scope.closed || scope.generation !== generation)
+      throw interrupted();
+  };
   const pending = new Set<(error: Error) => void>();
   const interrupted = () =>
     Object.assign(new Error('Trezor operation cancelled'), {
@@ -103,7 +144,11 @@ export function createTrezorConnection(host: TrezorHost): TrezorConnection {
   };
 
   /** Keep the SDK's established failure payload while preserving Connect 10 codes. */
-  const normalize = (response: any, method: Method): any => {
+  const normalize = (
+    response: any,
+    method: Method,
+    scope?: SigningScope
+  ): any => {
     if (response?.success === false) {
       const error = response.error;
       const code = typeof error?.code === 'string' ? error.code : undefined;
@@ -113,7 +158,15 @@ export function createTrezorConnection(host: TrezorHost): TrezorConnection {
         code === 'Desktop_ConnectionMissing' ||
         code === 'Transport_Missing'
       ) {
-        invalidate();
+        // This failure itself retires the connection, not the caller's approval.
+        // Preserve its typed error only for this exact still-owned invalidation.
+        const invalidated = invalidate();
+        if (scope) {
+          scope.authority.assertCurrent();
+          if (signing !== scope || scope.closed || generation !== invalidated)
+            throw interrupted();
+          scope.generation = invalidated;
+        }
       }
       return {
         ...response,
@@ -139,10 +192,14 @@ export function createTrezorConnection(host: TrezorHost): TrezorConnection {
       client: TrezorHost,
       assertCurrent: () => void
     ) => Promise<Result>,
-    requireInitialized = true
+    requireInitialized = true,
+    scope?: SigningScope
   ): Promise<Result> => {
     const captured = generation;
+    if (signing && signing !== scope) throw busy();
     const assertCurrent = () => {
+      if (scope) checkSigning(scope);
+      else if (signing) throw busy();
       if (captured !== generation) throw interrupted();
       if (requireInitialized && !initialized) {
         throw Object.assign(new Error('TrezorConnect not initialized'), {
@@ -157,6 +214,15 @@ export function createTrezorConnection(host: TrezorHost): TrezorConnection {
       rejectPending = reject;
     });
     pending.add(rejectPending);
+    const onAbort = () => {
+      try {
+        scope?.authority.assertCurrent();
+      } catch (error) {
+        rejectPending(error as Error);
+      }
+    };
+    scope?.authority.signal.addEventListener('abort', onAbort, { once: true });
+    let raw: Promise<Result> | undefined;
     try {
       const result = await Promise.race([
         (async () => {
@@ -164,7 +230,9 @@ export function createTrezorConnection(host: TrezorHost): TrezorConnection {
           assertCurrent();
           const client = await getClient();
           assertCurrent();
-          const request = Promise.resolve(operation(client, assertCurrent));
+          const request = (raw = Promise.resolve(
+            operation(client, assertCurrent)
+          ));
           inFlight.add(request);
           try {
             return await request;
@@ -179,6 +247,10 @@ export function createTrezorConnection(host: TrezorHost): TrezorConnection {
       return result;
     } finally {
       pending.delete(rejectPending);
+      scope?.authority.signal.removeEventListener('abort', onAbort);
+      // Cancellation cannot release an owned device invocation while its raw
+      // platform call still exists. A successor must wait for this drain.
+      if (scope && raw) await Promise.allSettled([raw]);
     }
   };
   const calls = Object.fromEntries(
@@ -198,78 +270,141 @@ export function createTrezorConnection(host: TrezorHost): TrezorConnection {
     ])
   ) as Calls;
 
-  async function signOwned<Result>(
-    method: TransactionMethod,
-    authority: HardwareTransactionAuthority,
-    call: (client: TrezorHost, assertCurrent: () => void) => Promise<Result>
-  ) {
-    const { assertCurrent } = captureHardwareTransactionAuthority(authority);
-    const captured = generation;
-    const response = await withClient((client, assertConnectionCurrent) => {
-      assertCurrent();
-      return call(client, () => {
-        assertConnectionCurrent();
-        assertCurrent();
-        assertConnectionCurrent();
-      });
-    });
-    assertCurrent();
-    if (captured !== generation) throw interrupted();
-    const normalized = normalize(response, method);
-    if (normalized?.success === true) {
-      assertCurrent();
-      if (captured !== generation) throw interrupted();
-    }
+  const invokeOwned = async <Name extends SigningMethod | 'getFeatures'>(
+    scope: SigningScope,
+    method: Name,
+    args: Parameters<Client[Name]>
+  ) => {
+    checkSigning(scope);
+    const response = await withClient(
+      (client, assertCurrent) =>
+        (client[method] as any)(assertCurrent, ...args),
+      true,
+      scope
+    );
+    checkSigning(scope);
+    const normalized = normalize(response, method, scope);
+    checkSigning(scope);
     return normalized;
+  };
+
+  async function initialize(scope?: SigningScope): Promise<void> {
+    if (scope) checkSigning(scope);
+    else if (signing) throw busy();
+    if (cleanupPending || initializing) throw busy();
+    const activeOwner = hostOwners.get(host);
+    if (activeOwner && activeOwner !== owner) throw busy();
+    hostOwners.set(host, owner);
+    initializing = true;
+    const captured = invalidate();
+    if (scope) scope.generation = captured;
+    try {
+      if (captured !== generation) throw interrupted();
+      await withClient(
+        (client, assertCurrent) => client.init(assertCurrent),
+        false,
+        scope
+      );
+      if (scope) checkSigning(scope);
+      if (captured !== generation) throw interrupted();
+      initialized = true;
+    } finally {
+      initializing = false;
+    }
   }
 
   const TrezorConnect: Omit<TrezorConnection, 'subscribe'> = {
     ...calls,
+    async withOwnedSigning<Result>(
+      authority: HardwareTransactionAuthority,
+      operation: (session: TrezorSigningSession) => Promise<Result>
+    ): Promise<Result> {
+      const captured = captureHardwareTransactionAuthority(authority);
+      if (
+        signing ||
+        cleanupPending ||
+        initializing ||
+        pending.size ||
+        inFlight.size
+      )
+        throw busy();
+      const scope: SigningScope = {
+        authority: captured,
+        generation,
+        closed: false,
+        calls: new Set(),
+      };
+      signing = scope;
+      const call = <Result>(operation: () => Promise<Result>) => {
+        checkSigning(scope);
+        const promise = operation();
+        scope.calls.add(promise);
+        void promise
+          .finally(() => scope.calls.delete(promise))
+          .catch(() => undefined);
+        return promise;
+      };
+      const session = Object.freeze({
+        ...Object.fromEntries(
+          [
+            'ethereumSignTransaction',
+            'signTransaction',
+            'signMessage',
+            'ethereumSignMessage',
+            'ethereumSignTypedData',
+            'getFeatures',
+          ].map((method) => [
+            method,
+            (...args: any[]) =>
+              call(() =>
+                invokeOwned(scope, method as SigningMethod, args as any)
+              ),
+          ])
+        ),
+        init: () => call(() => initialize(scope)),
+        dispose: () =>
+          call(async () => {
+            const disposal = TrezorConnect.dispose();
+            scope.generation = generation;
+            await (cleanupPending ? cleanupPromise : disposal);
+            checkSigning(scope);
+          }),
+      }) as TrezorSigningSession;
+      let succeeded = false;
+      try {
+        checkSigning(scope);
+        const result = await operation(session);
+        checkSigning(scope);
+        succeeded = true;
+        return result;
+      } finally {
+        scope.closed = true;
+        try {
+          await Promise.allSettled([...scope.calls]);
+          if (
+            !succeeded &&
+            signing === scope &&
+            scope.generation === generation
+          ) {
+            const disposal = TrezorConnect.dispose();
+            await (cleanupPending ? cleanupPromise : disposal);
+          } else if (cleanupPending) await cleanupPromise;
+        } finally {
+          if (signing === scope) signing = undefined;
+        }
+      }
+    },
     ethereumSignTransactionOwned(request, authority) {
-      return signOwned(
-        'ethereumSignTransaction',
-        authority,
-        (client, assertCurrent) =>
-          client.ethereumSignTransaction(assertCurrent, request)
+      return TrezorConnect.withOwnedSigning(authority, (session) =>
+        session.ethereumSignTransaction(request)
       );
     },
     signTransactionOwned(request, authority) {
-      return signOwned('signTransaction', authority, (client, assertCurrent) =>
-        client.signTransaction(assertCurrent, request)
+      return TrezorConnect.withOwnedSigning(authority, (session) =>
+        session.signTransaction(request)
       );
     },
-    async init(): Promise<void> {
-      if (cleanupPending || initializing) {
-        throw Object.assign(
-          new Error('Previous Trezor request is still pending'),
-          {
-            code: 'HARDWARE_SIGNER_BUSY',
-          }
-        );
-      }
-      const activeOwner = hostOwners.get(host);
-      if (activeOwner && activeOwner !== owner)
-        throw Object.assign(
-          new Error('Trezor host is owned by another connection'),
-          {
-            code: 'HARDWARE_SIGNER_BUSY',
-          }
-        );
-      hostOwners.set(host, owner);
-      initializing = true;
-      const captured = invalidate();
-      try {
-        if (captured !== generation) throw interrupted();
-        await withClient(
-          (client, assertCurrent) => client.init(assertCurrent),
-          false
-        );
-        if (captured !== generation) throw interrupted();
-        initialized = true;
-      } finally {
-        initializing = false;
-      }
-    },
+    init: () => initialize(),
     dispose(): Promise<void> {
       if (cleanupPending) {
         return inFlight.size ? Promise.resolve() : cleanupPromise;

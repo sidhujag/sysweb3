@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.10
+
+- Require current host authority and cancellation signals for personal, typed-data and raw-digest message signing. Hardware raw digests reject before device work; owned typed data is the supported hardware primitive.
+- Retain Trezor invocation ownership through initialization, retries and raw-call drain; release cancelled initialization state and preserve typed disconnect failures.
+- Share bounded immutable signing-data capture across software, Ledger and Trezor, including the Ledger host adapter.
+
 ## 2.1.9
 
 - Share canonical Trezor EVM signing across all six existing transaction paths and explicitly hosted native consumers. Preserve reviewed nonces, fees, access lists and account identity, with current-session checks before and after device signing.

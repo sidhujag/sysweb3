@@ -139,11 +139,14 @@ const submitted = await keyringManager.ethereumTransaction.sendFormattedTransact
   { mode: 'reviewed-native', assertCurrent: assertReviewCurrent }
 );
 
-// Sign message
-const signature = await keyringManager.ethereumTransaction.signPersonalMessage([
-  '0x48656c6c6f', // "Hello" in hex
-  accountAddress,
-]);
+// The host owns the reviewed account/network/session and revokes its authority
+// when that context changes or the approval is cancelled.
+async function signReviewedMessage(reviewedMessage, accountAddress, authority) {
+  return keyringManager.ethereumTransaction.signPersonalMessage(
+    [reviewedMessage, accountAddress],
+    authority // Required { assertCurrent, signal } from the active host approval.
+  );
+}
 ```
 
 ### Hardware Wallet Support

@@ -8,6 +8,11 @@ import { createTestKeyringHost } from '../../helpers/keyring-host';
 
 import type { LedgerHost } from '../../../src/ledger/host-types';
 
+const messageAuthority = () => ({
+  assertCurrent: () => undefined,
+  signal: new AbortController().signal,
+});
+
 const hostFixture = (): LedgerHost => ({
   connect: jest.fn(async () => undefined),
   disconnect: jest.fn(async () => undefined),
@@ -259,11 +264,14 @@ test.each(['', '00ff80', Buffer.from('Pali 💚').toString('hex')])(
   async (message) => {
     const { ledger } = cryptoHost();
     await expect(
-      ledger.evm.signPersonalMessage({
-        accountIndex: 0,
-        expectedAddress: signingWallet.address,
-        message,
-      })
+      ledger.evm.signPersonalMessage(
+        {
+          accountIndex: 0,
+          expectedAddress: signingWallet.address,
+          message,
+        },
+        messageAuthority()
+      )
     ).resolves.toBe(
       await signingWallet.signMessage(Buffer.from(message, 'hex'))
     );
@@ -285,11 +293,14 @@ test.each(['wrong-account', 'wrong-bytes'])(
       ).serialized
     );
     await expect(
-      ledger.evm.signPersonalMessage({
-        accountIndex: 0,
-        expectedAddress: signingWallet.address,
-        message: 'ff',
-      })
+      ledger.evm.signPersonalMessage(
+        {
+          accountIndex: 0,
+          expectedAddress: signingWallet.address,
+          message: 'ff',
+        },
+        messageAuthority()
+      )
     ).rejects.toMatchObject({ code: 'LEDGER_INVALID_SIGNATURE' });
   }
 );
@@ -300,12 +311,15 @@ test.each([SignTypedDataVersion.V3, SignTypedDataVersion.V4])(
     const { host, ledger } = cryptoHost();
     const data = typed();
     await expect(
-      ledger.evm.signTypedData({
-        accountIndex: 0,
-        expectedAddress: signingWallet.address,
-        version,
-        data,
-      })
+      ledger.evm.signTypedData(
+        {
+          accountIndex: 0,
+          expectedAddress: signingWallet.address,
+          version,
+          data,
+        },
+        messageAuthority()
+      )
     ).resolves.toBe(
       signingWallet.signingKey.sign(typedHash(data, version)).serialized
     );
@@ -315,12 +329,15 @@ test.each([SignTypedDataVersion.V3, SignTypedDataVersion.V4])(
       ).serialized
     );
     await expect(
-      ledger.evm.signTypedData({
-        accountIndex: 0,
-        expectedAddress: signingWallet.address,
-        version,
-        data,
-      })
+      ledger.evm.signTypedData(
+        {
+          accountIndex: 0,
+          expectedAddress: signingWallet.address,
+          version,
+          data,
+        },
+        messageAuthority()
+      )
     ).rejects.toMatchObject({ code: 'LEDGER_INVALID_SIGNATURE' });
   }
 );
@@ -336,12 +353,15 @@ test('captures typed data before pending connection and exposes no mutable appro
       })
   );
   const data = typed();
-  const pending = ledger.evm.signTypedData({
-    accountIndex: 0,
-    expectedAddress: signingWallet.address,
-    version: SignTypedDataVersion.V4,
-    data,
-  });
+  const pending = ledger.evm.signTypedData(
+    {
+      accountIndex: 0,
+      expectedAddress: signingWallet.address,
+      version: SignTypedDataVersion.V4,
+      data,
+    },
+    messageAuthority()
+  );
   data.message.value = 'changed after request';
   complete();
   await pending;
@@ -387,7 +407,7 @@ test.each(['signPsbt', 'signUtxoMessage'] as const)(
             assertCurrent: () => undefined,
             signal,
           })
-        : ledger.signUtxoMessage(request as any);
+        : ledger.signUtxoMessage(request as any, messageAuthority());
     Object.assign(request, {
       currency: 'BTC',
       slip44: 0,
@@ -405,7 +425,14 @@ test.each(['signPsbt', 'signUtxoMessage'] as const)(
         assertCurrent: expect.any(Function),
         signal,
       });
-    else expect(sign).toHaveBeenCalledWith(expected);
+    else
+      expect(sign).toHaveBeenCalledWith(
+        expected,
+        expect.objectContaining({
+          assertCurrent: expect.any(Function),
+          signal: expect.any(AbortSignal),
+        })
+      );
     expect(Object.isFrozen(sign.mock.calls[0][0])).toBe(true);
   }
 );
@@ -462,11 +489,14 @@ test('discards a queued valid personal signature after synchronous destruction',
       complete = resolve;
     })
   );
-  const pending = ledger.evm.signPersonalMessage({
-    accountIndex: 0,
-    expectedAddress: signingWallet.address,
-    message: 'ff',
-  });
+  const pending = ledger.evm.signPersonalMessage(
+    {
+      accountIndex: 0,
+      expectedAddress: signingWallet.address,
+      message: 'ff',
+    },
+    messageAuthority()
+  );
   const rejected = expect(pending).rejects.toMatchObject({
     code: 'HARDWARE_REQUEST_CANCELLED',
   });

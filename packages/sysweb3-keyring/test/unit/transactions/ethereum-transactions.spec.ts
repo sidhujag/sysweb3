@@ -1,4 +1,3 @@
-import { withEvmSendIdentity } from '../../helpers/evm-send-identity';
 import {
   encrypt,
   recoverPersonalSignature,
@@ -9,7 +8,13 @@ import { INetworkType } from '@sidhujag/sysweb3-network';
 import { KeyringManager, KeyringAccountType } from '../../../src';
 import { BigNumber } from '../../../src/ethers-v6';
 import { FAKE_PASSWORD, PEACE_SEED_PHRASE } from '../../helpers/constants';
+import { withEvmSendIdentity } from '../../helpers/evm-send-identity';
 import { createFreshTestKeyring, setupMocks } from '../../helpers/setup';
+
+const messageAuthority = () => ({
+  assertCurrent: () => undefined,
+  signal: new AbortController().signal,
+});
 const tokenApproval = {
   nonce: 7,
   assertCurrent: () => undefined,
@@ -45,6 +50,10 @@ describe('Ethereum Transactions', () => {
       FAKE_PASSWORD,
       mockVaultStateGetter
     );
+  });
+
+  afterEach(async () => {
+    await keyringManager?.destroy();
   });
 
   describe('Transaction Signing', () => {
@@ -476,6 +485,7 @@ describe('Ethereum Transactions', () => {
       const signature = await keyringManager.ethereumTransaction.ethSign(
         [keyringManager.getActiveAccount().activeAccount.address, message],
         {
+          signal: new AbortController().signal,
           selectedAccount: {
             id: 0,
             type: 'HDAccount',
@@ -501,10 +511,10 @@ describe('Ethereum Transactions', () => {
       const message =
         '0x4578616d706c652060706572736f6e616c5f7369676e60206d657373616765';
       const signature =
-        await keyringManager.ethereumTransaction.signPersonalMessage([
-          message,
-          keyringManager.getActiveAccount().activeAccount.address,
-        ]);
+        await keyringManager.ethereumTransaction.signPersonalMessage(
+          [message, keyringManager.getActiveAccount().activeAccount.address],
+          messageAuthority()
+        );
 
       expect(signature).toBeDefined();
       expect(signature.startsWith('0x')).toBe(true);
@@ -513,10 +523,10 @@ describe('Ethereum Transactions', () => {
     it('should sign malformed 0x-prefixed personal messages as text', async () => {
       const address = keyringManager.getActiveAccount().activeAccount.address;
       const signature =
-        await keyringManager.ethereumTransaction.signPersonalMessage([
-          '0xhello',
-          address,
-        ]);
+        await keyringManager.ethereumTransaction.signPersonalMessage(
+          ['0xhello', address],
+          messageAuthority()
+        );
       const recovered = recoverPersonalSignature({
         data: '0xhello',
         signature,
@@ -606,7 +616,8 @@ describe('Ethereum Transactions', () => {
       const signature = await keyringManager.ethereumTransaction.signTypedData(
         keyringManager.getActiveAccount().activeAccount.address,
         typedDataV1,
-        SignTypedDataVersion.V1
+        SignTypedDataVersion.V1,
+        messageAuthority()
       );
 
       expect(signature).toBeDefined();
@@ -617,7 +628,8 @@ describe('Ethereum Transactions', () => {
       const signature = await keyringManager.ethereumTransaction.signTypedData(
         keyringManager.getActiveAccount().activeAccount.address,
         typedDataV3V4,
-        SignTypedDataVersion.V3
+        SignTypedDataVersion.V3,
+        messageAuthority()
       );
 
       expect(signature).toBeDefined();
@@ -628,7 +640,8 @@ describe('Ethereum Transactions', () => {
       const signature = await keyringManager.ethereumTransaction.signTypedData(
         keyringManager.getActiveAccount().activeAccount.address,
         typedDataV3V4,
-        SignTypedDataVersion.V4
+        SignTypedDataVersion.V4,
+        messageAuthority()
       );
 
       expect(signature).toBeDefined();
@@ -744,10 +757,13 @@ describe('Ethereum Transactions', () => {
 
       // Sign with first account
       const signature1 =
-        await keyringManager.ethereumTransaction.signPersonalMessage([
-          '0x48656c6c6f',
-          keyringManager.getActiveAccount().activeAccount.address,
-        ]);
+        await keyringManager.ethereumTransaction.signPersonalMessage(
+          [
+            '0x48656c6c6f',
+            keyringManager.getActiveAccount().activeAccount.address,
+          ],
+          messageAuthority()
+        );
 
       // Switch to second account
       currentVaultState.activeAccount = {
@@ -757,10 +773,10 @@ describe('Ethereum Transactions', () => {
 
       // Sign with second account
       const signature2 =
-        await keyringManager.ethereumTransaction.signPersonalMessage([
-          '0x48656c6c6f',
-          account2.address,
-        ]);
+        await keyringManager.ethereumTransaction.signPersonalMessage(
+          ['0x48656c6c6f', account2.address],
+          messageAuthority()
+        );
 
       // Signatures should be different
       expect(signature1).not.toBe(signature2);
@@ -796,10 +812,10 @@ describe('Ethereum Transactions', () => {
       keyringManager.lockWallet();
 
       await expect(async () => {
-        await keyringManager.ethereumTransaction.signPersonalMessage([
-          '0x48656c6c6f',
-          '0x0000000000000000000000000000000000000000',
-        ]);
+        await keyringManager.ethereumTransaction.signPersonalMessage(
+          ['0x48656c6c6f', '0x0000000000000000000000000000000000000000'],
+          messageAuthority()
+        );
       }).rejects.toThrow();
     });
   });

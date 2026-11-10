@@ -1,8 +1,8 @@
 /* Run against compiled or unpacked published output; no Jest mocks or TS loader. */
 'use strict';
 const assert = require('node:assert/strict');
-const path = require('node:path');
 const Module = require('node:module');
+const path = require('node:path');
 
 const entry = path.resolve(
   process.argv[2] || path.join(__dirname, '../dist/cjs/software.js')
@@ -15,7 +15,7 @@ const forbidden =
   /(?:^@(?:ledgerhq|trezor)\/|^@sidhujag\/sysweb3-core(?:\/|$)|(?:^|[/\\])(?:ledger|trezor|hardware-wallet-manager(?:-singleton)?|hardware-psbt|keyring-manager)(?:[/\\.]|$)|(?:^|[/\\])storage(?:\.js)?$)/;
 for (const name of ['window', 'chrome', 'document', 'self'])
   delete global[name];
-Module._load = function (request, parent, isMain) {
+Module._load = function (request) {
   assert(
     !forbidden.test(request),
     `Software entry loaded host/device dependency: ${request}`
@@ -112,7 +112,11 @@ const storage = () => {
     const storageBeforeDerivation = JSON.stringify([...first.records]);
     const indexed = await a.deriveEvmHdRuntimeAccount(
       { index: 1 },
-      { assertCurrent() {} }
+      {
+        assertCurrent() {
+          assert(a.isUnlocked());
+        },
+      }
     );
     assert.equal(indexed.id, 1);
     assert.equal(indexed.address, '0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0');
@@ -123,10 +127,45 @@ const storage = () => {
     assert.equal(JSON.stringify([...first.records]), storageBeforeDerivation);
     assert.equal(a.deriveBip84HdPublicAccount, undefined);
     assert.equal(a.signPreparedBip84Transaction, undefined);
-    const signature = await a.ethereumTransaction.signPersonalMessage([
-      '0x11',
-      aState.accounts.HDAccount[0].address,
-    ]);
+    const messageApproval = () => {
+      const controller = new AbortController();
+      const account = aState.accounts.HDAccount[0];
+      const network = aState.activeNetwork;
+      return {
+        cancel: () => controller.abort(),
+        authority: {
+          signal: controller.signal,
+          assertCurrent() {
+            assert(a.isUnlocked());
+            assert.equal(aState.activeAccount.id, 0);
+            assert.equal(
+              aState.activeAccount.type,
+              KeyringAccountType.HDAccount
+            );
+            assert.equal(aState.accounts.HDAccount[0], account);
+            assert.equal(aState.activeNetwork, network);
+          },
+        },
+      };
+    };
+    const approvedMessage = ['0x11', aState.accounts.HDAccount[0].address];
+    await assert.rejects(
+      a.ethereumTransaction.signPersonalMessage(approvedMessage),
+      { code: 'HARDWARE_REQUEST_CANCELLED' }
+    );
+    const firstApproval = messageApproval();
+    const signature = await a.ethereumTransaction.signPersonalMessage(
+      approvedMessage,
+      firstApproval.authority
+    );
+    firstApproval.cancel();
+    await assert.rejects(
+      a.ethereumTransaction.signPersonalMessage(
+        approvedMessage,
+        firstApproval.authority
+      ),
+      { code: 'HARDWARE_REQUEST_CANCELLED' }
+    );
     assert.match(signature, /^0x[0-9a-f]{130}$/i);
     const address = aState.accounts.HDAccount[0].address;
     const prepared = a.signPreparedEvmTransaction(
@@ -153,7 +192,11 @@ const storage = () => {
           accessList: [],
         },
       },
-      { assertCurrent() {} }
+      {
+        assertCurrent() {
+          assert(a.isUnlocked());
+        },
+      }
     );
     const { Transaction } = require('ethers/transaction');
     const decoded = Transaction.from(prepared.rawTransaction);
@@ -168,10 +211,10 @@ const storage = () => {
     assert.equal((await a.unlock('wrong')).canLogin, false);
     assert.equal((await a.unlock(password)).canLogin, true);
     assert.equal(
-      await a.ethereumTransaction.signPersonalMessage([
-        '0x11',
-        aState.accounts.HDAccount[0].address,
-      ]),
+      await a.ethereumTransaction.signPersonalMessage(
+        ['0x11', aState.accounts.HDAccount[0].address],
+        messageApproval().authority
+      ),
       signature
     );
     assert.equal(await a.getSeed(password), mnemonic);

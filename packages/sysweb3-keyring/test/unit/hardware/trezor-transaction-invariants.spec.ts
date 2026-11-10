@@ -3,7 +3,11 @@ import ecc from '@bitcoinerlab/secp256k1';
 import TrezorConnect from '@trezor/connect-webextension';
 import * as syscoinjs from 'syscoinjs-lib';
 
+import { captureHardwareTransactionAuthority } from '../../../src/hardware-transaction-authority';
 import { TrezorKeyring } from '../../../src/trezor';
+
+import type { HardwareTransactionAuthority } from '../../../src/hardware-transaction-authority';
+import type { TrezorSigningSession } from '../../../src/trezor/connect';
 
 const bitcoinjs: any = (syscoinjs.utils as any).bitcoinjs;
 const privateKey = Buffer.alloc(32, 1);
@@ -100,7 +104,21 @@ describe('Trezor unsigned transaction integrity', () => {
 
   beforeEach(() => {
     receiver = Object.create(TrezorKeyring.prototype);
-    (receiver as any).connection = TrezorConnect;
+    // This fixture isolates the transaction proof checks. The real owned
+    // connection/init/drain lifecycle is exercised in the host regression suites.
+    (receiver as any).connection = {
+      async withOwnedSigning<Result>(
+        authority: HardwareTransactionAuthority,
+        operation: (session: TrezorSigningSession) => Promise<Result>
+      ) {
+        const owner = captureHardwareTransactionAuthority(authority);
+        const result = await operation(
+          TrezorConnect as unknown as TrezorSigningSession
+        );
+        owner.assertCurrent();
+        return result;
+      },
+    };
     (receiver as any).executeWithRetry = jest.fn((operation) => operation());
     jest.spyOn(console, 'log').mockImplementation(() => undefined);
   });
