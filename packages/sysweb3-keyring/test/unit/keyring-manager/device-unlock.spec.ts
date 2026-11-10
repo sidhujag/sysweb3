@@ -54,7 +54,7 @@ afterEach(async () => {
   jest.restoreAllMocks();
 });
 
-function fixture() {
+function fixture(secretLifetime: 'session' | 'operation' = 'session') {
   const records = new Map<string, any>();
   const readPair = jest.fn(async (): Promise<DeviceUnlockVaultPair | null> => {
     const vault = records.get('vault');
@@ -124,6 +124,7 @@ function fixture() {
       new SoftwareKeyring(host, {
         captureEvmSubmission: null,
         receiveDeviceUnlock: receive,
+        secretLifetime,
       })
     );
     expect(receive).toHaveBeenCalledTimes(1);
@@ -1011,3 +1012,59 @@ it.each(['tag', 'shape', 'legacy keys'])(
     expect(JSON.stringify([...f.records])).toBe(before);
   }
 );
+
+it('device resume retires old record grants before fresh creation and trusted transfer', async () => {
+  const f = fixture('operation'),
+    host = f.createHost();
+  const { ring, controls } = await f.create(password, host);
+  const options = {
+    signal: new AbortController().signal,
+    assertCurrent: current,
+  };
+  const credential = {
+    async withSecret(
+      check: () => void,
+      consume: (secret: string) => Promise<void>
+    ) {
+      check();
+      await consume(password);
+      check();
+    },
+  };
+  const domains = ['resume.records.v1'];
+  let first!: Awaited<ReturnType<typeof ring.createPrivateRecordAccess>>;
+  let privateGrant!: typeof first;
+  await ring.withSecretOperation(credential, options, async () => {
+    expect(await controls.issue(password, current)).toBe(true);
+    first = await ring.createPrivateRecordAccess(domains, {
+      transferable: true,
+    });
+    privateGrant = await ring.createPrivateRecordAccess(['resume.private.v1'], {
+      transferable: false,
+    });
+  });
+  const profile = await first.getPrivateRecordProfileId();
+  expect(ring.isUnlocked()).toBe(false);
+  expect(await controls.resume(current)).toBe(true);
+  expect(ring.isUnlocked()).toBe(false);
+  await expect(first.getPrivateRecordProfileId()).rejects.toThrow();
+  await expect(privateGrant.getPrivateRecordProfileId()).rejects.toThrow();
+  expect(() => ring.getPrivateRecordAccess(domains)).toThrow('not initialized');
+  const fresh = await ring.withSecretOperation(credential, options, () =>
+    ring.createPrivateRecordAccess(domains, { transferable: true })
+  );
+  expect(
+    await ring.getPrivateRecordAccess(domains).getPrivateRecordProfileId()
+  ).toBe(profile);
+  const target = f.open(host).ring;
+  (await ring.prepareSessionTransfer(target, current)).transfer();
+  await expect(fresh.getPrivateRecordProfileId()).rejects.toThrow();
+  expect(
+    await target.getPrivateRecordAccess(domains).getPrivateRecordProfileId()
+  ).toBe(profile);
+  first.dispose();
+  fresh.dispose();
+  expect(
+    await target.getPrivateRecordAccess(domains).getPrivateRecordProfileId()
+  ).toBe(profile);
+});

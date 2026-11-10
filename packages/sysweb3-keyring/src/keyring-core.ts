@@ -418,7 +418,7 @@ export class KeyringCore<
       this.getAccountsState,
       this.ledgerSigner,
       this.trezorSigner,
-      this.capturePsbtSigningContext,
+      this.captureEthereumSigningContext,
       dependencies.captureEvmSubmission
     );
     if (dependencies.deviceUnlock) {
@@ -558,6 +558,7 @@ export class KeyringCore<
           check();
         } else {
           if (this.#finishUnlock().needsAccountCreation) return false;
+          this.clearRecordAccess();
           this.#installVaultSession(mnemonic, keyHex, check);
           if (this.secretLifetime === 'operation') {
             this.publicSession = true;
@@ -2593,9 +2594,6 @@ export class KeyringCore<
 
       const isHardwareWallet = isTrezor || isLedger;
 
-      if (!this.sessionPassword)
-        throw new Error('Wallet is locked cant proceed with transaction');
-
       const activeAccountData = accounts[activeAccountType][activeAccountId];
       if (!activeAccountData) {
         throw new Error(
@@ -2610,11 +2608,15 @@ export class KeyringCore<
         this.requireTrezorSigner();
 
       if (isHardwareWallet) {
+        this.#capturePublicSessionGuard()();
         return {
           address,
           decryptedPrivateKey: '',
         };
       }
+
+      if (!this.sessionPassword)
+        throw new Error('Wallet is locked cant proceed with transaction');
 
       if (!xprv) {
         throw new Error(
@@ -2679,6 +2681,16 @@ export class KeyringCore<
       this.validateAndHandleErrorByMessage(error.message);
       throw error;
     }
+  };
+
+  private captureEthereumSigningContext = (): (() => void) => {
+    const { activeAccount } = this.getVault();
+    if (
+      activeAccount.type === KeyringAccountType.Ledger ||
+      activeAccount.type === KeyringAccountType.Trezor
+    )
+      return this.capturePublicWalletContext();
+    return this.capturePsbtSigningContext();
   };
 
   private capturePublicWalletContext = (): (() => void) => {
