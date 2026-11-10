@@ -779,8 +779,7 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
   /** Resolve public signing hints without loading a software signer. */
   private prepareSoftwareSigningPaths = async (
     psbt: Psbt,
-    ownedRead: SyscoinUtxoReadContext,
-    allowNetwork: boolean
+    ownedRead: SyscoinUtxoReadContext
   ): Promise<void> => {
     const { assertCurrent, network: activeNetwork, transport } = ownedRead;
     assertCurrent();
@@ -804,10 +803,9 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
       Boolean(accountXpub) &&
       !isSingleAddressImported;
 
-    // IMPORTANT: Imported extended keys (zprv/vprv) are typically *account-level* keys.
-    // syscoinjs-lib signs using the imported key as the BIP32 root, so PSBT `path` must be
-    // relative (change/index), not the full `m/84'/.../change/index`. If we keep full paths,
-    // bip32.derivePath can throw, leaving no derivations and causing "Need derivation path".
+    // For an account-level imported BIP84 key, derive change/index relative
+    // to that node; the z/v prefix alone does not identify its depth. The
+    // existing account-scope check validates the derivation before signing.
     if (isImportedExtended) {
       const inputs: any[] = (psbt as any)?.data?.inputs || [];
       for (const input of inputs) {
@@ -842,10 +840,6 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
       !isSingleAddressImported &&
       typeof (psbt as any).addUnknownKeyValToInput === 'function'
     ) {
-      if (!allowNetwork)
-        throw new Error(
-          'PSBT signing paths must be prepared before the secret operation'
-        );
       // Fetch address->path mapping from Blockbook xpub endpoint
       const blockbookUrl = activeNetwork.url;
       const res: any = await fetchOwnedBlockbookAccount(
@@ -968,11 +962,11 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
       assertHardwareCurrent();
       return signed;
     } else {
-      await this.prepareSoftwareSigningPaths(
-        psbt,
-        ownedRead,
-        this.secretLifetime === 'session'
-      );
+      // Operation-scoped signing never enriches or fetches. The existing
+      // scope validator keeps only authenticated owned inputs; a joint PSBT
+      // may legitimately leave a foreign input without signing hints.
+      if (this.secretLifetime === 'session')
+        await this.prepareSoftwareSigningPaths(psbt, ownedRead);
       assertCurrent();
       assertPsbtAccountScope(psbt, scope);
       const { hd } = this.getSigner();
@@ -1168,7 +1162,7 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
       accountType === KeyringAccountType.HDAccount ||
       accountType === KeyringAccountType.Imported
     )
-      await this.prepareSoftwareSigningPaths(psbtObj, read, true);
+      await this.prepareSoftwareSigningPaths(psbtObj, read);
     read.assertCurrent();
     if (
       !unsigned.equals(

@@ -19,7 +19,7 @@ Public account records remain owned by the existing bound state getter. Provider
 
 Operation-policy hosts call `syscoinTransaction.preparePSBTForSigning({ psbt }, ownedRead)` before requesting the signing secret. This uses the existing Blockbook path enrichment and validates the selected account against the spent scripts. It returns the same unsigned transaction and assets with public derivation metadata added or normalized, preserving cosigner metadata. The owned read keeps the selected account, network, endpoint, and cancellation guard bound throughout preparation.
 
-In operation policy, public preparation refuses to start while secrets are loaded. `signPSBT()` never fetches missing paths in that policy: unresolved inputs fail before a software signer is obtained. The host still serializes preparation and authorization, and signing repeats the existing account-scope and unsigned-transaction checks. Session policy retains its existing implicit path enrichment during signing.
+In operation policy, public preparation refuses to start while secrets are loaded. `signPSBT()` never fetches missing paths in that policy. The existing scope validator requires an authenticated owned input and leaves foreign inputs unsigned; it does not reject a joint PSBT solely because a foreign input lacks signing hints. The host still serializes preparation and authorization, and signing repeats the existing account-scope and unsigned-transaction checks. Session policy retains its existing implicit path enrichment during signing.
 
 ## One sensitive action
 
