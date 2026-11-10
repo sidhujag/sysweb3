@@ -881,6 +881,8 @@ export class KeyringCore<
     const checkOwnership = () => {
       sourceGuard();
       if (
+        (publicOnly &&
+          (this.secretOperation || targetKeyring.secretOperation)) ||
         (publicOnly
           ? !this.hasPublicSession()
           : !this.isUnlocked() || !this.sessionMnemonic) ||

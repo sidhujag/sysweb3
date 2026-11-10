@@ -328,6 +328,38 @@ it('moves only public authority between operation-policy owners, preserving once
   }
 });
 
+it('refuses a prepared authority transfer while a later secret operation is live', async () => {
+  const f = fixture();
+  await f.initialize();
+  const target = f.create(),
+    entered = deferred(),
+    release = deferred();
+  try {
+    const transfer = await f.keyring.prepareSessionTransfer(target, noop);
+    const signing = f.keyring.withSecretOperation(port, options(), async () => {
+      const check = f.keyring.captureUnlockedSessionGuard();
+      entered.resolve();
+      await release.promise;
+      check();
+    });
+    await entered.promise;
+    expect(() => transfer.transfer()).toThrow('session changed');
+    expect(f.keyring.hasPublicSession()).toBe(true);
+    expect(target.hasPublicSession()).toBe(false);
+    release.resolve();
+    await signing;
+    noBuffers(f.keyring);
+    const fresh = await f.keyring.prepareSessionTransfer(target, noop);
+    fresh.transfer();
+    expect(f.keyring.hasPublicSession()).toBe(false);
+    expect(target.hasPublicSession()).toBe(true);
+  } finally {
+    release.resolve();
+    await f.keyring.destroy();
+    await target.destroy();
+  }
+});
+
 it('requires a fresh operation for the existing software signer and preserves its result', async () => {
   const f = fixture();
   await f.initialize();
