@@ -15,6 +15,8 @@ import {
 } from './ethers-v6';
 import { LedgerKeyring } from './ledger';
 import {
+  IPrivateRecordAccess,
+  PrivateRecordAccessOptions,
   IDecryptPrivateRecordParams,
   IEncryptedPrivateRecord,
   IEncryptPrivateRecordParams,
@@ -381,6 +383,11 @@ export interface IKeyringManager {
   syscoinTransaction: ISyscoinTransactions;
   isSeedValid: (seedPhrase: string) => boolean;
   getSeed: (pwd: string) => Promise<string>;
+  createPrivateRecordAccess: (
+    domains: readonly string[],
+    options: PrivateRecordAccessOptions
+  ) => Promise<IPrivateRecordAccess>;
+  getPrivateRecordAccess: (domains: readonly string[]) => IPrivateRecordAccess;
   getPrivateRecordProfileId: () => Promise<string>;
   encryptPrivateRecord: (
     params: IEncryptPrivateRecordParams

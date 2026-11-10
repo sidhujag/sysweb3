@@ -20,6 +20,22 @@ export interface IDecryptPrivateRecordParams {
   recordId: string;
 }
 
+export interface PrivateRecordAccessOptions {
+  /** Move this grant with trusted public-session transfer; otherwise transfer retires it. */
+  transferable: boolean;
+}
+
+export interface IPrivateRecordAccess {
+  getPrivateRecordProfileId(): Promise<string>;
+  encryptPrivateRecord(
+    params: IEncryptPrivateRecordParams
+  ): Promise<IEncryptedPrivateRecord>;
+  decryptPrivateRecord(
+    params: IDecryptPrivateRecordParams
+  ): Promise<Uint8Array>;
+  dispose(): void;
+}
+
 export const MAX_PRIVATE_RECORD_BYTES = 64 * 1024;
 export const MAX_PRIVATE_RECORD_LABEL_BYTES = 128;
 
@@ -156,6 +172,21 @@ export async function encryptPrivateRecordBytes(
   params: IEncryptPrivateRecordParams,
   guard: Guard
 ): Promise<IEncryptedPrivateRecord> {
+  return encryptRecord(params, guard, async (domain) => {
+    const key = await importRoot(secret, guard);
+    return {
+      profile: await profileId(key, guard),
+      aesKey: await domainKey(key, domain, guard),
+    };
+  });
+}
+
+type RecordKey = { profile: string; aesKey: CryptoKey };
+async function encryptRecord(
+  params: IEncryptPrivateRecordParams,
+  guard: Guard,
+  keys: (domain: string) => Promise<RecordKey>
+): Promise<IEncryptedPrivateRecord> {
   const domain = label(params.domain);
   const recordId = label(params.recordId);
   if (
@@ -167,9 +198,8 @@ export async function encryptPrivateRecordBytes(
   // Own the input before the first await; caller mutations cannot change it.
   const plaintext = new Uint8Array(params.plaintext);
   try {
-    const key = await importRoot(secret, guard);
-    const profile = await profileId(key, guard);
-    const aesKey = await domainKey(key, domain, guard);
+    const { profile, aesKey } = await keys(domain);
+    guard();
     const nonce = cryptoProvider().getRandomValues(new Uint8Array(NONCE_BYTES));
     const encrypted = await cryptoProvider().subtle.encrypt(
       {
@@ -200,6 +230,20 @@ export async function decryptPrivateRecordBytes(
   params: IDecryptPrivateRecordParams,
   guard: Guard
 ): Promise<Uint8Array> {
+  return decryptRecord(params, guard, async (domain) => {
+    const key = await importRoot(secret, guard);
+    return {
+      profile: await profileId(key, guard),
+      aesKey: await domainKey(key, domain, guard),
+    };
+  });
+}
+
+async function decryptRecord(
+  params: IDecryptPrivateRecordParams,
+  guard: Guard,
+  keys: (domain: string) => Promise<RecordKey>
+): Promise<Uint8Array> {
   const domain = label(params.domain);
   const recordId = label(params.recordId);
   // Copy primitive fields before awaiting. No caller-owned object is retained.
@@ -222,12 +266,11 @@ export async function decryptPrivateRecordBytes(
     TAG_BYTES,
     MAX_PRIVATE_RECORD_BYTES + TAG_BYTES
   );
-  const key = await importRoot(secret, guard);
-  const profile = await profileId(key, guard);
+  const { profile, aesKey } = await keys(domain);
+  guard();
   if (profile !== envelope.profileId) {
     throw new Error('Private record profile mismatch');
   }
-  const aesKey = await domainKey(key, domain, guard);
   let plaintext: Uint8Array | undefined;
   try {
     plaintext = new Uint8Array(
@@ -250,5 +293,179 @@ export async function decryptPrivateRecordBytes(
     plaintext?.fill(0);
     guard();
     throw new Error('Private record authentication failed');
+  }
+}
+
+type RecordAccessOwner = {
+  active: boolean;
+  domainSet: string;
+  guard: Guard;
+  keys: Map<string, CryptoKey>;
+  profile: string;
+  transferable: boolean;
+  authority: object;
+};
+const recordAccessOwners = new WeakMap<
+  IPrivateRecordAccess,
+  RecordAccessOwner
+>();
+
+/** Canonical exact set, used only to retrieve a previously granted capability. */
+export function privateRecordDomainSet(domains: readonly string[]): string {
+  if (!Array.isArray(domains) || domains.length === 0 || domains.length > 8)
+    throw new Error('Invalid record domains');
+  const names: string[] = [];
+  for (let i = 0; i < domains.length; i++) {
+    const item = Object.getOwnPropertyDescriptor(domains, String(i));
+    if (!item || !('value' in item)) throw new Error('Invalid record domains');
+    names.push(label(item.value));
+  }
+  if (new Set(names).size !== names.length)
+    throw new Error('Invalid record domains');
+  return JSON.stringify(names.sort());
+}
+function checkRecordOwner(owner: RecordAccessOwner): void {
+  if (!owner.active) throw new Error('Record access retired');
+  const result: unknown = owner.guard();
+  if (result !== undefined) {
+    void Promise.resolve(result).catch(() => undefined);
+    throw new Error('Record access requires a synchronous owner guard');
+  }
+  if (!owner.active) throw new Error('Record access retired');
+}
+function bindRecordAccess(owner: RecordAccessOwner): IPrivateRecordAccess {
+  const check = () => checkRecordOwner(owner);
+  const keyFor = async (domain: string): Promise<RecordKey> => {
+    check();
+    const aesKey = owner.keys.get(domain);
+    if (!aesKey) throw new Error('Record domain not authorized');
+    return { profile: owner.profile, aesKey };
+  };
+  const access: IPrivateRecordAccess = Object.freeze({
+    async getPrivateRecordProfileId() {
+      check();
+      return owner.profile;
+    },
+    encryptPrivateRecord: (params: IEncryptPrivateRecordParams) =>
+      encryptRecord(params, check, keyFor),
+    decryptPrivateRecord: (params: IDecryptPrivateRecordParams) =>
+      decryptRecord(params, check, keyFor),
+    dispose() {
+      owner.active = false;
+      owner.keys.clear();
+    },
+  });
+  recordAccessOwners.set(access, owner);
+  return access;
+}
+
+/** Internal cache inspection; key material is never returned. */
+export function activePrivateRecordDomainSet(
+  access: IPrivateRecordAccess,
+  authority: object
+): string | null {
+  const owner = recordAccessOwners.get(access);
+  if (!owner?.active) return null;
+  if (owner.authority !== authority)
+    throw new Error('Record access owner mismatch');
+  checkRecordOwner(owner);
+  return owner.domainSet;
+}
+
+/** Internal transfer policy; callers cannot upgrade an existing grant. */
+export function privateRecordAccessCanTransfer(
+  access: IPrivateRecordAccess,
+  authority: object
+): boolean {
+  const owner = recordAccessOwners.get(access);
+  if (!owner?.active) return false;
+  if (owner.authority !== authority)
+    throw new Error('Record access owner mismatch');
+  checkRecordOwner(owner);
+  return owner.transferable;
+}
+
+/** Internal trusted SDK transfer. Old methods/dispose cannot affect the moved keys. */
+export function transferPrivateRecordAccess(
+  access: IPrivateRecordAccess,
+  sourceAuthority: object,
+  targetAuthority: object,
+  guard: Guard
+): IPrivateRecordAccess {
+  const owner = recordAccessOwners.get(access);
+  if (
+    !owner ||
+    owner.authority !== sourceAuthority ||
+    !targetAuthority ||
+    typeof targetAuthority !== 'object'
+  )
+    throw new Error('Record access owner mismatch');
+  checkRecordOwner(owner);
+  if (!owner.transferable) throw new Error('Record access cannot transfer');
+  const keys = owner.keys;
+  const next = bindRecordAccess({
+    active: true,
+    domainSet: owner.domainSet,
+    guard,
+    keys,
+    profile: owner.profile,
+    transferable: true,
+    authority: targetAuthority,
+  });
+  owner.keys = new Map();
+  owner.active = false;
+  return next;
+}
+
+/** Derive only the named record keys, then release the root. No key export or derivation surface escapes. */
+export async function createPrivateRecordAccess(
+  secret: Uint8Array,
+  domains: readonly string[],
+  options: PrivateRecordAccessOptions,
+  guard: Guard,
+  authority: object
+): Promise<IPrivateRecordAccess> {
+  if (!authority || typeof authority !== 'object')
+    throw new Error('Record access owner is required');
+  const transfer =
+    options &&
+    typeof options === 'object' &&
+    Reflect.ownKeys(options).length === 1
+      ? Object.getOwnPropertyDescriptor(options, 'transferable')
+      : undefined;
+  if (
+    !transfer ||
+    !('value' in transfer) ||
+    typeof transfer.value !== 'boolean'
+  )
+    throw new Error('Explicit record transfer policy is required');
+  const domainSet = privateRecordDomainSet(domains);
+  const names: string[] = JSON.parse(domainSet);
+  const owner: RecordAccessOwner = {
+    active: true,
+    domainSet,
+    guard,
+    keys: new Map(),
+    profile: '',
+    transferable: transfer.value,
+    authority,
+  };
+  const check = () => checkRecordOwner(owner);
+  check();
+  let root: CryptoKey | undefined;
+  try {
+    root = await importRoot(secret, check);
+    owner.profile = await profileId(root, check);
+    for (const domain of names) {
+      owner.keys.set(domain, await domainKey(root, domain, check));
+      check();
+    }
+    return bindRecordAccess(owner);
+  } catch (error) {
+    owner.active = false;
+    owner.keys.clear();
+    throw error;
+  } finally {
+    root = undefined;
   }
 }

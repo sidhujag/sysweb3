@@ -1,5 +1,6 @@
 import { recoverPersonalSignature } from '@metamask/eth-sig-util';
 
+import { transferPrivateRecordAccess } from '../../../src/private-records';
 import {
   SoftwareKeyring,
   createKeyringHost,
@@ -386,6 +387,253 @@ it('requires a fresh operation for the existing software signer and preserves it
   }
 });
 
+it('keeps only domain-limited record keys after spending material is retired', async () => {
+  const f = fixture();
+  await f.initialize();
+  try {
+    await expect(
+      f.keyring.createPrivateRecordAccess(['test.tx.records'], {
+        transferable: false,
+      })
+    ).rejects.toThrow();
+    const access = await f.keyring.withSecretOperation(port, options(), () =>
+      f.keyring.createPrivateRecordAccess(['test.tx.records'], {
+        transferable: false,
+      })
+    );
+    noBuffers(f.keyring);
+    expect(Object.keys(access).sort()).toEqual([
+      'decryptPrivateRecord',
+      'dispose',
+      'encryptPrivateRecord',
+      'getPrivateRecordProfileId',
+    ]);
+    const plaintext = new Uint8Array([1, 2, 3]);
+    const envelope = await access.encryptPrivateRecord({
+      domain: 'test.tx.records',
+      recordId: 'transaction',
+      plaintext,
+    });
+    expect(
+      await access.decryptPrivateRecord({
+        domain: 'test.tx.records',
+        recordId: 'transaction',
+        envelope,
+      })
+    ).toEqual(plaintext);
+    await expect(
+      access.encryptPrivateRecord({
+        domain: 'private.notes',
+        recordId: 'note',
+        plaintext,
+      })
+    ).rejects.toThrow('domain not authorized');
+    noBuffers(f.keyring);
+    expect(
+      await f.keyring.withSecretOperation(port, options(), () =>
+        f.keyring.decryptPrivateRecord({
+          domain: 'test.tx.records',
+          recordId: 'transaction',
+          envelope,
+        })
+      )
+    ).toEqual(plaintext);
+    await f.keyring.lockWallet();
+    await expect(access.getPrivateRecordProfileId()).rejects.toThrow();
+    await expect(
+      access.decryptPrivateRecord({
+        domain: 'test.tx.records',
+        recordId: 'transaction',
+        envelope,
+      })
+    ).rejects.toThrow();
+  } finally {
+    await f.keyring.destroy();
+  }
+});
+
+const journalDomains = [
+  'org.syscoin.pali.evm.signed.root.v1',
+  'org.syscoin.pali.evm.signed.chunk.v1',
+  'org.syscoin.pali.utxo.signed.root.v1',
+  'org.syscoin.pali.utxo.signed.chunk.v1',
+] as const;
+
+it('moves already-derived journal keys, retires source facades and never reloads a mnemonic', async () => {
+  const f = fixture();
+  await f.initialize();
+  const target = f.create();
+  try {
+    const sourceAccess = await f.keyring.withSecretOperation(
+      port,
+      options(),
+      () =>
+        f.keyring.createPrivateRecordAccess(journalDomains, {
+          transferable: true,
+        })
+    );
+    const params = {
+      domain: journalDomains[0],
+      recordId: 'transaction',
+      plaintext: new Uint8Array([1, 2, 3]),
+    };
+    const envelope = await sourceAccess.encryptPrivateRecord(params);
+    const rootRead = jest
+      .spyOn(target as any, 'privateRecordSession')
+      .mockImplementation(() => {
+        throw new Error('Mnemonic must not reopen');
+      });
+    const transfer = await f.keyring.prepareSessionTransfer(target, noop);
+    transfer.transfer();
+    await expect(sourceAccess.getPrivateRecordProfileId()).rejects.toThrow(
+      'retired'
+    );
+    const targetAccess = target.getPrivateRecordAccess(
+      [...journalDomains].reverse()
+    );
+    sourceAccess.dispose();
+    await f.keyring.destroy();
+    expect(
+      await targetAccess.decryptPrivateRecord({ ...params, envelope })
+    ).toEqual(params.plaintext);
+    expect(rootRead).not.toHaveBeenCalled();
+    expect(() => target.getPrivateRecordAccess([journalDomains[0]])).toThrow(
+      'not initialized'
+    );
+    expect(() =>
+      target.getPrivateRecordAccess([
+        ...journalDomains,
+        'org.syscoin.pali.privacy.notes.v1',
+      ])
+    ).toThrow('not initialized');
+    expect(() =>
+      target.getPrivateRecordAccess([journalDomains[0], journalDomains[0]])
+    ).toThrow('Invalid record domains');
+    noBuffers(f.keyring);
+    noBuffers(target);
+    await target.lockWallet();
+    await expect(targetAccess.getPrivateRecordProfileId()).rejects.toThrow(
+      'retired'
+    );
+    expect(() => target.getPrivateRecordAccess(journalDomains)).toThrow();
+  } finally {
+    await f.keyring.destroy();
+    await target.destroy();
+  }
+});
+
+it('a return transfer revokes every old record facade while preserving the same v1 envelopes', async () => {
+  const f = fixture();
+  await f.initialize();
+  const target = f.create();
+  try {
+    const old = await f.keyring.withSecretOperation(port, options(), () =>
+      f.keyring.createPrivateRecordAccess(journalDomains, {
+        transferable: true,
+      })
+    );
+    const params = {
+      domain: journalDomains[2],
+      recordId: 'utxo',
+      plaintext: new Uint8Array([4, 5, 6]),
+    };
+    const envelope = await old.encryptPrivateRecord(params);
+    (await f.keyring.prepareSessionTransfer(target, noop)).transfer();
+    const intermediate = target.getPrivateRecordAccess(journalDomains);
+    (await target.prepareSessionTransfer(f.keyring, noop)).transfer();
+    const current = f.keyring.getPrivateRecordAccess(journalDomains);
+    old.dispose();
+    intermediate.dispose();
+    await target.destroy();
+    expect(await current.decryptPrivateRecord({ ...params, envelope })).toEqual(
+      params.plaintext
+    );
+    await expect(intermediate.encryptPrivateRecord(params)).rejects.toThrow(
+      'retired'
+    );
+    await expect(old.encryptPrivateRecord(params)).rejects.toThrow('retired');
+    noBuffers(f.keyring);
+  } finally {
+    await f.keyring.destroy();
+    await target.destroy();
+  }
+});
+
+it('in-flight old record decrypt cannot deliver plaintext after a transfer', async () => {
+  const f = fixture();
+  await f.initialize();
+  const target = f.create();
+  const entered = deferred(),
+    release = deferred();
+  let decoded: ArrayBuffer | undefined;
+  try {
+    const old = await f.keyring.withSecretOperation(port, options(), () =>
+      f.keyring.createPrivateRecordAccess(journalDomains, {
+        transferable: true,
+      })
+    );
+    const params = {
+      domain: journalDomains[0],
+      recordId: 'retained',
+      plaintext: new Uint8Array([7, 8, 9]),
+    };
+    const envelope = await old.encryptPrivateRecord(params);
+    const decrypt = globalThis.crypto.subtle.decrypt.bind(
+      globalThis.crypto.subtle
+    );
+    const intercepted = jest
+      .spyOn(globalThis.crypto.subtle, 'decrypt')
+      .mockImplementation(async (...args) => {
+        decoded = await decrypt(...args);
+        entered.resolve();
+        await release.promise;
+        return decoded;
+      });
+    const reading = old.decryptPrivateRecord({ ...params, envelope });
+    const rejected = expect(reading).rejects.toThrow('retired');
+    await entered.promise;
+    (await f.keyring.prepareSessionTransfer(target, noop)).transfer();
+    release.resolve();
+    await rejected;
+    expect([...new Uint8Array(decoded!)]).toEqual([0, 0, 0]);
+    intercepted.mockRestore();
+    expect(
+      await target
+        .getPrivateRecordAccess(journalDomains)
+        .decryptPrivateRecord({ ...params, envelope })
+    ).toEqual(params.plaintext);
+  } finally {
+    release.resolve();
+    jest.restoreAllMocks();
+    await f.keyring.destroy();
+    await target.destroy();
+  }
+});
+
+it('a disposed record grant cannot be retrieved or revived by transfer', async () => {
+  const f = fixture();
+  await f.initialize();
+  const target = f.create();
+  try {
+    const grant = await f.keyring.withSecretOperation(port, options(), () =>
+      f.keyring.createPrivateRecordAccess(journalDomains, {
+        transferable: true,
+      })
+    );
+    grant.dispose();
+    expect(() => f.keyring.getPrivateRecordAccess(journalDomains)).toThrow(
+      'not initialized'
+    );
+    (await f.keyring.prepareSessionTransfer(target, noop)).transfer();
+    expect(() => target.getPrivateRecordAccess(journalDomains)).toThrow(
+      'not initialized'
+    );
+  } finally {
+    await f.keyring.destroy();
+    await target.destroy();
+  }
+});
+
 it('keeps an owned public UTXO fee read current across a secret operation', async () => {
   const f = fixture();
   await f.initialize();
@@ -455,5 +703,117 @@ it('authenticates from locked and hydrates within one operation before keeping p
     expect(f.keyring.hasPublicSession()).toBe(false);
   } finally {
     await f.keyring.destroy();
+  }
+});
+
+it('requires an explicit transfer policy and retires private note grants during public transfer', async () => {
+  const f = fixture();
+  await f.initialize();
+  const target = f.create();
+  try {
+    await expect(
+      f.keyring.withSecretOperation(port, options(), () =>
+        f.keyring.createPrivateRecordAccess(journalDomains, undefined as never)
+      )
+    ).rejects.toThrow('Explicit record transfer policy');
+    const { journal, notes } = await f.keyring.withSecretOperation(
+      port,
+      options(),
+      async () => ({
+        journal: await f.keyring.createPrivateRecordAccess(journalDomains, {
+          transferable: true,
+        }),
+        notes: await f.keyring.createPrivateRecordAccess(
+          ['org.syscoin.pali.privacy.notes.v1'],
+          { transferable: false }
+        ),
+      })
+    );
+    (await f.keyring.prepareSessionTransfer(target, noop)).transfer();
+    await expect(notes.getPrivateRecordProfileId()).rejects.toThrow('retired');
+    await expect(journal.getPrivateRecordProfileId()).rejects.toThrow(
+      'retired'
+    );
+    expect(() =>
+      target.getPrivateRecordAccess(['org.syscoin.pali.privacy.notes.v1'])
+    ).toThrow('not initialized');
+    expect(
+      await target
+        .getPrivateRecordAccess(journalDomains)
+        .getPrivateRecordProfileId()
+    ).toMatch(/^0x[0-9a-f]{64}$/);
+    noBuffers(f.keyring);
+    noBuffers(target);
+  } finally {
+    await f.keyring.destroy();
+    await target.destroy();
+  }
+});
+
+it('raw helper imports cannot detach a live record grant from the SDK owner', async () => {
+  const f = fixture();
+  await f.initialize();
+  try {
+    const access = await f.keyring.withSecretOperation(port, options(), () =>
+      f.keyring.createPrivateRecordAccess(journalDomains, {
+        transferable: true,
+      })
+    );
+    expect(() => transferPrivateRecordAccess(access, {}, {}, noop)).toThrow(
+      'owner mismatch'
+    );
+    expect(f.keyring.getPrivateRecordAccess(journalDomains)).toBe(access);
+    await f.keyring.lockWallet();
+    await expect(access.getPrivateRecordProfileId()).rejects.toThrow('retired');
+  } finally {
+    await f.keyring.destroy();
+  }
+});
+
+it('private action grants cannot be recovered by the public cached lookup', async () => {
+  const f = fixture();
+  await f.initialize();
+  try {
+    const domains = ['org.syscoin.pali.privacy.notes.v1'];
+    const access = await f.keyring.withSecretOperation(port, options(), () =>
+      f.keyring.createPrivateRecordAccess(domains, { transferable: false })
+    );
+    expect(() => f.keyring.getPrivateRecordAccess(domains)).toThrow(
+      'not initialized'
+    );
+    expect(await access.getPrivateRecordProfileId()).toMatch(/^0x/);
+    access.dispose();
+    expect(() => f.keyring.getPrivateRecordAccess(domains)).toThrow(
+      'not initialized'
+    );
+  } finally {
+    await f.keyring.destroy();
+  }
+});
+
+it('record capabilities do not trust an overridden public-session guard', async () => {
+  const f = fixture();
+  await f.initialize();
+  const target = f.create();
+  try {
+    (f.keyring as any).capturePublicSessionGuard = () => noop;
+    (target as any).capturePublicSessionGuard = () => noop;
+    const access = await f.keyring.withSecretOperation(port, options(), () =>
+      f.keyring.createPrivateRecordAccess(journalDomains, {
+        transferable: true,
+      })
+    );
+    (await f.keyring.prepareSessionTransfer(target, noop)).transfer();
+    const moved = target.getPrivateRecordAccess(journalDomains);
+    await expect(access.getPrivateRecordProfileId()).rejects.toThrow('retired');
+    await target.lockWallet();
+    (target as any).hasPublicSession = () => true;
+    expect(() => target.getPrivateRecordAccess(journalDomains)).toThrow(
+      'public session'
+    );
+    await expect(moved.getPrivateRecordProfileId()).rejects.toThrow('retired');
+  } finally {
+    await f.keyring.destroy();
+    await target.destroy();
   }
 });

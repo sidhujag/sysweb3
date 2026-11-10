@@ -40,3 +40,14 @@ The operation can start from a locked keyring. It authenticates and then runs th
 ## Limits
 
 Clearing overwrites the SDK-owned `SecureBuffer` instances and removes their references. JavaScript strings and third-party cryptographic temporaries are garbage-collected; this is not a guarantee of physical heap erasure. A deliberately exported phrase/key remains the responsibility of its protected presentation until hidden. Signed bytes, encrypted records, and public account metadata are not decrypted wallet-key retention. The API does not add a new PIN, biometric enrollment, nonce planner, or broadcast policy.
+
+
+## Restricted record access
+
+`createPrivateRecordAccess(domains, { transferable })` requires a live secret operation in operation mode. The transfer choice is required and must be a Boolean. The SDK derives only the named domain AES-GCM keys and the public profile identifier using the existing v1 derivation; the root bytes are cleared before returning. The facade cannot export keys, derive other domains, unlock a wallet, or sign.
+
+`getPrivateRecordAccess(domains)` is a synchronous lookup for exactly the same transferable domain set already created in this public session. Nontransferable private-action grants can only be used through the returned facade; this getter never returns them. It does not read the mnemonic or stored vault. Subsets, supersets, and uninitialized sets are rejected. Hosts should grant transferable access only to their public signed-transaction journal domains; private-note actions use `transferable: false` and dispose their grant when the action ends.
+
+Trusted same-authority public-session transfer moves existing transferable domain keys to a new facade guarded by the target owner. Old facades and in-flight operations are retired, and disposing or destroying the source cannot affect the moved keys. Nontransferable grants are retired rather than moved. Lock and public-session replacement drop all cached grants. The internal move requires an unforgeable SDK owner token, so importing a raw helper cannot detach an application grant from lock revocation.
+
+WebCrypto keys are nonextractable. Disposing a grant drops SDK references to its opaque keys; the engine controls underlying key-memory reclamation. This is not a claim of immediate JavaScript-engine or hardware memory erasure.

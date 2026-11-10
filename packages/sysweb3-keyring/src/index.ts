@@ -11,6 +11,8 @@ export {
   MAX_PRIVATE_RECORD_LABEL_BYTES,
 } from './private-records';
 export type {
+  IPrivateRecordAccess,
+  PrivateRecordAccessOptions,
   IDecryptPrivateRecordParams,
   IEncryptedPrivateRecord,
   IEncryptPrivateRecordParams,

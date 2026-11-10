@@ -41,6 +41,13 @@ import {
   decryptPrivateRecordBytes,
   encryptPrivateRecordBytes,
   privateRecordProfileId,
+  createPrivateRecordAccess,
+  activePrivateRecordDomainSet,
+  privateRecordDomainSet,
+  privateRecordAccessCanTransfer,
+  PrivateRecordAccessOptions,
+  transferPrivateRecordAccess,
+  IPrivateRecordAccess,
   IDecryptPrivateRecordParams,
   IEncryptedPrivateRecord,
   IEncryptPrivateRecordParams,
@@ -375,6 +382,8 @@ export class KeyringCore<
   private publicSession = false;
   private publicSessionRevision = 0;
   private secretOperation: SecretOperation | undefined;
+  readonly #recordAccess = new Set<IPrivateRecordAccess>();
+  readonly #recordAccessOwner = Object.freeze({});
   #deviceUnlockRetired = false;
   readonly #sessionOwnership: {
     tracker: SessionOwner;
@@ -622,16 +631,28 @@ export class KeyringCore<
             this.#sessionOwnership.token;
   };
 
-  public capturePublicSessionGuard(): () => void {
-    if (this.secretLifetime === 'session')
-      return this.captureUnlockedSessionGuard();
+  #capturePublicSessionGuard(): () => void {
+    const assertOwner = this.#captureSessionGuard();
     const revision = this.publicSessionRevision;
     const check = () => {
-      if (!this.hasPublicSession() || this.publicSessionRevision !== revision)
+      if (this.secretLifetime === 'session') {
+        assertOwner();
+        if (!this.sessionPassword || this.sessionPassword.isCleared())
+          throw new Error('Wallet unlock session changed');
+      } else if (
+        !this.publicSession ||
+        this.publicSessionRevision !== revision ||
+        this.#sessionOwnership.tracker.current !== this.#sessionOwnership.token
+      ) {
         throw new Error('Wallet public session changed');
+      }
     };
     check();
     return check;
+  }
+
+  public capturePublicSessionGuard(): () => void {
+    return this.#capturePublicSessionGuard();
   }
 
   private assertSecretAccess(): void {
@@ -675,7 +696,7 @@ export class KeyringCore<
     )
       throw new TypeError('Invalid secret operation');
     let publicGuard = this.hasPublicSession()
-      ? this.capturePublicSessionGuard()
+      ? this.#capturePublicSessionGuard()
       : undefined;
     const initialGuard = publicGuard ? undefined : this.#captureSessionGuard();
     const authority = captureHardwareTransactionAuthority(options);
@@ -770,6 +791,7 @@ export class KeyringCore<
         this.publicSessionRevision === createdPublicRevision &&
         this.hasPublicSession()
       ) {
+        this.clearRecordAccess();
         this.publicSession = false;
         this.publicSessionRevision++;
       }
@@ -793,6 +815,7 @@ export class KeyringCore<
     try {
       const result = await this.unlockSession(password);
       if (result.canLogin) {
+        this.clearRecordAccess();
         this.publicSession = true;
         this.publicSessionRevision++;
       }
@@ -816,6 +839,7 @@ export class KeyringCore<
   }
 
   public lockWallet = async () => {
+    this.clearRecordAccess();
     this.publicSession = false;
     this.publicSessionRevision++;
     if (this.secretOperation) this.secretOperation.active = false;
@@ -872,7 +896,7 @@ export class KeyringCore<
       );
     }
     const sourceGuard = publicOnly
-      ? this.capturePublicSessionGuard()
+      ? this.#capturePublicSessionGuard()
       : this.#captureSessionGuard();
     const targetRevision = targetKeyring.privateRecordSessionRevision;
     const ledger = this.ledgerSigner;
@@ -943,6 +967,29 @@ export class KeyringCore<
         check();
         if (targetKeyring === this) return;
         if (publicOnly) {
+          const sourceRecords = [...this.#recordAccess].filter((access) =>
+            privateRecordAccessCanTransfer(access, this.#recordAccessOwner)
+          );
+          const retiringRecords = [...this.#recordAccess].filter(
+            (access) => !sourceRecords.includes(access)
+          );
+          targetKeyring.clearRecordAccess();
+          // No facade is delivered until the synchronous authority move is complete.
+          const targetOwner: { guard?: () => void } = {};
+          const movedRecords = sourceRecords.map((access) =>
+            transferPrivateRecordAccess(
+              access,
+              this.#recordAccessOwner,
+              targetKeyring.#recordAccessOwner,
+              () => {
+                if (!targetOwner.guard)
+                  throw new Error('Record access transfer is incomplete');
+                targetOwner.guard();
+              }
+            )
+          );
+          for (const access of retiringRecords) access.dispose();
+          this.#recordAccess.clear();
           this.publicSession = false;
           this.publicSessionRevision++;
           targetKeyring.publicSession = true;
@@ -950,6 +997,9 @@ export class KeyringCore<
           this.#sessionOwnership.tracker.current =
             targetKeyring.#sessionOwnership.token;
           this.#sessionOwnership.tracker.epoch++;
+          targetOwner.guard = targetKeyring.#capturePublicSessionGuard();
+          for (const access of movedRecords)
+            targetKeyring.#recordAccess.add(access);
         } else {
           targetKeyring.#acceptSessionFrom(this);
           this.retireSessionLifetime();
@@ -1698,6 +1748,66 @@ export class KeyringCore<
     if (!root || root.length > 4096)
       throw new Error('Invalid private record root');
     return { secret: new TextEncoder().encode(root), assertCurrent };
+  }
+
+  private clearRecordAccess(): void {
+    for (const access of this.#recordAccess) access.dispose();
+    this.#recordAccess.clear();
+  }
+
+  /** Public transaction records may outlive a signer without retaining the spending root. */
+  public async createPrivateRecordAccess(
+    domains: readonly string[],
+    options: PrivateRecordAccessOptions
+  ): Promise<IPrivateRecordAccess> {
+    this.assertSecretAccess();
+    const session = this.privateRecordSession();
+    const publicGuard = this.#capturePublicSessionGuard();
+    for (const previous of this.#recordAccess) {
+      if (
+        activePrivateRecordDomainSet(previous, this.#recordAccessOwner) === null
+      )
+        this.#recordAccess.delete(previous);
+    }
+    let access: IPrivateRecordAccess | undefined;
+    try {
+      access = await createPrivateRecordAccess(
+        session.secret,
+        domains,
+        options,
+        publicGuard,
+        this.#recordAccessOwner
+      );
+      session.assertCurrent();
+      publicGuard();
+      this.#recordAccess.add(access);
+      return access;
+    } catch (error) {
+      access?.dispose();
+      throw error;
+    } finally {
+      session.secret.fill(0);
+    }
+  }
+
+  /** Retrieve only an exact domain set already derived under a secret operation. Never unlocks or derives. */
+  public getPrivateRecordAccess(
+    domains: readonly string[]
+  ): IPrivateRecordAccess {
+    const guard = this.#capturePublicSessionGuard();
+    const domainSet = privateRecordDomainSet(domains);
+    guard();
+    for (const access of this.#recordAccess) {
+      if (
+        privateRecordAccessCanTransfer(access, this.#recordAccessOwner) &&
+        activePrivateRecordDomainSet(access, this.#recordAccessOwner) ===
+          domainSet
+      ) {
+        guard();
+        return access;
+      }
+    }
+    throw new Error('Record access is not initialized for these domains');
   }
 
   /** Stable local profile identifier; never an account address or a key. */
@@ -2569,7 +2679,7 @@ export class KeyringCore<
   private capturePublicWalletContext = (): (() => void) => {
     if (this.secretLifetime === 'session')
       return this.capturePsbtSigningContext();
-    const publicGuard = this.capturePublicSessionGuard();
+    const publicGuard = this.#capturePublicSessionGuard();
     const vault = this.getVault();
     const selected = { ...vault.activeAccount };
     const account = vault.accounts[selected.type]?.[selected.id];

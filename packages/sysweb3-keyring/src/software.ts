@@ -79,3 +79,8 @@ export type {
   SecretOperationOptions,
 } from './keyring-core';
 export type { SecretLifetimePolicy } from './keyring-host';
+
+export type {
+  IPrivateRecordAccess,
+  PrivateRecordAccessOptions,
+} from './private-records';
