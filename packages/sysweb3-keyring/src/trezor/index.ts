@@ -5,6 +5,7 @@ import bitcoinops from 'bitcoin-ops';
 import { Psbt } from 'bitcoinjs-lib';
 import bs58check from 'bs58check';
 import { Buffer } from 'buffer';
+import { recoverAddress } from 'ethers';
 import * as syscoinjs from 'syscoinjs-lib';
 
 import { trezorResponseError } from './connect';
@@ -1041,55 +1042,52 @@ export class TrezorKeyring {
       )
     );
   }
-  private _sanitizeData(data: any): any {
-    switch (Object.prototype.toString.call(data)) {
-      case '[object Object]': {
-        const entries = Object.keys(data).map((k) => [
-          k,
-          this._sanitizeData(data[k]),
-        ]);
-        return Object.fromEntries(entries);
-      }
-
-      case '[object Array]':
-        return data.map((v: any[]) => this._sanitizeData(v));
-
-      case '[object BigInt]':
-        return data.toString();
-
-      default:
-        return data;
-    }
-  }
-
   private _transformTypedData = (
     data: LedgerTypedData,
     version: SignTypedDataVersion
   ) => {
-    const { types, primaryType, domain, message } = this._sanitizeData(data);
-
-    const domainSeparatorHash = TypedDataUtils.hashStruct(
-      'EIP712Domain',
-      this._sanitizeData(domain),
-      types,
+    if (
+      !data.types ||
+      typeof data.types !== 'object' ||
+      Array.isArray(data.types)
+    )
+      throw new Error('Invalid typed signing request');
+    // Nested values already belong to the bounded, immutable capture. Only
+    // these semantic fields may influence either device hashes or verification.
+    const emptyDomainType: LedgerTypedData['types'][string] = [];
+    Object.freeze(emptyDomainType);
+    const canonical = Object.freeze({
+      types: Object.freeze({
+        ...data.types,
+        EIP712Domain:
+          data.types.EIP712Domain === undefined
+            ? emptyDomainType
+            : data.types.EIP712Domain,
+      }),
+      primaryType: data.primaryType,
+      domain: data.domain === undefined ? Object.freeze({}) : data.domain,
+      message: data.message === undefined ? Object.freeze({}) : data.message,
+    });
+    const domainSeparatorHash = TypedDataUtils.eip712DomainHash(
+      canonical as any,
       version as SignTypedDataVersion.V3 | SignTypedDataVersion.V4
     ).toString('hex');
 
     let messageHash: string | null = null;
 
-    if (primaryType !== 'EIP712Domain') {
+    if (canonical.primaryType !== 'EIP712Domain') {
       messageHash = TypedDataUtils.hashStruct(
-        primaryType as string,
-        this._sanitizeData(message),
-        types,
+        canonical.primaryType,
+        canonical.message,
+        canonical.types,
         version as SignTypedDataVersion.V3 | SignTypedDataVersion.V4
       ).toString('hex');
     }
 
     return {
+      canonical,
       domain_separator_hash: domainSeparatorHash,
       message_hash: messageHash,
-      ...data,
     };
   };
 
@@ -1121,32 +1119,22 @@ export class TrezorKeyring {
       request.data,
       () => new Error('Invalid typed signing request')
     );
-    const {
-      types,
-      message = {},
-      domain = {},
-      primaryType,
-      domain_separator_hash,
-      message_hash,
-    } = this._transformTypedData(data, version);
+    const { canonical, domain_separator_hash, message_hash } =
+      this._transformTypedData(data, version);
+    const digest = `0x${TypedDataUtils.eip712Hash(
+      canonical as any,
+      version
+    ).toString('hex')}`;
     const approved = Object.freeze({
       path,
-      data: Object.freeze({
-        types: Object.freeze({
-          ...types,
-          EIP712Domain: types.EIP712Domain ?? [],
-        }),
-        message,
-        domain,
-        primaryType: primaryType as any,
-      }),
+      data: canonical,
       metamask_v4_compat: version === SignTypedDataVersion.V4,
       domain_separator_hash,
       message_hash: message_hash ?? '',
     });
     owner.assertCurrent();
-    return this.connection.withOwnedSigning(owner, (session) =>
-      this.executeWithRetry(
+    return this.connection.withOwnedSigning(owner, async (session) => {
+      const signature = await this.executeWithRetry(
         async () => {
           owner.assertCurrent();
           await new Promise((resolve) =>
@@ -1163,8 +1151,25 @@ export class TrezorKeyring {
         'signTypedData',
         owner.assertCurrent,
         session
-      )
-    );
+      );
+      owner.assertCurrent();
+      // Verify after transport retry has completed: rejecting this proof must
+      // not trigger another device approval.
+      let valid = false;
+      try {
+        valid =
+          typeof signature === 'string' &&
+          /^0x[0-9a-f]{130}$/i.test(signature) &&
+          recoverAddress(digest, signature).toLowerCase() ===
+            address.toLowerCase();
+      } catch {
+        /* Refuse malformed or mismatched proofs before release. */
+      }
+      owner.assertCurrent();
+      if (!valid)
+        throw new Error('Trezor returned an invalid typed-data signature');
+      return signature;
+    });
   }
 
   /**

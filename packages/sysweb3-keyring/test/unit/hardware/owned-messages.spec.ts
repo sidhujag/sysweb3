@@ -1,4 +1,4 @@
-import { SignTypedDataVersion } from '@metamask/eth-sig-util';
+import { SignTypedDataVersion, TypedDataUtils } from '@metamask/eth-sig-util';
 import { hashMessage, Wallet } from 'ethers';
 
 import { HardwareWalletManager } from '../../../src/hardware-wallet-manager';
@@ -31,6 +31,12 @@ const typed = () => ({
   version: SignTypedDataVersion.V4,
   data: data(),
 });
+const typedSignature = (value = data()) =>
+  wallet.signingKey.sign(
+    `0x${TypedDataUtils.eip712Hash(value, SignTypedDataVersion.V4).toString(
+      'hex'
+    )}`
+  ).serialized;
 const deferred = () => {
   let resolve!: (value?: any) => void;
   const promise = new Promise<any>((done) => {
@@ -66,7 +72,7 @@ const host = (): TrezorHost =>
             success: true,
             payload: {
               address: wallet.address,
-              signature: '0x' + 'ab'.repeat(65),
+              signature: typedSignature(),
             },
           };
         }),
@@ -91,7 +97,7 @@ test('owned Trezor typed requests preserve the explicit target and immutable dat
   input.index = 9;
   input.data.message.text = 'changed';
   await jest.advanceTimersByTimeAsync(2200);
-  await expect(work).resolves.toBe('0x' + 'ab'.repeat(65));
+  await expect(work).resolves.toBe(typedSignature());
   expect(device.ethereumSignTypedData).toHaveBeenCalledWith(
     expect.any(Function),
     expect.objectContaining({
@@ -171,7 +177,7 @@ test('owned Trezor raw-call cancellation drains before a successor and cannot re
   const before = (device.dispose as jest.Mock).mock.calls.length;
   const second = ring.signTypedData(typed(), authority());
   await jest.advanceTimersByTimeAsync(2200);
-  await expect(second).resolves.toBe('0x' + 'ab'.repeat(65));
+  await expect(second).resolves.toBe(typedSignature());
   old.abort();
   expect((device.dispose as jest.Mock).mock.calls.length).toBe(before);
   expect(device.ethereumSignTypedData).toHaveBeenCalledTimes(2);
@@ -437,7 +443,7 @@ test('Trezor personal cancellation holds the signing slot until raw settlement, 
   const successor = ring.signTypedData(typed(), authority());
   old.abort();
   await jest.advanceTimersByTimeAsync(2200);
-  await expect(successor).resolves.toBe('0x' + 'ab'.repeat(65));
+  await expect(successor).resolves.toBe(typedSignature());
   expect(device.ethereumSignTypedData).toHaveBeenCalledTimes(1);
   await ring.retire();
 });
