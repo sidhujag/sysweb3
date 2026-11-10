@@ -80,7 +80,9 @@ describe('PSBT Transaction Flow Integration', () => {
         ledger: createLedgerPsbtSigner(mockLedger),
         trezor: createTrezorPsbtSigner(mockTrezor),
       },
-      () => () => undefined
+      () => () => undefined,
+      'session',
+      () => undefined
     );
   });
 

@@ -15,6 +15,12 @@ Public account records remain owned by the existing bound state getter. Provider
 
 `prepareSessionTransfer()` moves public authority only between operation-policy keyrings when no secret operation is pending. It retains the existing same-host/store checks and one-use transfer. It does not transfer software secrets across the action boundary. Cross-policy transfers are refused.
 
+## Public PSBT preparation
+
+Operation-policy hosts call `syscoinTransaction.preparePSBTForSigning({ psbt }, ownedRead)` before requesting the signing secret. This uses the existing Blockbook path enrichment and validates the selected account against the spent scripts. It returns the same unsigned transaction and assets with public derivation metadata added or normalized, preserving cosigner metadata. The owned read keeps the selected account, network, endpoint, and cancellation guard bound throughout preparation.
+
+In operation policy, public preparation refuses to start while secrets are loaded. `signPSBT()` never fetches missing paths in that policy: unresolved inputs fail before a software signer is obtained. The host still serializes preparation and authorization, and signing repeats the existing account-scope and unsigned-transaction checks. Session policy retains its existing implicit path enrichment during signing.
+
 ## One sensitive action
 
 ```ts

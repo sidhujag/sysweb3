@@ -317,6 +317,8 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
     activeNetwork: INetwork;
   };
   private captureSigningContext: (bindSessionRevision: boolean) => () => void;
+  private readonly secretLifetime: 'session' | 'operation';
+  private readonly assertPublicPreparation: () => void;
 
   constructor(
     getSyscoinSigner: () => {
@@ -336,15 +338,24 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
       activeNetwork: INetwork;
     },
     hardwareSigners: ISyscoinHardwareSigners,
-    captureSigningContext: (bindSessionRevision: boolean) => () => void
+    captureSigningContext: (bindSessionRevision: boolean) => () => void,
+    secretLifetime: 'session' | 'operation',
+    assertPublicPreparation: () => void
   ) {
     if (typeof captureSigningContext !== 'function')
       throw new Error('Missing UTXO signing context');
+    if (
+      (secretLifetime !== 'session' && secretLifetime !== 'operation') ||
+      typeof assertPublicPreparation !== 'function'
+    )
+      throw new Error('Missing explicit UTXO secret lifetime');
     this.getSigner = getSyscoinSigner;
     this.getReadOnlySigner = getReadOnlySigner;
     this.getState = getState;
     this.hardwareSigners = hardwareSigners;
     this.captureSigningContext = captureSigningContext;
+    this.secretLifetime = secretLifetime;
+    this.assertPublicPreparation = assertPublicPreparation;
   }
 
   private getTransactionPSBT = async (
@@ -765,6 +776,134 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
     }
   };
 
+  /** Resolve public signing hints without loading a software signer. */
+  private prepareSoftwareSigningPaths = async (
+    psbt: Psbt,
+    ownedRead: SyscoinUtxoReadContext,
+    allowNetwork: boolean
+  ): Promise<void> => {
+    const { assertCurrent, network: activeNetwork, transport } = ownedRead;
+    assertCurrent();
+    // HD signing (seed-based HDAccount or imported BIP84 zprv/vprv account).
+    // Some Blockbook deployments return UTXOs without per-input derivation `path`,
+    // which causes bitcoinjs-lib to throw "Need derivation path to sign with HD".
+    //
+    // We can recover by enriching PSBT inputs with a proprietary `path` field using
+    // Blockbook's xpub token list (address -> path mapping), which reliably includes paths.
+    const { activeAccountId, activeAccountType, accounts } = this.getState();
+    const account = accounts[activeAccountType]?.[activeAccountId] as any;
+    const accountXpub = account?.xpub as string | undefined;
+    const accountAddress = account?.address as string | undefined;
+    const isSingleAddressImported =
+      activeAccountType === KeyringAccountType.Imported &&
+      Boolean(accountXpub) &&
+      Boolean(accountAddress) &&
+      accountXpub === accountAddress;
+    const isImportedExtended =
+      activeAccountType === KeyringAccountType.Imported &&
+      Boolean(accountXpub) &&
+      !isSingleAddressImported;
+
+    // IMPORTANT: Imported extended keys (zprv/vprv) are typically *account-level* keys.
+    // syscoinjs-lib signs using the imported key as the BIP32 root, so PSBT `path` must be
+    // relative (change/index), not the full `m/84'/.../change/index`. If we keep full paths,
+    // bip32.derivePath can throw, leaving no derivations and causing "Need derivation path".
+    if (isImportedExtended) {
+      const inputs: any[] = (psbt as any)?.data?.inputs || [];
+      for (const input of inputs) {
+        const unknowns = input?.unknownKeyVals || [];
+        const pathKv = unknowns.find((kv) => kv?.key?.toString?.() === 'path');
+        if (!pathKv?.value) continue;
+        const fullPath = String(Buffer.from(pathKv.value).toString());
+        const parts = fullPath.split('/').filter(Boolean);
+        // Expected: m/84'/slip44'/account'/change/index
+        if (parts.length >= 2) {
+          const change = parts[parts.length - 2];
+          const index = parts[parts.length - 1];
+          const rel = `${change}/${index}`;
+          pathKv.value = Buffer.from(rel);
+        }
+      }
+    }
+
+    const needsAnyPath = (psbt as any)?.data?.inputs?.some((input) => {
+      if (input.finalScriptSig || input.finalScriptWitness) return false;
+      const unknowns = input?.unknownKeyVals || [];
+      return (
+        !input.bip32Derivation?.length &&
+        !input.tapBip32Derivation?.length &&
+        !unknowns.some((kv) => kv?.key?.toString?.() === 'path')
+      );
+    });
+
+    if (
+      needsAnyPath &&
+      accountXpub &&
+      !isSingleAddressImported &&
+      typeof (psbt as any).addUnknownKeyValToInput === 'function'
+    ) {
+      if (!allowNetwork)
+        throw new Error(
+          'PSBT signing paths must be prepared before the secret operation'
+        );
+      // Fetch address->path mapping from Blockbook xpub endpoint
+      const blockbookUrl = activeNetwork.url;
+      const res: any = await fetchOwnedBlockbookAccount(
+        blockbookUrl,
+        accountXpub,
+        transport
+      );
+      assertCurrent();
+      const tokens: any[] = Array.isArray(res?.tokens) ? res.tokens : [];
+      const addrToPath = new Map<string, string>();
+      for (const t of tokens) {
+        if (t?.name && t?.path) {
+          addrToPath.set(String(t.name), String(t.path));
+        }
+      }
+
+      const inputs: any[] = (psbt as any)?.data?.inputs || [];
+      for (let i = 0; i < inputs.length; i++) {
+        const input = inputs[i];
+        const unknowns = input?.unknownKeyVals || [];
+        const hasPath = unknowns.some((kv) => kv?.key?.toString?.() === 'path');
+        if (hasPath) continue;
+
+        const addrKv = unknowns.find(
+          (kv) => kv?.key?.toString?.() === 'address'
+        );
+        const addr = addrKv?.value
+          ? String(Buffer.from(addrKv.value).toString())
+          : null;
+        if (!addr) continue;
+
+        const fullPath = addrToPath.get(addr);
+        if (!fullPath) continue;
+
+        // Imported extended keys are account-level (BIP84 account node), so we must provide a
+        // path relative to that node (change/index), not the full m/84'/... path.
+        const pathForSigner = isImportedExtended
+          ? (() => {
+              const parts = String(fullPath).split('/').filter(Boolean);
+              // Expected: m/84'/slip44'/account'/change/index
+              if (parts.length >= 2) {
+                const change = parts[parts.length - 2];
+                const index = parts[parts.length - 1];
+                return `${change}/${index}`;
+              }
+              return fullPath;
+            })()
+          : fullPath;
+
+        (psbt as any).addUnknownKeyValToInput(i, {
+          key: Buffer.from('path'),
+          value: Buffer.from(pathForSigner),
+        });
+      }
+    }
+    assertCurrent();
+  };
+
   // Sign PSBT with appropriate method - separated for better error handling
   private signPSBTWithMethod = async (
     psbt: Psbt,
@@ -829,122 +968,11 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
       assertHardwareCurrent();
       return signed;
     } else {
-      // HD signing (seed-based HDAccount or imported BIP84 zprv/vprv account).
-      // Some Blockbook deployments return UTXOs without per-input derivation `path`,
-      // which causes bitcoinjs-lib to throw "Need derivation path to sign with HD".
-      //
-      // We can recover by enriching PSBT inputs with a proprietary `path` field using
-      // Blockbook's xpub token list (address -> path mapping), which reliably includes paths.
-      const account = accounts[activeAccountType]?.[activeAccountId] as any;
-      const accountXpub = account?.xpub as string | undefined;
-      const accountAddress = account?.address as string | undefined;
-      const isSingleAddressImported =
-        activeAccountType === KeyringAccountType.Imported &&
-        Boolean(accountXpub) &&
-        Boolean(accountAddress) &&
-        accountXpub === accountAddress;
-      const isImportedExtended =
-        activeAccountType === KeyringAccountType.Imported &&
-        Boolean(accountXpub) &&
-        !isSingleAddressImported;
-
-      // IMPORTANT: Imported extended keys (zprv/vprv) are typically *account-level* keys.
-      // syscoinjs-lib signs using the imported key as the BIP32 root, so PSBT `path` must be
-      // relative (change/index), not the full `m/84'/.../change/index`. If we keep full paths,
-      // bip32.derivePath can throw, leaving no derivations and causing "Need derivation path".
-      if (isImportedExtended) {
-        const inputs: any[] = (psbt as any)?.data?.inputs || [];
-        for (const input of inputs) {
-          const unknowns = input?.unknownKeyVals || [];
-          const pathKv = unknowns.find(
-            (kv) => kv?.key?.toString?.() === 'path'
-          );
-          if (!pathKv?.value) continue;
-          const fullPath = String(Buffer.from(pathKv.value).toString());
-          const parts = fullPath.split('/').filter(Boolean);
-          // Expected: m/84'/slip44'/account'/change/index
-          if (parts.length >= 2) {
-            const change = parts[parts.length - 2];
-            const index = parts[parts.length - 1];
-            const rel = `${change}/${index}`;
-            pathKv.value = Buffer.from(rel);
-          }
-        }
-      }
-
-      const needsAnyPath = (psbt as any)?.data?.inputs?.some((input) => {
-        const unknowns = input?.unknownKeyVals || [];
-        return (
-          !input.bip32Derivation?.length &&
-          !input.tapBip32Derivation?.length &&
-          !unknowns.some((kv) => kv?.key?.toString?.() === 'path')
-        );
-      });
-
-      if (
-        needsAnyPath &&
-        accountXpub &&
-        !isSingleAddressImported &&
-        typeof (psbt as any).addUnknownKeyValToInput === 'function'
-      ) {
-        // Fetch address->path mapping from Blockbook xpub endpoint
-        const blockbookUrl = activeNetwork.url;
-        const res: any = await fetchOwnedBlockbookAccount(
-          blockbookUrl,
-          accountXpub,
-          transport
-        );
-        assertCurrent();
-        const tokens: any[] = Array.isArray(res?.tokens) ? res.tokens : [];
-        const addrToPath = new Map<string, string>();
-        for (const t of tokens) {
-          if (t?.name && t?.path) {
-            addrToPath.set(String(t.name), String(t.path));
-          }
-        }
-
-        const inputs: any[] = (psbt as any)?.data?.inputs || [];
-        for (let i = 0; i < inputs.length; i++) {
-          const input = inputs[i];
-          const unknowns = input?.unknownKeyVals || [];
-          const hasPath = unknowns.some(
-            (kv) => kv?.key?.toString?.() === 'path'
-          );
-          if (hasPath) continue;
-
-          const addrKv = unknowns.find(
-            (kv) => kv?.key?.toString?.() === 'address'
-          );
-          const addr = addrKv?.value
-            ? String(Buffer.from(addrKv.value).toString())
-            : null;
-          if (!addr) continue;
-
-          const fullPath = addrToPath.get(addr);
-          if (!fullPath) continue;
-
-          // Imported extended keys are account-level (BIP84 account node), so we must provide a
-          // path relative to that node (change/index), not the full m/84'/... path.
-          const pathForSigner = isImportedExtended
-            ? (() => {
-                const parts = String(fullPath).split('/').filter(Boolean);
-                // Expected: m/84'/slip44'/account'/change/index
-                if (parts.length >= 2) {
-                  const change = parts[parts.length - 2];
-                  const index = parts[parts.length - 1];
-                  return `${change}/${index}`;
-                }
-                return fullPath;
-              })()
-            : fullPath;
-
-          (psbt as any).addUnknownKeyValToInput(i, {
-            key: Buffer.from('path'),
-            value: Buffer.from(pathForSigner),
-          });
-        }
-      }
-
+      await this.prepareSoftwareSigningPaths(
+        psbt,
+        ownedRead,
+        this.secretLifetime === 'session'
+      );
       assertCurrent();
       assertPsbtAccountScope(psbt, scope);
       const { hd } = this.getSigner();
@@ -1102,6 +1130,64 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
   };
 
   // Removed createAndSignSysTransaction - functionality merged into getEstimateSysTransactionFee
+
+  /**
+   * Public metadata preparation for operation-scoped software signing. The
+   * returned PSBT preserves the unsigned transaction and existing cosigner data;
+   * signing still performs the normal account/scope checks.
+   */
+  public preparePSBTForSigning = async (
+    { psbt }: { psbt: any },
+    ownedRead: SyscoinOwnedReadOptions
+  ): Promise<any> => {
+    const { read, accountType, accountId, account } = this.captureOwnedRead({
+      ...ownedRead,
+      assertCurrent: () => {
+        this.assertPublicPreparation();
+        ownedRead.assertCurrent();
+        this.assertPublicPreparation();
+      },
+    });
+    const fields =
+      psbt && typeof psbt === 'object' && !Array.isArray(psbt)
+        ? Object.getOwnPropertyDescriptors(psbt)
+        : {};
+    if (
+      !fields.psbt ||
+      !('value' in fields.psbt) ||
+      typeof fields.psbt.value !== 'string' ||
+      !fields.assets ||
+      !('value' in fields.assets) ||
+      typeof fields.assets.value !== 'string'
+    )
+      throw new Error('Invalid PSBT JSON');
+    const captured = { psbt: fields.psbt.value, assets: fields.assets.value };
+    const psbtObj = PsbtUtils.fromPali(captured, read.network);
+    const unsigned = Buffer.from(psbtObj.data.globalMap.unsignedTx.toBuffer());
+    if (
+      accountType === KeyringAccountType.HDAccount ||
+      accountType === KeyringAccountType.Imported
+    )
+      await this.prepareSoftwareSigningPaths(psbtObj, read, true);
+    read.assertCurrent();
+    if (
+      !unsigned.equals(
+        Buffer.from(psbtObj.data.globalMap.unsignedTx.toBuffer())
+      )
+    )
+      throw new Error('Prepared PSBT differs from the unsigned transaction');
+    const result = { ...PsbtUtils.toPali(psbtObj), assets: captured.assets };
+    // Scope validation trims foreign hints. Validate a separate public copy so
+    // the returned PSBT keeps all cosigner metadata for the existing flow.
+    assertPsbtAccountScope(PsbtUtils.fromPali(result, read.network), {
+      account,
+      accountId,
+      accountType,
+      network: read.network,
+    });
+    read.assertCurrent();
+    return result;
+  };
 
   public signPSBT = async (
     { psbt }: { isLedger?: boolean; isTrezor?: boolean; psbt: any },

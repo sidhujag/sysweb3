@@ -440,7 +440,12 @@ export class KeyringCore<
       this.getReadOnlySigner,
       this.getAccountsState,
       this.syscoinHardwareSigners,
-      this.capturePublicWalletContext
+      this.capturePublicWalletContext,
+      this.secretLifetime,
+      () => {
+        if (this.secretLifetime === 'operation' && this.isUnlocked())
+          throw new Error('Prepare PSBT before the secret operation');
+      }
     );
 
   #createDeviceUnlockControls(

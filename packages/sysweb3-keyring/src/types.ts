@@ -332,6 +332,11 @@ export interface ISyscoinTransactions {
     txid: string,
     authority: SyscoinRetainedSubmissionOptions
   ) => Promise<ITxid>;
+  /** Resolve public signing paths before entering an operation-scoped lease. */
+  preparePSBTForSigning: (
+    input: { psbt: any },
+    ownedRead: SyscoinOwnedReadOptions
+  ) => Promise<any>;
   signPSBT: (
     {
       psbt,

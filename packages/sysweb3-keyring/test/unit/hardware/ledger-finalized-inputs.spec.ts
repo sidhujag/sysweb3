@@ -192,7 +192,9 @@ const fixture = (scriptType = 'p2wpkh', sameWallet = false) => {
     jest.fn(),
     () => state as any,
     { ledger: createLedgerPsbtSigner(ledger) },
-    () => () => undefined
+    () => () => undefined,
+    'session',
+    () => undefined
   );
   return {
     tx,
