@@ -87,6 +87,7 @@ export type {
 
 export type {
   PublicSessionCheckpointRequest,
+  PublicSessionCredentialPort,
   PublicSessionRestoreRequest,
 } from './public-session';
 export { MAX_PUBLIC_SESSION_STATE_BYTES } from './public-session';

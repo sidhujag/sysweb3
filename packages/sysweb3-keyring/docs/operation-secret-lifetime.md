@@ -15,6 +15,12 @@ Public account records remain owned by the existing bound state getter. Provider
 
 `prepareSessionTransfer()` moves public authority only between operation-policy keyrings when no secret operation is pending. It retains the existing same-host/store checks and one-use transfer. It does not transfer software secrets across the action boundary. Cross-policy transfers are refused.
 
+For a cold public-only session, `createPublicSessionCheckpoint(input, wrappingKey, assertCurrent)` seals the exact host manifest and explicitly selected record-domain keys while a genuine secret session is authorized. The host supplies an independent random 32-byte public-view wrapping key; the SDK refuses the current vault key and direct reuse of a 32-byte UTF-8 wallet password. These checks detect known credential reuse, not arbitrary key provenance. The host must generate the key independently and keep it separate from every spending credential. The wrapping key is never derived from the wallet password.
+
+`restorePublicSession({ withKey }, input, options, work)` accepts that dedicated key through the typed `PublicSessionCredentialPort`. It verifies the checkpoint, manifest, domain set and atomic wallet pair without reading a wallet password, deriving a vault key or decrypting the vault. A password-based `withSecret` port is not accepted. The SDK copies and clears the supplied key for each operation; the host retains responsibility for its own input bytes. Successful restoration grants only the checkpoint's named record capabilities and public session. A separate freshly authorized `withSecretOperation` is still required to sign or reveal secrets.
+
+Public-view checkpoints use the `sysweb3.public-view.v1` encryption domain and their own payload header. The earlier `sysweb3.public-session.v1` password-wrapped format is not accepted and has no automatic migration fallback. A host must provision a new public-view checkpoint during explicit authorized setup or recovery.
+
 ## Public PSBT preparation
 
 Operation-policy hosts call `syscoinTransaction.preparePSBTForSigning({ psbt }, ownedRead)` before requesting the signing secret. This uses the existing Blockbook path enrichment and validates the selected account against the spent scripts. It returns the same unsigned transaction and assets with public derivation metadata added or normalized, preserving cosigner metadata. The owned read keeps the selected account, network, endpoint, and cancellation guard bound throughout preparation.

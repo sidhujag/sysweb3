@@ -476,8 +476,9 @@ export async function createPrivateRecordAccess(
 
 // This separate HKDF domain cannot decrypt the vault. Checkpoints contain only
 // explicitly selected record-domain keys, never the mnemonic or vault key.
-const PUBLIC_SESSION_DOMAIN = 'sysweb3.public-session.v1';
-const CHECKPOINT_HEADER = new Uint8Array([0x50, 0x53, 0x43, 1]);
+// No compatibility fallback to the previous password-wrapped checkpoint.
+const PUBLIC_SESSION_DOMAIN = 'sysweb3.public-view.v1';
+const CHECKPOINT_HEADER = new Uint8Array([0x50, 0x56, 0x43, 1]);
 const CHECKPOINT_FIXED_BYTES = 4 + 32 + 32 + 32 + 1;
 type PublicRecordCheckpointContext = Readonly<{
   walletBindingId: string;

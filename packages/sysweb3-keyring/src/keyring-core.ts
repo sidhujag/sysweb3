@@ -57,8 +57,10 @@ import {
 import {
   capturePublicSessionRequest,
   capturePublicSessionCheckpoint,
+  capturePublicSessionKey,
   publicSessionStateDigest,
   PublicSessionCheckpointRequest,
+  PublicSessionCredentialPort,
   PublicSessionRestoreRequest,
 } from './public-session';
 import { getSyscoinSigners, SyscoinHDSigner } from './signers';
@@ -819,6 +821,7 @@ export class KeyringCore<
   /** Seal a host-validated immutable public manifest from a currently authorized secret session. */
   public async createPublicSessionCheckpoint(
     input: PublicSessionCheckpointRequest,
+    wrappingKey: Uint8Array,
     assertCurrent: () => void
   ): Promise<IEncryptedPrivateRecord> {
     this.assertSecretAccess();
@@ -837,13 +840,54 @@ export class KeyringCore<
       this.assertSecretAccess();
       session.assertCurrent();
     };
-    let wrappingSecret: Uint8Array | undefined;
+    let wrappingSecret: Uint8Array | undefined,
+      vaultKey: Uint8Array | undefined,
+      passwordKey: Uint8Array | undefined;
     try {
+      wrappingSecret = capturePublicSessionKey(wrappingKey);
       check();
       const pair = await readCurrentVaultPair(readPair.bind(this.storage));
       check();
       if (!pair) throw new Error('Public session wallet is unavailable');
-      wrappingSecret = this.hexToBytes(password.toString());
+      vaultKey = this.hexToBytes(password.toString());
+      let difference = vaultKey.length ^ wrappingSecret.length;
+      for (let index = 0; index < wrappingSecret.length; index++)
+        difference |= wrappingSecret[index] ^ (vaultKey[index] ?? 0);
+      if (difference === 0)
+        throw new Error(
+          'Public session key must be independent of the vault key'
+        );
+      // Catch direct reuse of a 32-byte UTF-8 wallet password as well. Random
+      // wrapping bytes normally fail strict decoding and need no extra KDF.
+      // This detects known credential reuse, not arbitrary key provenance.
+      let candidatePassword: string | undefined;
+      try {
+        candidatePassword = new TextDecoder('utf-8', {
+          fatal: true,
+          ignoreBOM: true,
+        }).decode(wrappingSecret);
+      } catch {
+        // A binary public-view key is expected and does not need decoding.
+      }
+      if (candidatePassword !== undefined) {
+        passwordKey = this.hexToBytes(
+          await this.deriveStoredSessionKey(candidatePassword, {
+            salt: pair.salt,
+          })
+        );
+        check();
+        let passwordDifference = vaultKey.length ^ passwordKey.length;
+        for (let index = 0; index < passwordKey.length; index++)
+          passwordDifference |= passwordKey[index] ^ (vaultKey[index] ?? 0);
+        passwordKey.fill(0);
+        passwordKey = undefined;
+        if (passwordDifference === 0)
+          throw new Error(
+            'Public session key must be independent of the vault password'
+          );
+      }
+      vaultKey.fill(0);
+      vaultKey = undefined;
       // A checkpoint must never attest a different pair using an old live root.
       const payload = await decryptCurrentVault(
         pair.vault,
@@ -883,13 +927,15 @@ export class KeyringCore<
     } finally {
       session.secret.fill(0);
       wrappingSecret?.fill(0);
+      vaultKey?.fill(0);
+      passwordKey?.fill(0);
       request.publicState.fill(0);
     }
   }
 
   /** Restore only authenticated public state and record keys. Never decrypts the vault. */
   public async restorePublicSession<T>(
-    credential: SecretOperationCredentialPort,
+    credential: PublicSessionCredentialPort,
     input: PublicSessionRestoreRequest,
     options: SecretOperationOptions,
     work: (authenticatedPublicState: Uint8Array) => T | Promise<T>
@@ -903,14 +949,14 @@ export class KeyringCore<
       throw new Error('Public session restore requires a locked wallet');
     if (
       !credential ||
-      typeof credential.withSecret !== 'function' ||
+      typeof credential.withKey !== 'function' ||
       typeof work !== 'function'
     )
       throw new TypeError('Invalid public session restore');
     const readPair = this.storage.readDeviceUnlockVaultPair;
     if (typeof readPair !== 'function')
       throw new Error('Public session requires atomic wallet storage');
-    const withSecret = credential.withSecret.bind(credential);
+    const withKey = credential.withKey.bind(credential);
     const request = capturePublicSessionRequest(input);
     const checkpoint = capturePublicSessionCheckpoint(input);
     const authority = captureHardwareTransactionAuthority(options);
@@ -973,7 +1019,7 @@ export class KeyringCore<
           throw new Error('Public session wallet changed');
       };
       const digest = await publicSessionStateDigest(request.publicState, check);
-      await withSecret(check, (secret) => {
+      await withKey(check, (key) => {
         if (entered) {
           const rejected = Promise.reject(
             new Error('Public session credential was already consumed')
@@ -985,12 +1031,7 @@ export class KeyringCore<
         pending = (async () => {
           let wrappingSecret: Uint8Array | undefined;
           try {
-            check();
-            if (typeof secret !== 'string' || !secret)
-              throw new TypeError('Invalid public session credential');
-            wrappingSecret = this.hexToBytes(
-              await this.deriveStoredSessionKey(secret, { salt: pair.salt })
-            );
+            wrappingSecret = capturePublicSessionKey(key);
             check();
             restored = await restorePublicRecordCheckpoint(
               wrappingSecret,

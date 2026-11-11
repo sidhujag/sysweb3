@@ -390,10 +390,11 @@ export interface IKeyringManager {
   getSeed: (pwd: string) => Promise<string>;
   createPublicSessionCheckpoint: (
     input: import('./public-session').PublicSessionCheckpointRequest,
+    wrappingKey: Uint8Array,
     assertCurrent: () => void
   ) => Promise<import('./private-records').IEncryptedPrivateRecord>;
   restorePublicSession: <T>(
-    credential: import('./keyring-core').SecretOperationCredentialPort,
+    credential: import('./public-session').PublicSessionCredentialPort,
     input: import('./public-session').PublicSessionRestoreRequest,
     options: import('./keyring-core').SecretOperationOptions,
     work: (authenticatedPublicState: Uint8Array) => T | Promise<T>

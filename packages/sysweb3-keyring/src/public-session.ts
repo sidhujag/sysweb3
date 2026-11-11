@@ -10,7 +10,27 @@ export type PublicSessionCheckpointRequest = Readonly<{
 }>;
 export type PublicSessionRestoreRequest = PublicSessionCheckpointRequest &
   Readonly<{ checkpoint: IEncryptedPrivateRecord }>;
+/** A dedicated public-view key; it must never be a vault password or vault key. */
+export type PublicSessionCredentialPort = Readonly<{
+  withKey(
+    assertCurrent: () => void,
+    consume: (key: Uint8Array) => Promise<void>
+  ): Promise<void>;
+}>;
 export const MAX_PUBLIC_SESSION_STATE_BYTES = 4 * 1024 * 1024;
+
+export function capturePublicSessionKey(value: Uint8Array): Uint8Array {
+  if (!(value instanceof Uint8Array))
+    throw new TypeError('Invalid public session key');
+  const key = new Uint8Array(value);
+  // A caller may shadow length on a typed array or its subclass. Validate the
+  // owned plain copy, whose actual byte count is used by the crypto provider.
+  if (key.length !== 32) {
+    key.fill(0);
+    throw new TypeError('Invalid public session key');
+  }
+  return key;
+}
 
 export function capturePublicSessionRequest(
   input: PublicSessionCheckpointRequest
