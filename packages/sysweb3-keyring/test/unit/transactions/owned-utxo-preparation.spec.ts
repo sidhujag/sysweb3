@@ -563,7 +563,9 @@ it('refuses owned preparation through an unscoped legacy builder', async () => {
       activeNetwork: state.activeNetwork,
     }),
     {},
-    () => () => undefined
+    () => () => undefined,
+    'session',
+    () => undefined
   );
   const outcome = await legacy
     .getEstimateSysTransactionFee(

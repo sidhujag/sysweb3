@@ -68,7 +68,9 @@ describe('explicit native sweep quotes', () => {
       () => ({ main, getOwnedAddress: async () => address }),
       () => state,
       {},
-      () => () => undefined
+      () => () => undefined,
+      'session',
+      () => undefined
     );
   });
   afterEach(() => jest.restoreAllMocks());

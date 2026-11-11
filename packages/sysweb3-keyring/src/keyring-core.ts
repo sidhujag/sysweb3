@@ -27,7 +27,10 @@ const SLH_DSA_PARAMETER_SET = 'SLH-DSA-SHA2-128-24';
 
 import { currentVaultRefusals } from './current-vault-refusal';
 import { isHexString } from './ethers-v6';
-import { assertHardwareOperationCurrent } from './hardware-transaction-authority';
+import {
+  assertHardwareOperationCurrent,
+  captureHardwareTransactionAuthority,
+} from './hardware-transaction-authority';
 import {
   initialActiveImportedAccountState,
   initialActiveLedgerAccountState,
@@ -36,12 +39,30 @@ import {
 import { takeKeyringHostBinding } from './keyring-host';
 import {
   decryptPrivateRecordBytes,
+  sealPublicRecordCheckpoint,
+  restorePublicRecordCheckpoint,
   encryptPrivateRecordBytes,
   privateRecordProfileId,
+  createPrivateRecordAccess,
+  activePrivateRecordDomainSet,
+  privateRecordDomainSet,
+  privateRecordAccessCanTransfer,
+  PrivateRecordAccessOptions,
+  transferPrivateRecordAccess,
+  IPrivateRecordAccess,
   IDecryptPrivateRecordParams,
   IEncryptedPrivateRecord,
   IEncryptPrivateRecordParams,
 } from './private-records';
+import {
+  capturePublicSessionRequest,
+  capturePublicSessionCheckpoint,
+  capturePublicSessionKey,
+  publicSessionStateDigest,
+  PublicSessionCheckpointRequest,
+  PublicSessionCredentialPort,
+  PublicSessionRestoreRequest,
+} from './public-session';
 import { getSyscoinSigners, SyscoinHDSigner } from './signers';
 import { snapshotEvmHdIndex } from './software-hd-account';
 import { decryptCurrentVault, VaultAuthenticationError } from './storage-core';
@@ -253,6 +274,23 @@ class SecureBuffer {
   }
 }
 
+/** A host supplies the existing SDK credential only inside this one-use callback. */
+export type SecretOperationCredentialPort = Readonly<{
+  withSecret(
+    assertCurrent: () => void,
+    consume: (secret: string) => Promise<void>
+  ): Promise<void>;
+}>;
+export type SecretOperationOptions = Readonly<{
+  signal: AbortSignal;
+  assertCurrent: () => void;
+}>;
+type SecretOperation = {
+  active: boolean;
+  working: boolean;
+  assertCurrent: () => void;
+};
+
 export class KeyringCore<
   TLedger extends KeyringLedgerSigner | undefined =
     | KeyringLedgerSigner
@@ -351,6 +389,12 @@ export class KeyringCore<
   private sessionMnemonic: SecureBuffer | null = null; // can be a mnemonic or a zprv, can be changed to a zprv when using an imported wallet
   private privateRecordSessionRevision = 0;
   private sessionLifetime = new AbortController();
+  private readonly secretLifetime: 'session' | 'operation';
+  private publicSession = false;
+  private publicSessionRevision = 0;
+  private secretOperation: SecretOperation | undefined;
+  readonly #recordAccess = new Set<IPrivateRecordAccess>();
+  readonly #recordAccessOwner = Object.freeze({});
   #deviceUnlockRetired = false;
   readonly #sessionOwnership: {
     tracker: SessionOwner;
@@ -364,6 +408,7 @@ export class KeyringCore<
   ) {
     const dependencies = takeKeyringHostBinding(binding);
     this.authority = dependencies.authority;
+    this.secretLifetime = dependencies.secretLifetime;
     this.#sessionOwnership = {
       tracker: dependencies.sessionOwner,
       token: Symbol(),
@@ -384,7 +429,7 @@ export class KeyringCore<
       this.getAccountsState,
       this.ledgerSigner,
       this.trezorSigner,
-      this.capturePsbtSigningContext,
+      this.captureEthereumSigningContext,
       dependencies.captureEvmSubmission
     );
     if (dependencies.deviceUnlock) {
@@ -406,7 +451,12 @@ export class KeyringCore<
       this.getReadOnlySigner,
       this.getAccountsState,
       this.syscoinHardwareSigners,
-      this.capturePsbtSigningContext
+      this.capturePublicWalletContext,
+      this.secretLifetime,
+      () => {
+        if (this.secretLifetime === 'operation' && this.isUnlocked())
+          throw new Error('Prepare PSBT before the secret operation');
+      }
     );
 
   #createDeviceUnlockControls(
@@ -519,7 +569,13 @@ export class KeyringCore<
           check();
         } else {
           if (this.#finishUnlock().needsAccountCreation) return false;
+          this.clearRecordAccess();
           this.#installVaultSession(mnemonic, keyHex, check);
+          if (this.secretLifetime === 'operation') {
+            this.publicSession = true;
+            this.publicSessionRevision++;
+            this.clearSecretMaterial(true);
+          }
         }
         return true;
       } finally {
@@ -578,7 +634,487 @@ export class KeyringCore<
   };
 
   public isUnlocked = () =>
-    !!this.sessionPassword && !this.sessionPassword.isCleared();
+    !!this.sessionPassword &&
+    !this.sessionPassword.isCleared() &&
+    (this.secretLifetime === 'session' ||
+      (!!this.secretOperation?.active && this.secretOperation.working));
+
+  /** Public authenticated account context is independent of decrypted key availability. */
+  public hasPublicSession = () => {
+    return this.secretLifetime === 'session'
+      ? this.isUnlocked()
+      : this.publicSession &&
+          this.#sessionOwnership.tracker.current ===
+            this.#sessionOwnership.token;
+  };
+
+  #capturePublicSessionGuard(): () => void {
+    const assertOwner = this.#captureSessionGuard();
+    const revision = this.publicSessionRevision;
+    const check = () => {
+      if (this.secretLifetime === 'session') {
+        assertOwner();
+        if (!this.sessionPassword || this.sessionPassword.isCleared())
+          throw new Error('Wallet unlock session changed');
+      } else if (
+        !this.publicSession ||
+        this.publicSessionRevision !== revision ||
+        this.#sessionOwnership.tracker.current !== this.#sessionOwnership.token
+      ) {
+        throw new Error('Wallet public session changed');
+      }
+    };
+    check();
+    return check;
+  }
+
+  public capturePublicSessionGuard(): () => void {
+    return this.#capturePublicSessionGuard();
+  }
+
+  private assertSecretAccess(): void {
+    if (this.secretLifetime === 'session') return;
+    const operation = this.secretOperation;
+    if (!operation?.active || !operation.working)
+      throw new Error('A secret operation is required');
+    operation.assertCurrent();
+  }
+
+  private clearSecretMaterial(keepPublicSession: boolean): void {
+    this.retireSessionLifetime();
+    this.sessionPassword?.clear();
+    this.sessionPassword = null;
+    this.sessionMnemonic?.clear();
+    this.sessionMnemonic = null;
+    const ownership = this.#sessionOwnership;
+    if (!keepPublicSession && ownership.tracker.current === ownership.token) {
+      ownership.tracker.current = undefined;
+      ownership.tracker.epoch++;
+    }
+  }
+
+  /** The SDK returns only the work result, never its credential or secret lease. */
+  public async withSecretOperation<T>(
+    credential: SecretOperationCredentialPort,
+    options: SecretOperationOptions,
+    work: (secret: string) => T | Promise<T>
+  ): Promise<T> {
+    if (this.secretLifetime !== 'operation')
+      throw new Error('Operation secret policy is required');
+    if (this.secretOperation) throw new Error('Secret operation is busy');
+    if (
+      !credential ||
+      typeof credential.withSecret !== 'function' ||
+      typeof work !== 'function' ||
+      !options ||
+      typeof options.assertCurrent !== 'function' ||
+      !options.signal ||
+      typeof options.signal.addEventListener !== 'function'
+    )
+      throw new TypeError('Invalid secret operation');
+    let publicGuard = this.hasPublicSession()
+      ? this.#capturePublicSessionGuard()
+      : undefined;
+    const initialGuard = publicGuard ? undefined : this.#captureSessionGuard();
+    const authority = captureHardwareTransactionAuthority(options);
+    const withSecret = credential.withSecret.bind(credential);
+    if (this.secretOperation) throw new Error('Secret operation is busy');
+    const operation: SecretOperation = {
+      active: true,
+      working: false,
+      assertCurrent: () => {
+        if (
+          !operation.active ||
+          this.secretOperation !== operation ||
+          authority.signal.aborted
+        )
+          throw new Error('Secret operation cancelled');
+        (publicGuard ?? initialGuard)!();
+        authority.assertCurrent();
+        (publicGuard ?? initialGuard)!();
+      },
+    };
+    this.secretOperation = operation;
+    let entered = false,
+      completed = false,
+      succeeded = false,
+      createdPublicRevision: number | undefined,
+      result!: T;
+    let pending: Promise<void> | undefined;
+    const retire = () => {
+      operation.active = false;
+      if (this.secretOperation === operation)
+        this.clearSecretMaterial(this.hasPublicSession());
+    };
+    authority.signal.addEventListener('abort', retire, { once: true });
+    try {
+      operation.assertCurrent();
+      await withSecret(operation.assertCurrent, (secret) => {
+        if (entered) {
+          const rejected = Promise.reject(
+            new Error('Secret credential was already consumed')
+          );
+          void rejected.catch(() => undefined);
+          return rejected;
+        }
+        entered = true;
+        pending = (async () => {
+          try {
+            operation.assertCurrent();
+            if (typeof secret !== 'string' || !secret)
+              throw new TypeError('Invalid secret credential');
+            const authenticated = await this.unlockSession(secret);
+            if (
+              !operation.active ||
+              this.secretOperation !== operation ||
+              authority.signal.aborted
+            )
+              throw new Error('Secret operation cancelled');
+            authority.assertCurrent();
+            if (!authenticated.canLogin)
+              throw new Error('Invalid secret credential');
+            if (!publicGuard) {
+              this.#assertSessionOwner();
+              if (!this.sessionPassword || this.sessionPassword.isCleared())
+                throw new Error('Secret operation cancelled');
+              this.publicSession = true;
+              createdPublicRevision = ++this.publicSessionRevision;
+              publicGuard = this.capturePublicSessionGuard();
+            }
+            operation.assertCurrent();
+            operation.working = true;
+            result = await work(secret);
+            operation.assertCurrent();
+            completed = true;
+          } finally {
+            operation.working = false;
+            if (this.secretOperation === operation)
+              this.clearSecretMaterial(this.hasPublicSession());
+          }
+        })();
+        void pending.catch(() => undefined);
+        return pending;
+      });
+      if (pending) await pending;
+      operation.assertCurrent();
+      if (!entered || !completed)
+        throw new Error('Secret credential was not consumed');
+      succeeded = true;
+      return result;
+    } finally {
+      if (
+        !succeeded &&
+        createdPublicRevision !== undefined &&
+        this.publicSessionRevision === createdPublicRevision &&
+        this.hasPublicSession()
+      ) {
+        this.clearRecordAccess();
+        this.publicSession = false;
+        this.publicSessionRevision++;
+      }
+      retire();
+      authority.signal.removeEventListener('abort', retire);
+      if (this.secretOperation === operation) this.secretOperation = undefined;
+    }
+  }
+
+  /** Seal a host-validated immutable public manifest from a currently authorized secret session. */
+  public async createPublicSessionCheckpoint(
+    input: PublicSessionCheckpointRequest,
+    wrappingKey: Uint8Array,
+    assertCurrent: () => void
+  ): Promise<IEncryptedPrivateRecord> {
+    this.assertSecretAccess();
+    const request = capturePublicSessionRequest(input);
+    const session = this.privateRecordSession();
+    const password = this.sessionPassword;
+    const readPair = this.storage.readDeviceUnlockVaultPair;
+    if (!password || typeof readPair !== 'function') {
+      session.secret.fill(0);
+      throw new Error('Public session requires atomic wallet storage');
+    }
+    const check = () => {
+      this.assertSecretAccess();
+      session.assertCurrent();
+      assertHardwareOperationCurrent(assertCurrent);
+      this.assertSecretAccess();
+      session.assertCurrent();
+    };
+    let wrappingSecret: Uint8Array | undefined,
+      vaultKey: Uint8Array | undefined,
+      passwordKey: Uint8Array | undefined;
+    try {
+      wrappingSecret = capturePublicSessionKey(wrappingKey);
+      check();
+      const pair = await readCurrentVaultPair(readPair.bind(this.storage));
+      check();
+      if (!pair) throw new Error('Public session wallet is unavailable');
+      vaultKey = this.hexToBytes(password.toString());
+      let difference = vaultKey.length ^ wrappingSecret.length;
+      for (let index = 0; index < wrappingSecret.length; index++)
+        difference |= wrappingSecret[index] ^ (vaultKey[index] ?? 0);
+      if (difference === 0)
+        throw new Error(
+          'Public session key must be independent of the vault key'
+        );
+      // Catch direct reuse of a 32-byte UTF-8 wallet password as well. Random
+      // wrapping bytes normally fail strict decoding and need no extra KDF.
+      // This detects known credential reuse, not arbitrary key provenance.
+      let candidatePassword: string | undefined;
+      try {
+        candidatePassword = new TextDecoder('utf-8', {
+          fatal: true,
+          ignoreBOM: true,
+        }).decode(wrappingSecret);
+      } catch {
+        // A binary public-view key is expected and does not need decoding.
+      }
+      if (candidatePassword !== undefined) {
+        passwordKey = this.hexToBytes(
+          await this.deriveStoredSessionKey(candidatePassword, {
+            salt: pair.salt,
+          })
+        );
+        check();
+        let passwordDifference = vaultKey.length ^ passwordKey.length;
+        for (let index = 0; index < passwordKey.length; index++)
+          passwordDifference |= passwordKey[index] ^ (vaultKey[index] ?? 0);
+        passwordKey.fill(0);
+        passwordKey = undefined;
+        if (passwordDifference === 0)
+          throw new Error(
+            'Public session key must be independent of the vault password'
+          );
+      }
+      vaultKey.fill(0);
+      vaultKey = undefined;
+      // A checkpoint must never attest a different pair using an old live root.
+      const payload = await decryptCurrentVault(
+        pair.vault,
+        password.toString()
+      );
+      check();
+      if (
+        !payload ||
+        typeof payload !== 'object' ||
+        Object.getOwnPropertyDescriptor(payload, 'mnemonic')?.value?.normalize(
+          'NFKD'
+        ) !== new TextDecoder().decode(session.secret)
+      )
+        throw new Error('Public session wallet changed');
+      const digest = await publicSessionStateDigest(request.publicState, check);
+      const checkpoint = await sealPublicRecordCheckpoint(
+        session.secret,
+        wrappingSecret,
+        {
+          walletBindingId: request.walletBindingId,
+          pairFingerprint: pair.pairFingerprint,
+          stateDigest: digest,
+          domains: request.recordDomains,
+        },
+        check
+      );
+      const current = await readCurrentVaultPair(readPair.bind(this.storage));
+      check();
+      if (
+        !current ||
+        current.vault !== pair.vault ||
+        current.salt !== pair.salt ||
+        current.pairFingerprint !== pair.pairFingerprint
+      )
+        throw new Error('Public session wallet changed');
+      return checkpoint;
+    } finally {
+      session.secret.fill(0);
+      wrappingSecret?.fill(0);
+      vaultKey?.fill(0);
+      passwordKey?.fill(0);
+      request.publicState.fill(0);
+    }
+  }
+
+  /** Restore only authenticated public state and record keys. Never decrypts the vault. */
+  public async restorePublicSession<T>(
+    credential: PublicSessionCredentialPort,
+    input: PublicSessionRestoreRequest,
+    options: SecretOperationOptions,
+    work: (authenticatedPublicState: Uint8Array) => T | Promise<T>
+  ): Promise<T> {
+    if (this.secretLifetime !== 'operation')
+      throw new Error('Operation secret policy is required');
+    // Capture cancellation before any caller-controlled property or guard runs.
+    const initialGuard = this.#captureSessionGuard();
+    initialGuard();
+    if (this.secretOperation || this.hasPublicSession() || this.isUnlocked())
+      throw new Error('Public session restore requires a locked wallet');
+    if (
+      !credential ||
+      typeof credential.withKey !== 'function' ||
+      typeof work !== 'function'
+    )
+      throw new TypeError('Invalid public session restore');
+    const readPair = this.storage.readDeviceUnlockVaultPair;
+    if (typeof readPair !== 'function')
+      throw new Error('Public session requires atomic wallet storage');
+    const withKey = credential.withKey.bind(credential);
+    const request = capturePublicSessionRequest(input);
+    const checkpoint = capturePublicSessionCheckpoint(input);
+    const authority = captureHardwareTransactionAuthority(options);
+    initialGuard();
+    // A reentrant host guard may have admitted a different operation.
+    if (this.secretOperation || this.hasPublicSession() || this.isUnlocked())
+      throw new Error('Public session restore requires a locked wallet');
+    let publicGuard: (() => void) | undefined;
+    const operation: SecretOperation = {
+      active: true,
+      working: false,
+      assertCurrent: () => {
+        if (
+          !operation.active ||
+          this.secretOperation !== operation ||
+          authority.signal.aborted
+        )
+          throw new Error('Public session restore cancelled');
+        (publicGuard ?? initialGuard)();
+        authority.assertCurrent();
+        if (
+          !operation.active ||
+          this.secretOperation !== operation ||
+          authority.signal.aborted
+        )
+          throw new Error('Public session restore cancelled');
+        (publicGuard ?? initialGuard)();
+      },
+    };
+    const check = operation.assertCurrent;
+    let restored: IPrivateRecordAccess | undefined;
+    let succeeded = false,
+      entered = false,
+      completed = false;
+    let pending: Promise<void> | undefined, result!: T;
+    const retire = () => {
+      operation.active = false;
+      if (this.secretOperation !== operation) return;
+      this.clearRecordAccess();
+      this.publicSession = false;
+      this.publicSessionRevision++;
+      this.clearSecretMaterial(false);
+    };
+    this.secretOperation = operation;
+    authority.signal.addEventListener('abort', retire, { once: true });
+    try {
+      check();
+      const pair = await readCurrentVaultPair(readPair.bind(this.storage));
+      check();
+      if (!pair) throw new Error('Public session wallet is unavailable');
+      const checkPair = async () => {
+        const current = await readCurrentVaultPair(readPair.bind(this.storage));
+        check();
+        if (
+          !current ||
+          current.vault !== pair.vault ||
+          current.salt !== pair.salt ||
+          current.pairFingerprint !== pair.pairFingerprint
+        )
+          throw new Error('Public session wallet changed');
+      };
+      const digest = await publicSessionStateDigest(request.publicState, check);
+      await withKey(check, (key) => {
+        if (entered) {
+          const rejected = Promise.reject(
+            new Error('Public session credential was already consumed')
+          );
+          void rejected.catch(() => undefined);
+          return rejected;
+        }
+        entered = true;
+        pending = (async () => {
+          let wrappingSecret: Uint8Array | undefined;
+          try {
+            wrappingSecret = capturePublicSessionKey(key);
+            check();
+            restored = await restorePublicRecordCheckpoint(
+              wrappingSecret,
+              checkpoint,
+              {
+                walletBindingId: request.walletBindingId,
+                pairFingerprint: pair.pairFingerprint,
+                stateDigest: digest,
+                domains: request.recordDomains,
+              },
+              () => (publicGuard ? publicGuard() : check()),
+              this.#recordAccessOwner
+            );
+            wrappingSecret.fill(0);
+            wrappingSecret = undefined;
+            await checkPair();
+            this.clearRecordAccess();
+            this.publicSession = true;
+            this.publicSessionRevision++;
+            this.#sessionOwnership.tracker.current =
+              this.#sessionOwnership.token;
+            this.#sessionOwnership.tracker.epoch++;
+            publicGuard = this.#capturePublicSessionGuard();
+            this.#recordAccess.add(restored);
+            check();
+            // Recreate only the public transaction wrapper retired by lockWallet.
+            this.syscoinTransaction = this.createSyscoinTransactions();
+            result = await work(request.publicState);
+            check();
+            await checkPair();
+            completed = true;
+          } finally {
+            wrappingSecret?.fill(0);
+          }
+        })();
+        void pending.catch(() => undefined);
+        return pending;
+      });
+      if (pending) await pending;
+      check();
+      if (!entered || !completed)
+        throw new Error('Public session credential was not consumed');
+      succeeded = true;
+      return result;
+    } finally {
+      authority.signal.removeEventListener('abort', retire);
+      request.publicState.fill(0);
+      if (!succeeded) {
+        restored?.dispose();
+        retire();
+      } else {
+        operation.active = false;
+        this.clearSecretMaterial(true);
+      }
+      if (this.secretOperation === operation) this.secretOperation = undefined;
+    }
+  }
+
+  public async unlock(
+    password: string
+  ): Promise<{ canLogin: boolean; needsAccountCreation?: boolean }> {
+    if (this.secretLifetime === 'session') return this.unlockSession(password);
+    if (this.secretOperation) throw new Error('Secret operation is busy');
+    const operation: SecretOperation = {
+      active: true,
+      working: false,
+      assertCurrent: this.#captureSessionGuard(),
+    };
+    this.secretOperation = operation;
+    try {
+      const result = await this.unlockSession(password);
+      if (result.canLogin) {
+        this.clearRecordAccess();
+        this.publicSession = true;
+        this.publicSessionRevision++;
+      }
+      return result;
+    } finally {
+      operation.active = false;
+      this.clearSecretMaterial(this.publicSession);
+      if (this.secretOperation === operation) this.secretOperation = undefined;
+    }
+  }
 
   /** Capture wallet-session authority without binding an account or network. */
   public captureUnlockedSessionGuard(): () => void {
@@ -592,22 +1128,11 @@ export class KeyringCore<
   }
 
   public lockWallet = async () => {
-    this.retireSessionLifetime();
-    // Clear secure session data
-    if (this.sessionPassword) {
-      this.sessionPassword.clear();
-      this.sessionPassword = null;
-    }
-    if (this.sessionMnemonic) {
-      this.sessionMnemonic.clear();
-      this.sessionMnemonic = null;
-    }
-
-    const ownership = this.#sessionOwnership;
-    if (ownership.tracker.current === ownership.token) {
-      ownership.tracker.current = undefined;
-      ownership.tracker.epoch++;
-    }
+    this.clearRecordAccess();
+    this.publicSession = false;
+    this.publicSessionRevision++;
+    if (this.secretOperation) this.secretOperation.active = false;
+    this.clearSecretMaterial(false);
 
     // Clear transaction handlers that may hold HD signers
     if (this.syscoinTransaction) {
@@ -639,7 +1164,10 @@ export class KeyringCore<
     targetKeyring: KeyringCore,
     assertCurrent: () => void
   ): Promise<PreparedSessionTransfer> => {
-    if (!this.isUnlocked()) {
+    const publicOnly = this.secretLifetime === 'operation';
+    if (publicOnly && this.secretOperation)
+      throw new Error('Secret operation is busy');
+    if (publicOnly ? !this.hasPublicSession() : !this.isUnlocked()) {
       throw new Error('Source keyring must be unlocked to transfer session');
     }
 
@@ -647,6 +1175,7 @@ export class KeyringCore<
     if (
       !(targetKeyring instanceof KeyringCore) ||
       targetKeyring.authority !== this.authority ||
+      targetKeyring.secretLifetime !== this.secretLifetime ||
       targetKeyring.storage !== this.storage ||
       targetKeyring.vaultPersistence !== this.vaultPersistence ||
       targetKeyring.#sessionOwnership.tracker !== this.#sessionOwnership.tracker
@@ -655,7 +1184,9 @@ export class KeyringCore<
         'Cannot transfer session between different wallet authorities'
       );
     }
-    const sourceGuard = this.#captureSessionGuard();
+    const sourceGuard = publicOnly
+      ? this.#capturePublicSessionGuard()
+      : this.#captureSessionGuard();
     const targetRevision = targetKeyring.privateRecordSessionRevision;
     const ledger = this.ledgerSigner;
     const trezor = this.trezorSigner;
@@ -663,8 +1194,11 @@ export class KeyringCore<
     const checkOwnership = () => {
       sourceGuard();
       if (
-        !this.isUnlocked() ||
-        !this.sessionMnemonic ||
+        (publicOnly &&
+          (this.secretOperation || targetKeyring.secretOperation)) ||
+        (publicOnly
+          ? !this.hasPublicSession()
+          : !this.isUnlocked() || !this.sessionMnemonic) ||
         this.ledgerSigner !== ledger ||
         this.trezorSigner !== trezor ||
         targetKeyring.#sessionOwnership.destroyed ||
@@ -721,12 +1255,48 @@ export class KeyringCore<
         consumed = true;
         check();
         if (targetKeyring === this) return;
-        targetKeyring.#acceptSessionFrom(this);
-        this.retireSessionLifetime();
+        if (publicOnly) {
+          const sourceRecords = [...this.#recordAccess].filter((access) =>
+            privateRecordAccessCanTransfer(access, this.#recordAccessOwner)
+          );
+          const retiringRecords = [...this.#recordAccess].filter(
+            (access) => !sourceRecords.includes(access)
+          );
+          targetKeyring.clearRecordAccess();
+          // No facade is delivered until the synchronous authority move is complete.
+          const targetOwner: { guard?: () => void } = {};
+          const movedRecords = sourceRecords.map((access) =>
+            transferPrivateRecordAccess(
+              access,
+              this.#recordAccessOwner,
+              targetKeyring.#recordAccessOwner,
+              () => {
+                if (!targetOwner.guard)
+                  throw new Error('Record access transfer is incomplete');
+                targetOwner.guard();
+              }
+            )
+          );
+          for (const access of retiringRecords) access.dispose();
+          this.#recordAccess.clear();
+          this.publicSession = false;
+          this.publicSessionRevision++;
+          targetKeyring.publicSession = true;
+          targetKeyring.publicSessionRevision++;
+          this.#sessionOwnership.tracker.current =
+            targetKeyring.#sessionOwnership.token;
+          this.#sessionOwnership.tracker.epoch++;
+          targetOwner.guard = targetKeyring.#capturePublicSessionGuard();
+          for (const access of movedRecords)
+            targetKeyring.#recordAccess.add(access);
+        } else {
+          targetKeyring.#acceptSessionFrom(this);
+          this.retireSessionLifetime();
+          // Move the original SecureBuffers without copying their contents.
+          this.sessionPassword = null;
+          this.sessionMnemonic = null;
+        }
         this.#deviceUnlockRetired = true;
-        // Move the original SecureBuffers without copying their contents.
-        this.sessionPassword = null;
-        this.sessionMnemonic = null;
       },
     });
   };
@@ -872,7 +1442,7 @@ export class KeyringCore<
    * Storage, platform and session restoration failures reject so callers do
    * not charge a failed password attempt for an operational error.
    */
-  public async unlock(password: string): Promise<{
+  private async unlockSession(password: string): Promise<{
     canLogin: boolean;
     needsAccountCreation?: boolean;
   }> {
@@ -1151,7 +1721,7 @@ export class KeyringCore<
     const captured = captureOwnedSyscoinRead(
       ownedRead,
       this.getAccountsState,
-      this.capturePsbtSigningContext
+      this.capturePublicWalletContext
     );
     if (id !== captured.accountId)
       throw new Error('UTXO account is not active');
@@ -1467,6 +2037,66 @@ export class KeyringCore<
     if (!root || root.length > 4096)
       throw new Error('Invalid private record root');
     return { secret: new TextEncoder().encode(root), assertCurrent };
+  }
+
+  private clearRecordAccess(): void {
+    for (const access of this.#recordAccess) access.dispose();
+    this.#recordAccess.clear();
+  }
+
+  /** Public transaction records may outlive a signer without retaining the spending root. */
+  public async createPrivateRecordAccess(
+    domains: readonly string[],
+    options: PrivateRecordAccessOptions
+  ): Promise<IPrivateRecordAccess> {
+    this.assertSecretAccess();
+    const session = this.privateRecordSession();
+    const publicGuard = this.#capturePublicSessionGuard();
+    for (const previous of this.#recordAccess) {
+      if (
+        activePrivateRecordDomainSet(previous, this.#recordAccessOwner) === null
+      )
+        this.#recordAccess.delete(previous);
+    }
+    let access: IPrivateRecordAccess | undefined;
+    try {
+      access = await createPrivateRecordAccess(
+        session.secret,
+        domains,
+        options,
+        publicGuard,
+        this.#recordAccessOwner
+      );
+      session.assertCurrent();
+      publicGuard();
+      this.#recordAccess.add(access);
+      return access;
+    } catch (error) {
+      access?.dispose();
+      throw error;
+    } finally {
+      session.secret.fill(0);
+    }
+  }
+
+  /** Retrieve only an exact domain set already derived under a secret operation. Never unlocks or derives. */
+  public getPrivateRecordAccess(
+    domains: readonly string[]
+  ): IPrivateRecordAccess {
+    const guard = this.#capturePublicSessionGuard();
+    const domainSet = privateRecordDomainSet(domains);
+    guard();
+    for (const access of this.#recordAccess) {
+      if (
+        privateRecordAccessCanTransfer(access, this.#recordAccessOwner) &&
+        activePrivateRecordDomainSet(access, this.#recordAccessOwner) ===
+          domainSet
+      ) {
+        guard();
+        return access;
+      }
+    }
+    throw new Error('Record access is not initialized for these domains');
   }
 
   /** Stable local profile identifier; never an account address or a key. */
@@ -2247,9 +2877,6 @@ export class KeyringCore<
 
       const isHardwareWallet = isTrezor || isLedger;
 
-      if (!this.sessionPassword)
-        throw new Error('Wallet is locked cant proceed with transaction');
-
       const activeAccountData = accounts[activeAccountType][activeAccountId];
       if (!activeAccountData) {
         throw new Error(
@@ -2264,11 +2891,15 @@ export class KeyringCore<
         this.requireTrezorSigner();
 
       if (isHardwareWallet) {
+        this.#capturePublicSessionGuard()();
         return {
           address,
           decryptedPrivateKey: '',
         };
       }
+
+      if (!this.sessionPassword)
+        throw new Error('Wallet is locked cant proceed with transaction');
 
       if (!xprv) {
         throw new Error(
@@ -2335,9 +2966,49 @@ export class KeyringCore<
     }
   };
 
+  private captureEthereumSigningContext = (): (() => void) => {
+    const { activeAccount } = this.getVault();
+    if (
+      activeAccount.type === KeyringAccountType.Ledger ||
+      activeAccount.type === KeyringAccountType.Trezor
+    )
+      return this.capturePublicWalletContext();
+    return this.capturePsbtSigningContext();
+  };
+
+  private capturePublicWalletContext = (): (() => void) => {
+    if (this.secretLifetime === 'session')
+      return this.capturePsbtSigningContext();
+    const publicGuard = this.#capturePublicSessionGuard();
+    const vault = this.getVault();
+    const selected = { ...vault.activeAccount };
+    const account = vault.accounts[selected.type]?.[selected.id];
+    const identity = { address: account?.address, xpub: account?.xpub };
+    const network = { ...vault.activeNetwork };
+    const check = () => {
+      publicGuard();
+      const current = this.getVault(),
+        currentAccount = current.accounts[selected.type]?.[selected.id];
+      if (
+        current.activeAccount.id !== selected.id ||
+        current.activeAccount.type !== selected.type ||
+        currentAccount?.address !== identity.address ||
+        currentAccount?.xpub !== identity.xpub ||
+        current.activeNetwork.kind !== network.kind ||
+        current.activeNetwork.chainId !== network.chainId ||
+        current.activeNetwork.slip44 !== network.slip44 ||
+        current.activeNetwork.url !== network.url
+      )
+        throw new Error('Wallet public context changed');
+    };
+    check();
+    return check;
+  };
+
   private capturePsbtSigningContext = (
     bindSessionRevision = true
   ): (() => void) => {
+    this.assertSecretAccess();
     const session = this.sessionPassword;
     const revision = this.privateRecordSessionRevision;
     const vault = this.getVault();
@@ -3605,6 +4276,7 @@ export class KeyringCore<
     seedPhrase: string,
     password: string
   ): Promise<void> => {
+    this.assertSecretAccess();
     // Validate inputs first
     if (!BIP84.validateMnemonic(seedPhrase)) {
       throw new Error('Invalid Seed');
@@ -3761,12 +4433,38 @@ export class KeyringCore<
     seedPhrase: string,
     password: string
   ): Promise<IKeyringAccountState> => {
-    // Use new separated approach
-    await this.initializeSession(seedPhrase, password);
-    return await this.createFirstAccount();
+    if (this.secretLifetime === 'session') {
+      await this.initializeSession(seedPhrase, password);
+      return await this.createFirstAccount();
+    }
+    if (this.secretOperation) throw new Error('Secret operation is busy');
+    const operation: SecretOperation = {
+      active: true,
+      working: true,
+      assertCurrent: () => {
+        if (!operation.active || this.secretOperation !== operation)
+          throw new Error('Secret operation cancelled');
+        this.#assertSessionOwner();
+      },
+    };
+    this.secretOperation = operation;
+    try {
+      await this.initializeSession(seedPhrase, password);
+      operation.assertCurrent();
+      const result = await this.createFirstAccount();
+      operation.assertCurrent();
+      this.publicSession = true;
+      this.publicSessionRevision++;
+      return result;
+    } finally {
+      operation.active = false;
+      this.clearSecretMaterial(this.publicSession);
+      if (this.secretOperation === operation) this.secretOperation = undefined;
+    }
   };
   // Helper methods for secure buffer operations
   private getSessionPasswordString(): string {
+    this.assertSecretAccess();
     if (!this.sessionPassword || this.sessionPassword.isCleared()) {
       throw new Error('Session password not available');
     }
@@ -3776,6 +4474,7 @@ export class KeyringCore<
   }
 
   private getSessionMnemonicString(): string {
+    this.assertSecretAccess();
     if (!this.sessionMnemonic || this.sessionMnemonic.isCleared()) {
       throw new Error('Session mnemonic not available');
     }

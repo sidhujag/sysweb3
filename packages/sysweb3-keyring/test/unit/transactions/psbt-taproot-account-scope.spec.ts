@@ -73,7 +73,9 @@ const fixture = () => {
     () => ({ main: {} }),
     () => state,
     {},
-    () => () => undefined
+    () => () => undefined,
+    'session',
+    () => undefined
   );
   const makePsbt = (options: InputOptions[]) => {
     const spent = options.map((option) =>

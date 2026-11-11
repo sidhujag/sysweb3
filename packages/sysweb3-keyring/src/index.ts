@@ -11,6 +11,8 @@ export {
   MAX_PRIVATE_RECORD_LABEL_BYTES,
 } from './private-records';
 export type {
+  IPrivateRecordAccess,
+  PrivateRecordAccessOptions,
   IDecryptPrivateRecordParams,
   IEncryptedPrivateRecord,
   IEncryptPrivateRecordParams,
@@ -25,3 +27,10 @@ export {
   deriveDescriptorAddress,
   descriptorChecksum,
 } from './utils/watch-descriptor';
+
+export type {
+  PublicSessionCheckpointRequest,
+  PublicSessionCredentialPort,
+  PublicSessionRestoreRequest,
+} from './public-session';
+export { MAX_PUBLIC_SESSION_STATE_BYTES } from './public-session';

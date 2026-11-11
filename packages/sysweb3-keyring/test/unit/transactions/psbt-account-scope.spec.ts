@@ -98,7 +98,9 @@ const fixture = () => {
     () => ({ main: {} }),
     () => state,
     {},
-    () => () => undefined
+    () => () => undefined,
+    'session',
+    () => undefined
   );
   return { tx, hd, state, account, makePsbt, root, children, paths };
 };
@@ -544,7 +546,9 @@ describe('PSBT approved-account boundary with the real HD signer', () => {
       () => ({ main: {} }),
       () => state,
       { trezor: createTrezorPsbtSigner(trezor as any) },
-      () => () => undefined
+      () => () => undefined,
+      'session',
+      () => undefined
     );
     await expect(
       tx.signPSBT(

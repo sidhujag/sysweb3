@@ -169,7 +169,9 @@ describe('SyscoinTransactions', () => {
         ledger: createLedgerPsbtSigner(mockLedger),
         trezor: createTrezorPsbtSigner(mockTrezor),
       },
-      () => () => undefined
+      () => () => undefined,
+      'session',
+      () => undefined
     );
   });
 

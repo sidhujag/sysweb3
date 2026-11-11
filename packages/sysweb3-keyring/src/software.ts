@@ -73,3 +73,21 @@ export type {
   EvmSignedSubmission,
   EvmSubmissionBoundary,
 } from './transactions/evm-submission';
+
+export type {
+  SecretOperationCredentialPort,
+  SecretOperationOptions,
+} from './keyring-core';
+export type { SecretLifetimePolicy } from './keyring-host';
+
+export type {
+  IPrivateRecordAccess,
+  PrivateRecordAccessOptions,
+} from './private-records';
+
+export type {
+  PublicSessionCheckpointRequest,
+  PublicSessionCredentialPort,
+  PublicSessionRestoreRequest,
+} from './public-session';
+export { MAX_PUBLIC_SESSION_STATE_BYTES } from './public-session';

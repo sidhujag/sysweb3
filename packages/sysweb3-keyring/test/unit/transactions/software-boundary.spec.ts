@@ -70,7 +70,9 @@ function fixture(hardware: ISyscoinHardwareSigners = {}) {
     () => ({ main: {} }),
     () => state,
     hardware,
-    capture
+    capture,
+    'session',
+    () => undefined
   );
   const makePsbt = () => {
     const previous = new Transaction();
@@ -252,7 +254,9 @@ test.each([
       () => ({ main: {} }),
       () => f.state,
       { ledger: createLedgerPsbtSigner(ledger as any) },
-      () => () => undefined
+      () => () => undefined,
+      'session',
+      () => undefined
     );
     const approvedPsbt = f.makePsbt();
     if (response === 'requested-sighash')

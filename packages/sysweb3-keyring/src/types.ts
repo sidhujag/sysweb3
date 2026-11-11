@@ -15,6 +15,8 @@ import {
 } from './ethers-v6';
 import { LedgerKeyring } from './ledger';
 import {
+  IPrivateRecordAccess,
+  PrivateRecordAccessOptions,
   IDecryptPrivateRecordParams,
   IEncryptedPrivateRecord,
   IEncryptPrivateRecordParams,
@@ -330,6 +332,11 @@ export interface ISyscoinTransactions {
     txid: string,
     authority: SyscoinRetainedSubmissionOptions
   ) => Promise<ITxid>;
+  /** Resolve public signing paths before entering an operation-scoped lease. */
+  preparePSBTForSigning: (
+    input: { psbt: any },
+    ownedRead: SyscoinOwnedReadOptions
+  ) => Promise<any>;
   signPSBT: (
     {
       psbt,
@@ -381,6 +388,22 @@ export interface IKeyringManager {
   syscoinTransaction: ISyscoinTransactions;
   isSeedValid: (seedPhrase: string) => boolean;
   getSeed: (pwd: string) => Promise<string>;
+  createPublicSessionCheckpoint: (
+    input: import('./public-session').PublicSessionCheckpointRequest,
+    wrappingKey: Uint8Array,
+    assertCurrent: () => void
+  ) => Promise<import('./private-records').IEncryptedPrivateRecord>;
+  restorePublicSession: <T>(
+    credential: import('./public-session').PublicSessionCredentialPort,
+    input: import('./public-session').PublicSessionRestoreRequest,
+    options: import('./keyring-core').SecretOperationOptions,
+    work: (authenticatedPublicState: Uint8Array) => T | Promise<T>
+  ) => Promise<T>;
+  createPrivateRecordAccess: (
+    domains: readonly string[],
+    options: PrivateRecordAccessOptions
+  ) => Promise<IPrivateRecordAccess>;
+  getPrivateRecordAccess: (domains: readonly string[]) => IPrivateRecordAccess;
   getPrivateRecordProfileId: () => Promise<string>;
   encryptPrivateRecord: (
     params: IEncryptPrivateRecordParams
