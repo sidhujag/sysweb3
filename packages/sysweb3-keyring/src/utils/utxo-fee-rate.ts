@@ -12,11 +12,10 @@ export function utxoFeeRateUnits(rate: number): number {
   const [whole, fraction = ''] = coefficient.split('.');
   const digits = BigInt(whole + fraction);
   const scale = Number(scientific) - fraction.length + 8;
-  const divisor = scale < 0 ? 10n ** BigInt(-scale) : 1n;
-  const units =
-    scale < 0
-      ? (digits + divisor - 1n) / divisor
-      : digits * 10n ** BigInt(scale);
+  // ES2015 consumer transforms rewrite exponentiation to Math.pow, which
+  // cannot accept BigInt. Finite Number input keeps this decimal string bounded.
+  const power = BigInt('1' + '0'.repeat(Math.abs(scale)));
+  const units = scale < 0 ? (digits + power - 1n) / power : digits * power;
   if (units > BigInt(Number.MAX_SAFE_INTEGER))
     throw new Error('Invalid UTXO fee rate');
   return Math.max(1, Number(units));
