@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.13
+
+- Preserve exact UTXO fee rates when converting coin units to satoshis per byte, including JavaScript consumers compiled to ES2015. Keep the existing minimum fee and reject invalid or unrepresentable rates.
+
 ## 2.1.10
 
 - Require current host authority and cancellation signals for personal, typed-data and raw-digest message signing. Hardware raw digests reject before device work; owned typed data is the supported hardware primitive.
