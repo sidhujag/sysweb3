@@ -1034,3 +1034,28 @@ it('requires the retained journal port and preserves a lost ACK after the origin
   );
   expect(globalThis.fetch).not.toHaveBeenCalled();
 });
+
+it('passes an explicitly selected 7 sat/vbyte rate unchanged to the shared builder', async () => {
+  const { ring, account } = await fixture();
+  const read = owned((url) => {
+    if (url === accountRoute(account.xpub))
+      return Response.json({
+        tokens: [
+          { name: account.address, transfers: 2, path: "m/84'/1'/0'/0/0" },
+        ],
+      });
+    if (url === fundingRoute(account.xpub))
+      return Response.json([witness(account.address)]);
+    throw new Error('Unexpected route');
+  });
+  const builder = jest.spyOn(
+    ring.syscoinTransaction as SyscoinTransactionsCore,
+    'createUnsignedPSBT'
+  );
+  await ring.syscoinTransaction.getEstimateSysTransactionFee(
+    { ...request, feeRate: 7e-8 },
+    read.options
+  );
+  expect(builder.mock.calls[0][0].feeRateBN.toString()).toBe('7');
+  expect(read.calls).not.toContain(feeUrl);
+});

@@ -30,6 +30,7 @@ import {
   assertPsbtAccountScope,
   type PsbtAccountScope,
 } from '../utils/psbt-account-scope';
+import { utxoFeeRateUnits } from '../utils/utxo-fee-rate';
 
 import type { SyscoinHDSigner } from '../signers';
 import type { INetwork } from '@sidhujag/sysweb3-network';
@@ -1050,7 +1051,7 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
       // Blockbook returns coins per kB; after division by 1024, some testnets
       // can yield < 1 sat/vB (e.g., 0.9765625). Round up and clamp to 1 to
       // avoid zero-fee transactions due to truncation when converting to BN.
-      const satPerByte = Math.max(1, Math.ceil(actualFeeRate * 1e8));
+      const satPerByte = utxoFeeRateUnits(actualFeeRate);
       const feeRateBN = new syscoinjs.utils.BN(satPerByte);
 
       // Step 2: Create unsigned PSBT

@@ -143,6 +143,12 @@
       ],
       "cjs/hardware-transaction-authority.js": [
         "types/hardware-transaction-authority.d.ts"
+      ],
+      "cjs/utils/utxo-fee-rate": [
+        "types/utils/utxo-fee-rate.d.ts"
+      ],
+      "cjs/utils/utxo-fee-rate.js": [
+        "types/utils/utxo-fee-rate.d.ts"
       ]
     }
   },
