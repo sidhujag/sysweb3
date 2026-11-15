@@ -134,11 +134,10 @@ const network = keyringManager.getNetwork();
 #### Syscoin (UTXO) Transactions
 
 ```javascript
-const quote =
-  await keyringManager.syscoinTransaction.getEstimateSysTransactionFee(
-    { amount: reviewedAmount, receivingAddress: reviewedRecipient },
-    draftUtxoRead
-  );
+const quote = await keyringManager.syscoinTransaction.getEstimateSysTransactionFee(
+  { amount: reviewedAmount, receivingAddress: reviewedRecipient },
+  draftUtxoRead
+);
 
 // Review the exact PSBT and capture its approval before signing.
 const signedPsbt = await keyringManager.syscoinTransaction.signPSBT(
@@ -146,9 +145,7 @@ const signedPsbt = await keyringManager.syscoinTransaction.signPSBT(
   approvedUtxoRead
 );
 
-const receivingAddress = await keyringManager.updateReceivingAddress(
-  accountUtxoRead
-);
+const receivingAddress = await keyringManager.updateReceivingAddress(accountUtxoRead);
 const changeAddress = await keyringManager.getNewChangeAddress(accountUtxoRead);
 ```
 
@@ -160,12 +157,11 @@ also binds the approved PSBT to that context.
 
 ```javascript
 // Submit a fully specified transaction after approval.
-const submitted =
-  await keyringManager.ethereumTransaction.sendFormattedTransaction(
-    reviewedTransaction,
-    undefined,
-    { mode: 'reviewed-native', assertCurrent: assertReviewCurrent }
-  );
+const submitted = await keyringManager.ethereumTransaction.sendFormattedTransaction(
+  reviewedTransaction,
+  undefined,
+  { mode: 'reviewed-native', assertCurrent: assertReviewCurrent }
+);
 
 // The host owns the reviewed account/network/session and revokes its authority
 // when that context changes or the approval is cancelled.
@@ -398,6 +394,7 @@ Signatures are checked against the expected account; UTXO signatures must also
 match the approved PSBT and its requested sighash coverage. The custom UTXO host
 supports the existing Syscoin and Bitcoin app protocols. Physical-device and
 firmware qualification remain separate from source and mocked-device tests.
+
 
 ## Shared standard EVM fees
 
