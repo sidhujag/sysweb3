@@ -456,21 +456,7 @@ class BaseProvider extends JsonRpcProvider {
   async getFeeData(reader?: RpcFeeReadTransport): Promise<any> {
     this.assertActive();
     // A host-owned observation must read through its own phase and lifetime.
-    if (reader) {
-      return new Promise((resolve, reject) => {
-        const cancel = () => reject(this.lifetime.signal.reason);
-        this.lifetime.signal.addEventListener('abort', cancel, { once: true });
-        void this.fetchFeeData(reader)
-          .then((value) => {
-            this.assertActive();
-            return value;
-          })
-          .then(resolve, reject)
-          .finally(() =>
-            this.lifetime.signal.removeEventListener('abort', cancel)
-          );
-      });
-    }
+    if (reader) return this.fetchFeeDataWithinLifetime(reader);
     const now = Date.now();
     if (this.feeDataCache && this.feeDataCache.expiresAt > now) {
       return this.feeDataCache.value;
@@ -479,9 +465,10 @@ class BaseProvider extends JsonRpcProvider {
       return this.feeDataPromise;
     }
 
-    this.feeDataPromise = this.fetchFeeData();
+    this.feeDataPromise = this.fetchFeeDataWithinLifetime();
     try {
       const value = await this.feeDataPromise;
+      this.assertActive();
       this.feeDataCache = {
         expiresAt: Date.now() + FEE_DATA_CACHE_TTL_MS,
         value,
@@ -492,12 +479,32 @@ class BaseProvider extends JsonRpcProvider {
     }
   }
 
+  private fetchFeeDataWithinLifetime(
+    reader?: RpcFeeReadTransport
+  ): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const cancel = () => reject(this.lifetime.signal.reason);
+      this.lifetime.signal.addEventListener('abort', cancel, { once: true });
+      void this.fetchFeeData(reader)
+        .then((value) => {
+          this.assertActive();
+          return value;
+        })
+        .then(resolve, reject)
+        .finally(() =>
+          this.lifetime.signal.removeEventListener('abort', cancel)
+        );
+    });
+  }
+
   private async readFeeData(reader?: RpcFeeReadTransport): Promise<FeeData> {
     const network = await this.getNetwork();
+    this.assertActive();
     // Ethers tolerates unavailable optional fee methods; keep that behavior,
     // but never convert a response-integrity failure into an invented quote.
     const optionalFee = async (method: 'getGasPrice' | 'getPriorityFee') => {
       try {
+        this.assertActive();
         return getBigInt(
           reader
             ? await reader.send(
@@ -520,11 +527,13 @@ class BaseProvider extends JsonRpcProvider {
       }
     };
     const getFeeData = async () => {
+      this.assertActive();
       const [block, gasPrice, priorityFee] = await Promise.all([
         reader ? reader.getBlock('latest') : super.getBlock('latest'),
         optionalFee('getGasPrice'),
         optionalFee('getPriorityFee'),
       ]);
+      this.assertActive();
       let maxFeePerGas: bigint | null = null;
       let maxPriorityFeePerGas: bigint | null = null;
       if (block?.baseFeePerGas != null && priorityFee != null) {
@@ -559,6 +568,7 @@ class BaseProvider extends JsonRpcProvider {
       };
       let result;
       try {
+        this.assertActive();
         result = await plugin.processFunc(
           pluginReader,
           this,
@@ -567,6 +577,7 @@ class BaseProvider extends JsonRpcProvider {
       } catch (error) {
         throw readerFailure ?? error;
       }
+      this.assertActive();
       if (readerFailure) throw readerFailure;
       return new FeeData(
         result.gasPrice,
@@ -579,6 +590,7 @@ class BaseProvider extends JsonRpcProvider {
 
   private async fetchFeeData(reader?: RpcFeeReadTransport): Promise<any> {
     const feeData = await this.readFeeData(reader);
+    this.assertActive();
     const maxFeePerGas =
       feeData.maxFeePerGas == null
         ? null

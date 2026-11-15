@@ -4,6 +4,7 @@ import {
   readJsonRpcResponse,
   requestJsonRpc,
   RpcResponseIntegrityError,
+  RpcResponseSizeError,
   type RpcReadRequest,
   type RpcResponse,
 } from './rpc-transport';
@@ -397,6 +398,14 @@ export class JsonRpcReadClient {
                 throw Object.assign(new Error('RPC HTTP 400'), { status: 400 });
               return json;
             } catch (error) {
+              if (
+                response.status !== 200 &&
+                error instanceof RpcResponseSizeError
+              )
+                throw new RpcResponseIntegrityError(
+                  'RPC error response exceeded size limit',
+                  false
+                );
               // Publish endpoint feedback before releasing this physical slot.
               recordBatchLimit(error, rows.length);
               throw error;
@@ -436,6 +445,16 @@ export class JsonRpcReadClient {
         });
       } catch (error) {
         check(signal);
+        if (rows.length > 1 && error instanceof RpcResponseSizeError) {
+          // The byte limit applies to this response, not the endpoint's batch
+          // capability. Children retain this operation's deadline and queue.
+          const middle = Math.ceil(rows.length / 2);
+          const children = await Promise.all([
+            execute(rows.slice(0, middle), recoverResponse),
+            execute(rows.slice(middle), recoverResponse),
+          ]);
+          return children.flat();
+        }
         if (error instanceof RpcBatchReplan)
           return executeChunks(rows, recoverResponse);
         if (rows.length > 1 && error instanceof RpcBatchAmbiguous) {

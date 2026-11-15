@@ -1812,6 +1812,90 @@ describe('JSON-RPC response correlation', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('does not invoke a host fee reader after destruction while resolving the network', async () => {
+    const provider = providerFor();
+    let release!: (value: unknown) => void;
+    const networkReady = new Promise((resolve) => {
+      release = resolve;
+    });
+    jest.spyOn(provider, 'getNetwork').mockReturnValue(networkReady);
+    const reader = {
+      getBlock: jest.fn().mockResolvedValue({ baseFeePerGas: 7n }),
+      send: jest.fn().mockResolvedValue('0x2'),
+    };
+    const reading = provider.getFeeData(reader);
+    const rejected = expect(reading).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    provider.destroy();
+    await rejected;
+    release(Network.from(1));
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(reader.getBlock).not.toHaveBeenCalled();
+    expect(reader.send).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['ordinary', 'reader'])(
+    'rejects a late Polygon plugin result for the %s fee path without publishing cache',
+    async (path) => {
+      const parentGetBlock = jest
+        .spyOn(JsonRpcProvider.prototype, 'getBlock')
+        .mockResolvedValue({ baseFeePerGas: 7n });
+      let release!: (value: unknown) => void;
+      let started!: () => void;
+      const stationStarted = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const stationResult = new Promise((resolve) => {
+        release = resolve;
+      });
+      const gasStation = jest
+        .spyOn(FetchRequest.prototype, 'send')
+        .mockImplementation(() => {
+          started();
+          return stationResult;
+        });
+      const provider = providerFor();
+      jest.spyOn(provider, 'getNetwork').mockResolvedValue(Network.from(137));
+      jest.spyOn(provider, '_perform').mockResolvedValue('0x2');
+      const reader = {
+        getBlock: jest.fn().mockResolvedValue({ baseFeePerGas: 7n }),
+        send: jest.fn().mockResolvedValue('0x2'),
+      };
+      try {
+        const reading = provider.getFeeData(
+          path === 'reader' ? reader : undefined
+        );
+        let settled = false;
+        void reading.then(
+          () => {
+            settled = true;
+          },
+          () => {
+            settled = true;
+          }
+        );
+        const rejected = expect(reading).rejects.toMatchObject({
+          name: 'AbortError',
+        });
+        await stationStarted;
+        for (let i = 0; i < 12; i++) await Promise.resolve();
+        provider.destroy();
+        for (let i = 0; i < 12; i++) await Promise.resolve();
+        expect(settled).toBe(true);
+        release({ bodyJson: { standard: { maxFee: 3, maxPriorityFee: 1 } } });
+        await rejected;
+        for (let i = 0; i < 12; i++) await Promise.resolve();
+        expect(provider.feeDataCache).toBeNull();
+        expect(gasStation).toHaveBeenCalledTimes(1);
+      } finally {
+        gasStation.mockRestore();
+        parentGetBlock.mockRestore();
+      }
+    }
+  );
+
   it('preserves legacy fallback and integrity errors from the phase fee reader', async () => {
     const provider = providerFor();
     const reader = {
