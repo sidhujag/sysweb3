@@ -38,6 +38,138 @@ export class RpcResponseIntegrityError extends Error {
   }
 }
 
+export async function cancelRpcResponse(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // Cancellation may reject after the underlying stream has already closed.
+  }
+}
+
+async function responseText(
+  response: Response,
+  maximum: number,
+  signal: AbortSignal
+): Promise<string> {
+  const declared = response.headers.get('content-length');
+  if (
+    declared !== null &&
+    (!/^\d+$/.test(declared) || Number(declared) > maximum)
+  ) {
+    await cancelRpcResponse(response);
+    throw new RpcResponseIntegrityError(
+      'RPC response exceeded size limit',
+      false
+    );
+  }
+  if (!response.body?.getReader) {
+    try {
+      const text = await response.text();
+      if (signal.aborted)
+        throw (
+          signal.reason ??
+          new DOMException('RPC response aborted', 'AbortError')
+        );
+      if (new TextEncoder().encode(text).byteLength > maximum)
+        throw new RpcResponseIntegrityError(
+          'RPC response exceeded size limit',
+          false
+        );
+      return text;
+    } finally {
+      await cancelRpcResponse(response);
+    }
+  }
+  let reader: ReadableStreamDefaultReader<Uint8Array>;
+  try {
+    reader = response.body.getReader();
+  } catch (error) {
+    await cancelRpcResponse(response);
+    throw error;
+  }
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  let size = 0;
+  let text = '';
+  try {
+    let complete = false;
+    while (!complete) {
+      if (signal.aborted)
+        throw (
+          signal.reason ??
+          new DOMException('RPC response aborted', 'AbortError')
+        );
+      const part = await reader.read();
+      if (signal.aborted)
+        throw (
+          signal.reason ??
+          new DOMException('RPC response aborted', 'AbortError')
+        );
+      if (part.done) {
+        complete = true;
+        continue;
+      }
+      size += part.value.byteLength;
+      if (size > maximum)
+        throw new RpcResponseIntegrityError(
+          'RPC response exceeded size limit',
+          false
+        );
+      text += decoder.decode(part.value, { stream: true });
+    }
+    return text + decoder.decode();
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // Keep the physical slot until cancellation settles, including rejection.
+    } finally {
+      reader.releaseLock();
+    }
+  }
+}
+
+/** Read one bounded JSON response. The caller owns HTTP policy and correlation. */
+export async function readJsonRpcResponse(
+  response: Response,
+  maximum: number,
+  signal: AbortSignal
+): Promise<unknown> {
+  let readingBody = false;
+  try {
+    if (signal.aborted)
+      throw (
+        signal.reason ?? new DOMException('RPC response aborted', 'AbortError')
+      );
+    const contentType = response.headers.get('content-type');
+    if (
+      contentType &&
+      !/^(application\/json|application\/[a-z0-9!#$&^_.+-]+\+json)(?:\s*;|$)/i.test(
+        contentType
+      )
+    )
+      throw new RpcResponseIntegrityError(
+        'Invalid JSON-RPC content type',
+        false
+      );
+    readingBody = true;
+    const text = await responseText(response, maximum, signal);
+    if (signal.aborted)
+      throw (
+        signal.reason ?? new DOMException('RPC response aborted', 'AbortError')
+      );
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new RpcResponseIntegrityError(
+        'Invalid JSON-RPC JSON response',
+        false
+      );
+    }
+  } finally {
+    if (!readingBody) await cancelRpcResponse(response);
+  }
+}
+
 // Only these standard, side-effect-free reads may recover from a stale cache
 // entry. Never infer retry eligibility from an RPC method prefix.
 const RECOVERABLE_READ_METHODS = new Set([
