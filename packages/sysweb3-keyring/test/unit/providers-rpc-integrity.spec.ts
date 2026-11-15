@@ -1249,6 +1249,114 @@ describe('JSON-RPC response correlation', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ['invalid byte', [0xff]],
+    ['truncated UTF-8 tail', [0xe2, 0x82]],
+  ])(
+    'rejects %s as response corruption before legacy gas fallback',
+    async (_label, tail) => {
+      const cancellations: jest.SpyInstance[] = [];
+      fetchMock.mockImplementation(async (_url, init) => {
+        const request = JSON.parse(init.body);
+        const prefix = new TextEncoder().encode(
+          `{"jsonrpc":"2.0","id":${request.id},"result":"`
+        );
+        const stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(prefix);
+            controller.enqueue(Uint8Array.from(tail as number[]));
+            controller.close();
+          },
+        });
+        const getReader = stream.getReader.bind(stream);
+        jest.spyOn(stream, 'getReader').mockImplementation(() => {
+          const reader = getReader();
+          cancellations.push(jest.spyOn(reader, 'cancel'));
+          return reader;
+        });
+        return new Response(stream, {
+          headers: { 'content-type': 'application/json' },
+        });
+      });
+      await expect(
+        sdkFor(providerFor()).getTxGasLimit({ data: '0x6000' })
+      ).rejects.toMatchObject({ code: SENTINEL });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(requestsFrom(fetchMock)[0].method).toBe('eth_estimateGas');
+      expect(cancellations).toHaveLength(1);
+      expect(cancellations[0]).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it('accepts valid multibyte UTF-8 split across response chunks', async () => {
+    fetchMock.mockImplementation(async (_url, init) => {
+      const request = JSON.parse(init.body);
+      const encoded = new TextEncoder().encode(
+        JSON.stringify(resultFor(request, '✓'))
+      );
+      const offset = encoded.indexOf(0xe2);
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoded.slice(0, offset + 1));
+            controller.enqueue(encoded.slice(offset + 1, offset + 2));
+            controller.enqueue(encoded.slice(offset + 2));
+            controller.close();
+          },
+        }),
+        { headers: { 'content-type': 'application/json' } }
+      );
+    });
+    await expect(providerFor().send('web3_clientVersion', [])).resolves.toBe(
+      '✓'
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['eth_gasPrice', 'eth_maxPriorityFeePerGas'])(
+    'rejects malformed UTF-8 in %s before optional fee fallback or cache publication',
+    async (method) => {
+      const parentGetBlock = jest
+        .spyOn(JsonRpcProvider.prototype, 'getBlock')
+        .mockResolvedValue({ baseFeePerGas: 7n });
+      const provider = providerFor();
+      let corrupt = true;
+      fetchMock.mockImplementation(async (_url, init) => {
+        const request = JSON.parse(init.body);
+        if (corrupt && request.method === method)
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(Uint8Array.from([0xff]));
+                controller.close();
+              },
+            }),
+            { headers: { 'content-type': 'application/json' } }
+          );
+        return response(resultFor(request, '0x2'));
+      });
+      try {
+        await expect(provider.getFeeData()).rejects.toMatchObject({
+          code: SENTINEL,
+        });
+        expect(
+          requestsFrom(fetchMock).filter((request) => request.method === method)
+        ).toHaveLength(1);
+        corrupt = false;
+        await expect(provider.getFeeData()).resolves.toMatchObject({
+          gasPrice: BigNumber.from(2),
+          maxPriorityFeePerGas: BigNumber.from(2),
+          maxFeePerGas: BigNumber.from(16),
+        });
+        expect(
+          requestsFrom(fetchMock).filter((request) => request.method === method)
+        ).toHaveLength(2);
+      } finally {
+        parentGetBlock.mockRestore();
+      }
+    }
+  );
+
   it('preserves an aborted response-body read', async () => {
     fetchMock.mockResolvedValue({
       ok: true,
@@ -1619,6 +1727,113 @@ describe('JSON-RPC response correlation', () => {
     } finally {
       parentGetBlock.mockRestore();
     }
+  });
+
+  it('uses an explicit fee reader without reusing or publishing the provider cache', async () => {
+    const provider = providerFor();
+    const reader = {
+      getBlock: jest.fn().mockResolvedValue({ baseFeePerGas: 7n }),
+      send: jest.fn(async (method: string) =>
+        method === 'eth_gasPrice' ? '0x2' : '0x3'
+      ),
+    };
+    await expect(provider.getFeeData(reader)).resolves.toEqual({
+      gasPrice: BigNumber.from(2),
+      maxFeePerGas: BigNumber.from(17),
+      maxPriorityFeePerGas: BigNumber.from(3),
+    });
+    reader.getBlock.mockResolvedValue({ baseFeePerGas: 10n });
+    await expect(provider.getFeeData(reader)).resolves.toMatchObject({
+      maxFeePerGas: BigNumber.from(23),
+    });
+    expect(reader.getBlock).toHaveBeenCalledTimes(2);
+    expect(reader.send).toHaveBeenCalledTimes(4);
+    expect(fetchMock).not.toHaveBeenCalled();
+    provider.destroy();
+    await expect(provider.getFeeData(reader)).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    expect(reader.send).toHaveBeenCalledTimes(4);
+  });
+
+  it('preserves the network plugin when a phase owns its fee reads', async () => {
+    const provider = providerFor();
+    const reader = {
+      getBlock: jest.fn().mockResolvedValue({ baseFeePerGas: 7n }),
+      send: jest.fn().mockResolvedValue('0x2'),
+    };
+    const plugin = {
+      url: 'https://fees.example/quote',
+      processFunc: jest.fn(async (read, observedProvider, request) => {
+        expect(observedProvider).toBe(provider);
+        expect(request.url).toBe('https://fees.example/quote');
+        const fees = await read();
+        return { ...fees, maxFeePerGas: 99n, maxPriorityFeePerGas: 11n };
+      }),
+    };
+    jest.spyOn(provider, 'getNetwork').mockResolvedValue({
+      getPlugin: () => plugin,
+    });
+    await expect(provider.getFeeData(reader)).resolves.toEqual({
+      gasPrice: BigNumber.from(2),
+      maxFeePerGas: BigNumber.from(99),
+      maxPriorityFeePerGas: BigNumber.from(11),
+    });
+    expect(plugin.processFunc).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('retires an unfinished host fee reader when the provider is destroyed', async () => {
+    const provider = providerFor();
+    let release!: (value: string) => void;
+    let start!: () => void;
+    const started = new Promise<void>((resolve) => {
+      start = resolve;
+    });
+    const held = new Promise<string>((resolve) => {
+      release = resolve;
+    });
+    const reader = {
+      getBlock: jest.fn().mockResolvedValue({ baseFeePerGas: 7n }),
+      send: jest.fn(async () => {
+        start();
+        return held;
+      }),
+    };
+    const reading = provider.getFeeData(reader);
+    const failed = expect(reading).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    await started;
+    provider.destroy();
+    await failed;
+    release('0x2');
+    await Promise.resolve();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves legacy fallback and integrity errors from the phase fee reader', async () => {
+    const provider = providerFor();
+    const reader = {
+      getBlock: jest.fn().mockResolvedValue({ baseFeePerGas: null }),
+      send: jest.fn(async (method: string) => {
+        if (method === 'eth_maxPriorityFeePerGas')
+          throw new Error('unsupported');
+        return '0x2';
+      }),
+    };
+    await expect(provider.getFeeData(reader)).resolves.toEqual({
+      gasPrice: BigNumber.from(2),
+      maxFeePerGas: null,
+      maxPriorityFeePerGas: null,
+    });
+    const integrity = new RpcResponseIntegrityError(
+      'Malformed phase fees',
+      false
+    );
+    reader.send.mockRejectedValue(integrity);
+    await expect(provider.getFeeData(reader)).rejects.toBe(integrity);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it.each(['', true, false, Number.MAX_SAFE_INTEGER + 1, null])(

@@ -88,6 +88,16 @@ async function responseText(
     throw error;
   }
   const decoder = new TextDecoder('utf-8', { fatal: true });
+  const decode = (chunk?: Uint8Array, stream = false) => {
+    try {
+      return decoder.decode(chunk, { stream });
+    } catch {
+      throw new RpcResponseIntegrityError(
+        'Invalid JSON-RPC UTF-8 response',
+        false
+      );
+    }
+  };
   let size = 0;
   let text = '';
   try {
@@ -114,9 +124,9 @@ async function responseText(
           'RPC response exceeded size limit',
           false
         );
-      text += decoder.decode(part.value, { stream: true });
+      text += decode(part.value, true);
     }
-    return text + decoder.decode();
+    return text + decode();
   } finally {
     try {
       await reader.cancel();
