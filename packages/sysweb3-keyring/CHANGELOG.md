@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.19
+
+- Reject malformed UTF-8 RPC responses as nonretryable integrity failures, including truncated multibyte sequences, instead of allowing legacy gas fallback.
+- Let host-owned fee observations share a bounded read phase while preserving network fee plugins, optional-method behavior and independent cancellation.
+
 ## 2.1.18
 
 - Give provider reads, broadcasts and stateful requests one owned cancellation lifetime. Destruction aborts pending transports and rejects late responses without retrying writes.
