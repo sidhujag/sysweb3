@@ -3,6 +3,7 @@
 ## 2.1.18
 
 - Give provider reads, broadcasts and stateful requests one owned cancellation lifetime. Destruction aborts pending transports and rejects late responses without retrying writes.
+- Apply bounded JSON response reading and request deadlines to broadcasts and stateful RPCs, including cancellation cleanup for late responses.
 
 ## 2.1.17
 

@@ -17,8 +17,9 @@ import {
 } from './rpc-read-client';
 import {
   isReadOnlyRpcMethod,
+  cancelRpcResponse,
+  readJsonRpcResponse,
   requestJsonRpc,
-  RpcResponseIntegrityError,
 } from './rpc-transport';
 
 import type { JsonRpcPayload } from 'ethers/providers';
@@ -166,6 +167,8 @@ class BaseProvider extends JsonRpcProvider {
   private cooldownTime = 120 * 1000;
   private cooldownUntil = 0;
   private readonly fetcher: NonNullable<RpcReadClientOptions['fetch']>;
+  private readonly maximumResponseBytes: number;
+  private readonly requestTimeoutMs: number;
   private feeDataCache: { expiresAt: number; value: any } | null = null;
   private feeDataPromise: Promise<any> | null = null;
   private readonly configuredChainId?: number;
@@ -203,6 +206,8 @@ class BaseProvider extends JsonRpcProvider {
     if (signal.aborted) abort();
     else signal.addEventListener('abort', abort, { once: true });
     this.fetcher = options.fetch ?? ((address, init) => fetch(address, init));
+    this.maximumResponseBytes = options.maxResponseBytes ?? 2 * 1024 * 1024;
+    this.requestTimeoutMs = options.timeoutMs ?? 12000;
     this.readClient = new JsonRpcReadClient(this._getConnection().url, {
       ...options,
       fetch: (address, init) => this.fetchRpc(address, init),
@@ -281,11 +286,25 @@ class BaseProvider extends JsonRpcProvider {
     inputs: Array<Pick<JsonRpcPayload, 'method' | 'params'>>,
     batch: boolean
   ): Promise<any[]> {
-    return requestJsonRpc(
+    this.assertActive();
+    const controller = new AbortController();
+    const abort = () => controller.abort(this.lifetime.signal.reason);
+    this.lifetime.signal.addEventListener('abort', abort, { once: true });
+    const signal = controller.signal;
+    const timer = setTimeout(
+      () =>
+        controller.abort(
+          Object.assign(new Error('RPC request deadline exceeded'), {
+            name: 'AbortError',
+          })
+        ),
+      this.requestTimeoutMs
+    );
+    const work = requestJsonRpc(
       this._getConnection().url,
       inputs,
       batch,
-      this.lifetime.signal,
+      signal,
       async (url, body, signal) => {
         const response = await this.fetchRpc(url, {
           method: 'POST',
@@ -293,47 +312,43 @@ class BaseProvider extends JsonRpcProvider {
           body,
           signal,
         });
+        let readingBody = false;
         try {
-          this.assertActive();
+          if (signal.aborted) throw signal.reason;
+          readingBody = true;
+          const json: any = await readJsonRpcResponse(
+            response,
+            this.maximumResponseBytes,
+            signal
+          );
+          if (signal.aborted) throw signal.reason;
           if (!response.ok) {
-            let errorBody = { error: undefined, message: undefined };
-            try {
-              errorBody = await response.json();
-            } catch {
-              console.warn('No body in request');
-            }
-            this.assertActive();
             this.errorMessage =
-              errorBody.error ||
-              errorBody.message ||
-              'No message from Provider';
+              json?.error || json?.message || 'No message from Provider';
             handleStatusCodeError(response.status, this.errorMessage);
           }
           if (response.status !== 200)
             throw new Error(`Unexpected HTTP status code: ${response.status}`);
-          try {
-            const json = await response.json();
-            this.assertActive();
-            return json;
-          } catch (error) {
-            if (signal.aborted || error?.name === 'AbortError') throw error;
-            throw new RpcResponseIntegrityError(
-              'Invalid JSON-RPC JSON response',
-              false
-            );
-          }
+          return json;
         } finally {
-          if (signal.aborted) {
-            try {
-              await response.body?.cancel();
-            } catch {
-              /* Preserve the original cancellation error. */
-            }
-          }
+          if (!readingBody) await cancelRpcResponse(response);
         }
       },
       false
     );
+    try {
+      return await new Promise<any[]>((resolve, reject) => {
+        const cancel = () => reject(signal.reason);
+        signal.addEventListener('abort', cancel, { once: true });
+        if (signal.aborted) cancel();
+        void work
+          .then(resolve, reject)
+          .finally(() => signal.removeEventListener('abort', cancel));
+      });
+    } finally {
+      clearTimeout(timer);
+      this.lifetime.signal.removeEventListener('abort', abort);
+    }
   }
 
   async readMany(inputs: readonly RpcReadRequest[], options?: RpcReadOptions) {
@@ -615,9 +630,15 @@ class BaseProvider extends JsonRpcProvider {
   }
 
   async sendTransaction(signedTransaction: string) {
+    this.assertActive();
     return wrapTransactionResponse(
       await this.broadcastTransaction(signedTransaction)
     );
+  }
+
+  override async broadcastTransaction(signedTransaction: string) {
+    this.assertActive();
+    return super.broadcastTransaction(signedTransaction);
   }
 }
 

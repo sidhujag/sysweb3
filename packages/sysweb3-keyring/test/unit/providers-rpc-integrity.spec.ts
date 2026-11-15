@@ -126,11 +126,13 @@ describe('JSON-RPC response correlation', () => {
         return {
           ...response({}),
           body: { cancel },
-          json: () =>
+          text: () =>
             new Promise((resolve) => {
               bodyStarted();
               release = () =>
-                resolve(resultFor(JSON.parse(init.body), '0xhash'));
+                resolve(
+                  JSON.stringify(resultFor(JSON.parse(init.body), '0xhash'))
+                );
             }),
         };
       });
@@ -173,6 +175,167 @@ describe('JSON-RPC response correlation', () => {
     await rejected;
     expect(cancel).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['sendTransaction', 'broadcastTransaction'] as const)(
+    'refuses public %s before any transport after destruction',
+    async (method) => {
+      const raw = await new Wallet(`0x${'11'.repeat(32)}`).signTransaction({
+        chainId: 5700,
+        to: FROM,
+        nonce: 0,
+        value: 1,
+        gasLimit: 21000,
+        gasPrice: 1,
+      });
+      const provider = providerFor();
+      provider.destroy();
+      await expect(provider[method](raw)).rejects.toMatchObject({
+        name: 'AbortError',
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([200, 400, 429])(
+    'bounds stateful HTTP %s bodies before JSON parsing',
+    async (status) => {
+      const provider = providerFor();
+      const cancel = jest.fn().mockResolvedValue(undefined);
+      fetchMock.mockResolvedValue({
+        ok: status === 200,
+        status,
+        headers: new Headers({
+          'content-type': 'application/json',
+          'content-length': String(2 * 1024 * 1024 + 1),
+        }),
+        body: { cancel },
+        text: jest.fn(),
+        json: jest.fn(),
+      });
+      await expect(
+        provider.send('eth_sendRawTransaction', ['0x01'])
+      ).rejects.toMatchObject({ code: SENTINEL });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.results[0].value).toBeDefined();
+    }
+  );
+
+  it('rejects stateful HTML and an undeclared oversized stream without retry', async () => {
+    const provider = providerFor();
+    const htmlCancel = jest.fn().mockResolvedValue(undefined);
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'text/html' }),
+      body: { cancel: htmlCancel },
+    });
+    await expect(provider.send('eth_newFilter', [{}])).rejects.toMatchObject({
+      code: SENTINEL,
+    });
+    expect(htmlCancel).toHaveBeenCalledTimes(1);
+    let streamCancelled = 0;
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new Uint8Array(2 * 1024 * 1024 + 1));
+          },
+          cancel() {
+            streamCancelled++;
+          },
+        }),
+        { headers: { 'content-type': 'application/json' } }
+      )
+    );
+    await expect(
+      provider.send('eth_sendRawTransaction', ['0x01'])
+    ).rejects.toMatchObject({ code: SENTINEL });
+    expect(streamCancelled).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['headers', 'body'] as const)(
+    'settles stateful cancellation while noncooperative %s cleanup is pending',
+    async (stage) => {
+      const provider = providerFor();
+      let release!: () => void;
+      let started!: () => void;
+      const reading = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const cancel = jest.fn().mockResolvedValue(undefined);
+      fetchMock.mockImplementation((_url, init) => {
+        const value = {
+          ...response(resultFor(JSON.parse(init.body))),
+          body: { cancel },
+        };
+        if (stage === 'headers')
+          return new Promise((resolve) => {
+            release = () => resolve(value);
+            started();
+          });
+        return Promise.resolve({
+          ...value,
+          text: () =>
+            new Promise((resolve) => {
+              release = () =>
+                resolve(JSON.stringify(resultFor(JSON.parse(init.body))));
+              started();
+            }),
+        });
+      });
+      const pending = provider.send('eth_sendRawTransaction', ['0x01']);
+      const rejected = expect(pending).rejects.toMatchObject({
+        name: 'AbortError',
+      });
+      await reading;
+      provider.destroy();
+      await rejected;
+      expect(cancel).not.toHaveBeenCalled();
+      release();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it('uses the configured deadline for a noncooperative stateful fetch', async () => {
+    jest.useFakeTimers();
+    const provider = new CustomJsonRpcProvider(
+      new AbortController().signal,
+      RPC_URL,
+      5700,
+      { timeoutMs: 10 }
+    );
+    providers.push(provider);
+    let release!: () => void;
+    const cancel = jest.fn().mockResolvedValue(undefined);
+    fetchMock.mockImplementation(
+      (_url, init) =>
+        new Promise((resolve) => {
+          release = () =>
+            resolve({
+              ...response(resultFor(JSON.parse(init.body))),
+              body: { cancel },
+            });
+        })
+    );
+    try {
+      const pending = provider.send('eth_sendRawTransaction', ['0x01']);
+      const rejected = expect(pending).rejects.toMatchObject({
+        name: 'AbortError',
+      });
+      await jest.advanceTimersByTimeAsync(10);
+      await rejected;
+      release();
+      await jest.advanceTimersByTimeAsync(0);
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('shares only supplied endpoint capability across new providers', async () => {
