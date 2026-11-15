@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.17
+
+- Route allowlisted provider reads through the bounded read client and accept endpoint capability ownership through provider options.
+- Recheck queued batch limits before dispatch and run fallback reads with bounded concurrency while retaining response cleanup and result ordering.
+- Apply provider cooldown after HTTP 429 and retain single-attempt behavior for writes and stateful RPC methods.
+
 ## 2.1.16
 
 - Share expiring batch capability metadata between operation-owned clients for the same endpoint, preserving independent cancellation and response ownership.

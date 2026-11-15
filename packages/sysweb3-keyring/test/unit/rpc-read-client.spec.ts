@@ -32,6 +32,146 @@ const tick = async () => {
 };
 
 describe('bounded JSON-RPC read client', () => {
+  it('rechecks the learned scalar limit before dispatching queued chunks', async () => {
+    const fetcher = jest.fn(async (_url, init) => {
+      const request = JSON.parse(init.body);
+      return response(
+        Array.isArray(request)
+          ? {
+              jsonrpc: '2.0',
+              id: null,
+              error: { code: -32600, message: 'Batch unsupported' },
+            }
+          : reply(request, request.params[0])
+      );
+    });
+    const client = new JsonRpcReadClient(URL, {
+      fetch: fetcher,
+      maxBatchItems: 4,
+      maxConcurrency: 1,
+    });
+    const result = await client.readMany(
+      Array.from({ length: 10 }, (_, i) => input('eth_getBalance', String(i)))
+    );
+    expect(result).toEqual(
+      Array.from({ length: 10 }, (_, i) => ({
+        status: 'fulfilled',
+        value: String(i),
+      }))
+    );
+    const requests = fetcher.mock.calls.map(([, init]) =>
+      JSON.parse(init.body)
+    );
+    expect(requests.filter(Array.isArray)).toHaveLength(1);
+    expect(requests).toHaveLength(11);
+  });
+
+  it('uses bounded scalar concurrency during the first refused batch', async () => {
+    let active = 0;
+    let peak = 0;
+    const fetcher = jest.fn(async (_url, init) => {
+      const request = JSON.parse(init.body);
+      if (Array.isArray(request))
+        return response({
+          jsonrpc: '2.0',
+          id: null,
+          error: { code: -32600, message: 'Batch unsupported' },
+        });
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      active--;
+      return response(reply(request, request.params[0]));
+    });
+    const client = new JsonRpcReadClient(URL, { fetch: fetcher });
+    const result = await client.readMany(
+      Array.from({ length: 12 }, (_, i) => input('eth_call', String(i)))
+    );
+    expect(peak).toBe(4);
+    expect(result).toEqual(
+      Array.from({ length: 12 }, (_, i) => ({
+        status: 'fulfilled',
+        value: String(i),
+      }))
+    );
+  });
+
+  it('preserves order and individual errors after concurrent scalar fallback', async () => {
+    const fetcher = jest.fn(async (_url, init) => {
+      const request = JSON.parse(init.body);
+      if (Array.isArray(request))
+        return response({
+          jsonrpc: '2.0',
+          id: null,
+          error: { code: -32600, message: 'Batch unsupported' },
+        });
+      const value = Number(request.params[0]);
+      await new Promise((resolve) => setTimeout(resolve, 8 - value));
+      return response(
+        value === 3
+          ? {
+              jsonrpc: '2.0',
+              id: request.id,
+              error: { code: 3, message: 'reverted', data: '0x1234' },
+            }
+          : reply(request, value)
+      );
+    });
+    const client = new JsonRpcReadClient(URL, {
+      fetch: fetcher,
+      maxBatchItems: 8,
+    });
+    const results = await client.readMany(
+      Array.from({ length: 8 }, (_, i) => input('eth_call', String(i)))
+    );
+    expect(
+      results.map((result) =>
+        result.status === 'fulfilled' ? result.value : result.reason.code
+      )
+    ).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(results[3]).toMatchObject({
+      status: 'rejected',
+      reason: { message: 'reverted', data: '0x1234' },
+    });
+    expect((results[3] as PromiseRejectedResult).reason).toBeInstanceOf(
+      RpcReadError
+    );
+    expect(fetcher).toHaveBeenCalledTimes(9);
+  });
+
+  it('holds refusal cleanup capacity and cancels queued fallback children', async () => {
+    const cleanup = deferred<void>();
+    const cancellation = new AbortController();
+    const fetcher = jest.fn(
+      async () =>
+        ({
+          ok: false,
+          status: 413,
+          headers: new Headers(),
+          body: { cancel: () => cleanup.promise },
+        } as unknown as Response)
+    );
+    const client = new JsonRpcReadClient(URL, {
+      fetch: fetcher,
+      maxConcurrency: 1,
+      maxBatchItems: 4,
+    });
+    const result = client.readMany(
+      Array.from({ length: 10 }, () => input()),
+      { signal: cancellation.signal }
+    );
+    const rejected = expect(result).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    await tick();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    cancellation.abort();
+    await rejected;
+    cleanup.resolve();
+    await tick();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
   it('batches heterogeneous reads, correlates reversed IDs and retains partial RPC errors', async () => {
     const fetcher = jest.fn(async (_url, init) => {
       const requests = JSON.parse(init.body);

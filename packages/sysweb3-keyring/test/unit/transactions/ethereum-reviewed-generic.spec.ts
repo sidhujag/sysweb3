@@ -15,6 +15,7 @@ const network = {
   kind: 'ethereum',
   chainId: 743211,
   slip44: 60,
+  currency: 'eth',
   url: 'https://rpc.invalid',
 } as const;
 const request = (legacy = false) => ({
