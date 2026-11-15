@@ -14,6 +14,7 @@ export type RpcReadOptions = {
 };
 export type RpcReadClientOptions = {
   fetch?: (url: string, init: RequestInit) => Promise<Response>;
+  capabilities?: RpcReadCapabilities;
   requestInit?: Omit<RequestInit, 'method' | 'body' | 'signal'>;
   recoverResponse?: boolean;
   signal?: AbortSignal;
@@ -32,9 +33,39 @@ type ChainRequest = {
   settled: boolean;
 };
 
+/** Endpoint capability metadata only. Responses and request lifetimes remain private to each client. */
+export class RpcReadCapabilities {
+  private batch?: { limit: number; expires: number };
+  constructor(readonly url: string) {
+    if (!['http:', 'https:'].includes(new URL(url).protocol))
+      throw new Error('Invalid RPC URL');
+  }
+
+  getBatchLimit(maximum: number): number {
+    boundedInteger(maximum, 128, 'batch size');
+    if (this.batch && this.batch.expires > Date.now())
+      return Math.min(maximum, this.batch.limit);
+    this.batch = undefined;
+    return maximum;
+  }
+
+  restrictBatch(limit: number): void {
+    boundedInteger(limit, 128, 'batch size');
+    const current = this.getBatchLimit(limit);
+    this.batch = {
+      limit: Math.min(current, limit),
+      expires: Date.now() + 30000,
+    };
+  }
+}
+
 class RpcBatchRefused extends Error {}
 class RpcBatchAmbiguous extends Error {}
-class RpcPayloadTooLarge extends Error {}
+class RpcPayloadTooLarge extends Error {
+  constructor(readonly endpointLimit = false) {
+    super();
+  }
+}
 class RpcBatchLimit extends Error {}
 const aborted = (signal: AbortSignal): Error => {
   if (signal.reason instanceof Error) return signal.reason;
@@ -89,7 +120,7 @@ const batchFailure = (value: unknown): Error | undefined => {
         error.message
       ))
   )
-    return undefined;
+    return new Error('RPC rate limit exceeded');
   if (
     error.code === -32600 &&
     /^invalid request[.!]?$/i.test(error.message.trim())
@@ -200,7 +231,8 @@ export class JsonRpcReadClient {
   private readonly lifetime = new AbortController();
   private readonly queue: Waiter[] = [];
   private active = 0;
-  private batchLimit: number;
+  private readonly capabilities: RpcReadCapabilities;
+  private localBatchLimit: number;
   private chainGeneration = 0;
   private chainCache?: { value: string; expires: number };
   private chainRequest?: ChainRequest;
@@ -238,12 +270,26 @@ export class JsonRpcReadClient {
       ),
       timeoutMs: boundedInteger(options.timeoutMs ?? 12000, 30000, 'timeout'),
     };
-    this.batchLimit = this.options.maxBatchItems;
+    if (options.capabilities && options.capabilities.url !== url)
+      throw new Error('RPC capabilities belong to another endpoint');
+    this.capabilities = options.capabilities ?? new RpcReadCapabilities(url);
+    this.localBatchLimit = this.options.maxBatchItems;
     if (options.signal?.aborted) this.destroy();
     else
       options.signal?.addEventListener('abort', () => this.destroy(), {
         once: true,
       });
+  }
+
+  private get batchLimit(): number {
+    return Math.min(
+      this.localBatchLimit,
+      this.capabilities.getBatchLimit(this.options.maxBatchItems)
+    );
+  }
+
+  private set batchLimit(limit: number) {
+    this.capabilities.restrictBatch(limit);
   }
 
   get url(): string {
@@ -380,7 +426,7 @@ export class JsonRpcReadClient {
             let readingBody = false;
             try {
               check(signal);
-              if (response.status === 413) throw new RpcPayloadTooLarge();
+              if (response.status === 413) throw new RpcPayloadTooLarge(true);
               // Inspect HTTP 400 for a protocol-level batch refusal.
               // Transient HTTP failures never establish a batch capability.
               const batchBadRequest = batch && response.status === 400;
@@ -461,10 +507,13 @@ export class JsonRpcReadClient {
             error instanceof RpcPayloadTooLarge ||
             error instanceof RpcBatchLimit)
         ) {
-          this.batchLimit =
+          const limit =
             error instanceof RpcBatchRefused
               ? 1
               : Math.min(this.batchLimit, Math.ceil(rows.length / 2));
+          if (error instanceof RpcPayloadTooLarge && !error.endpointLimit)
+            this.localBatchLimit = limit;
+          else this.batchLimit = limit;
           const results: PromiseSettledResult<unknown>[] = [];
           let offset = 0;
           while (offset < rows.length) {
@@ -481,8 +530,9 @@ export class JsonRpcReadClient {
     try {
       check(signal);
       const batches: RpcReadRequest[][] = [];
-      for (let i = 0; i < snapshot.length; i += this.batchLimit)
-        batches.push(snapshot.slice(i, i + this.batchLimit));
+      const batchLimit = this.batchLimit;
+      for (let i = 0; i < snapshot.length; i += batchLimit)
+        batches.push(snapshot.slice(i, i + batchLimit));
       let next = 0;
       const results: PromiseSettledResult<unknown>[][] = new Array(
         batches.length
