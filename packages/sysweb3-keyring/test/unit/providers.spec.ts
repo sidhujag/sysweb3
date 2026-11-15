@@ -77,65 +77,68 @@ describe('CustomJsonRpcProvider', () => {
   });
 
   it('populates EIP-1559 fees for zero-base-fee blocks', async () => {
-    const parentGetBlock = jest
-      .spyOn(JsonRpcProvider.prototype, 'getBlock')
-      .mockResolvedValue({ baseFeePerGas: 0n });
+    const fetcher = jest.fn(async (_url, init) => {
+      const result = JSON.parse(init.body).map((request) => ({
+        jsonrpc: '2.0',
+        id: request.id,
+        result:
+          request.method === 'eth_getBlockByNumber'
+            ? { baseFeePerGas: '0x0' }
+            : request.method === 'eth_gasPrice'
+            ? '0x7'
+            : '0x2',
+      }));
+      return new Response(JSON.stringify(result), {
+        headers: { 'content-type': 'application/json' },
+      });
+    });
     const provider = new CustomJsonRpcProvider(
       new AbortController().signal,
       'https://rpc.example',
-      5700
+      5700,
+      { fetch: fetcher }
     );
-    const providerNetwork = jest
-      .spyOn(provider, 'getNetwork')
-      .mockResolvedValue({ getPlugin: () => null });
-    const providerPerform = jest
-      .spyOn(provider, '_perform')
-      .mockImplementation(async ({ method }) => {
-        return method === 'getGasPrice' ? '0x7' : '0x2';
-      });
-    const providerSend = jest.spyOn(provider, 'send').mockResolvedValue('0x2');
-
     try {
       await expect(provider.getFeeData()).resolves.toEqual({
         gasPrice: BigNumber.from(7),
         maxFeePerGas: BigNumber.from(2),
         maxPriorityFeePerGas: BigNumber.from(2),
       });
+      expect(fetcher).toHaveBeenCalledTimes(1);
     } finally {
-      parentGetBlock.mockRestore();
-      providerNetwork.mockRestore();
-      providerPerform.mockRestore();
-      providerSend.mockRestore();
+      provider.destroy();
     }
   });
 
   it('coalesces concurrent fee data requests and briefly reuses the result', async () => {
-    const parentGetBlock = jest
-      .spyOn(JsonRpcProvider.prototype, 'getBlock')
-      .mockResolvedValue({ baseFeePerGas: 3n });
+    const fetcher = jest.fn(async (_url, init) => {
+      const result = JSON.parse(init.body).map((request) => ({
+        jsonrpc: '2.0',
+        id: request.id,
+        result:
+          request.method === 'eth_getBlockByNumber'
+            ? { baseFeePerGas: '0x3' }
+            : request.method === 'eth_gasPrice'
+            ? '0x7'
+            : '0x3',
+      }));
+      return new Response(JSON.stringify(result), {
+        headers: { 'content-type': 'application/json' },
+      });
+    });
     const provider = new CustomJsonRpcProvider(
       new AbortController().signal,
       'https://rpc.example',
-      5700
+      5700,
+      { fetch: fetcher }
     );
-    jest
-      .spyOn(provider, 'getNetwork')
-      .mockResolvedValue({ getPlugin: () => null });
-    const providerPerform = jest
-      .spyOn(provider, '_perform')
-      .mockImplementation(async ({ method }) => {
-        return method === 'getGasPrice' ? '0x7' : '0x3';
-      });
-
     try {
       const [first, second] = await Promise.all([
         provider.getFeeData(),
         provider.getFeeData(),
       ]);
       const third = await provider.getFeeData();
-
-      expect(parentGetBlock).toHaveBeenCalledTimes(1);
-      expect(providerPerform).toHaveBeenCalledTimes(2);
+      expect(fetcher).toHaveBeenCalledTimes(1);
       expect(first).toEqual({
         gasPrice: BigNumber.from(7),
         maxFeePerGas: BigNumber.from(9),
@@ -144,8 +147,7 @@ describe('CustomJsonRpcProvider', () => {
       expect(second).toBe(first);
       expect(third).toBe(first);
     } finally {
-      parentGetBlock.mockRestore();
-      providerPerform.mockRestore();
+      provider.destroy();
     }
   });
 

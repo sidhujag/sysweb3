@@ -11,6 +11,7 @@ import {
   isHexString,
   parseEther as ethersParseEther,
   parseUnits as ethersParseUnits,
+  resolveProperties,
   type BytesLike,
 } from 'ethers/utils';
 
@@ -23,6 +24,7 @@ export {
   keccak256,
   type BytesLike,
   type Networkish,
+  resolveProperties,
 };
 
 export type TransactionRequest = Record<string, any>;
@@ -163,15 +165,6 @@ export const formatUnits = (value: BigNumberish, unit?: string | number) =>
 
 export const formatEther = (value: BigNumberish) =>
   formatEtherBase(toBigIntValue(value));
-
-export const resolveProperties = async <T extends Record<string, any>>(
-  value: Deferrable<T>
-): Promise<T> => {
-  const entries = await Promise.all(
-    Object.entries(value).map(async ([key, entry]) => [key, await entry])
-  );
-  return Object.fromEntries(entries) as T;
-};
 
 export const shallowCopy = <T extends Record<string, any>>(value: T): T => ({
   ...value,

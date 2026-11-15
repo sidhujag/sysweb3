@@ -24,6 +24,227 @@ export type RpcJsonTransport = (
   signal: AbortSignal
 ) => Promise<unknown>;
 
+const ownedParams = new WeakMap<object, number>();
+const freezeRpcValue = (value: unknown): void => {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return;
+  Object.values(value).forEach(freezeRpcValue);
+  Object.freeze(value);
+};
+export function captureRpcRequests<T extends RpcTransportRequest>(
+  inputs: readonly T[],
+  maximumBytes = Infinity
+): T[] {
+  let size = 2;
+  return inputs.map((input) => {
+    if (
+      input.params &&
+      typeof input.params === 'object' &&
+      ownedParams.has(input.params)
+    ) {
+      size += ownedParams.get(input.params)! + input.method.length + 27;
+      if (size > maximumBytes)
+        throw new Error('RPC read work exceeded request budget');
+      return Object.freeze({ method: input.method, params: input.params }) as T;
+    }
+    const serialized = JSON.stringify(input);
+    size += rpcByteLength(serialized) + 1;
+    if (size > maximumBytes)
+      throw new Error('RPC read work exceeded request budget');
+    const captured = JSON.parse(serialized) as T;
+    if (
+      !captured ||
+      typeof captured.method !== 'string' ||
+      !captured.params ||
+      typeof captured.params !== 'object'
+    )
+      throw new Error('Invalid RPC request');
+    ownedParams.set(
+      captured.params,
+      rpcByteLength(JSON.stringify(captured.params))
+    );
+    freezeRpcValue(captured);
+    return captured;
+  });
+}
+
+export const rpcAbortError = (signal: AbortSignal): Error =>
+  signal.reason instanceof Error
+    ? signal.reason
+    : Object.assign(new Error('RPC request aborted'), { name: 'AbortError' });
+export const checkRpcSignal = (signal: AbortSignal): void => {
+  if (signal.aborted) throw rpcAbortError(signal);
+};
+export const rpcByteLength = (value: string): number =>
+  new TextEncoder().encode(value).byteLength;
+export const rpcBound = (
+  value: number,
+  maximum: number,
+  name: string
+): number => {
+  if (!Number.isSafeInteger(value) || value < 1 || value > maximum)
+    throw new Error(`Invalid RPC ${name}`);
+  return value;
+};
+
+type RpcHttpOptions = {
+  fetch?: (url: string, init: RequestInit) => Promise<Response>;
+  signal?: AbortSignal;
+  maxRequestBytes?: number;
+  maxResponseBytes?: number;
+  maxConcurrency?: number;
+  timeoutMs?: number;
+};
+type RpcHttpPolicy<T> = {
+  format?: 'json' | 'text';
+  fetch?: RpcHttpOptions['fetch'];
+  maxResponseBytes?: number;
+  before?: () => void;
+  validate?: (response: Response) => void;
+  process: (body: any, response: Response) => T;
+  failed?: (error: unknown, response?: Response) => unknown;
+};
+
+/** One physical pool and complete-body lifetime for each endpoint owner. */
+export class RpcHttpExecutor {
+  readonly lifetime = new AbortController();
+  readonly maxRequestBytes: number;
+  readonly maxResponseBytes: number;
+  readonly timeoutMs: number;
+  private readonly maximum: number;
+  private readonly fetcher: NonNullable<RpcHttpOptions['fetch']>;
+  private active = 0;
+  private releaseSignal: () => void;
+  private queue: Array<{ run(): void; cancel(): void }> = [];
+  constructor(options: RpcHttpOptions = {}) {
+    this.maxRequestBytes = rpcBound(
+      options.maxRequestBytes ?? 256 * 1024,
+      2 * 1024 * 1024,
+      'request size'
+    );
+    this.maxResponseBytes = rpcBound(
+      options.maxResponseBytes ?? 2 * 1024 * 1024,
+      8 * 1024 * 1024,
+      'response size'
+    );
+    this.timeoutMs = rpcBound(options.timeoutMs ?? 12000, 30000, 'timeout');
+    this.maximum = rpcBound(options.maxConcurrency ?? 4, 16, 'concurrency');
+    this.fetcher = options.fetch ?? ((url, init) => fetch(url, init));
+    const abort = () => this.lifetime.abort(options.signal?.reason);
+    this.releaseSignal = () =>
+      options.signal?.removeEventListener('abort', abort);
+    if (options.signal?.aborted) abort();
+    else options.signal?.addEventListener('abort', abort, { once: true });
+  }
+  destroy(reason?: unknown): void {
+    this.releaseSignal();
+    this.lifetime.abort(reason);
+  }
+  async run<T>(
+    signals: readonly (AbortSignal | undefined)[],
+    work: (signal: AbortSignal) => Promise<T>,
+    timeoutMs = this.timeoutMs
+  ): Promise<T> {
+    rpcBound(timeoutMs, 30000, 'timeout');
+    const controller = new AbortController();
+    const sources = [this.lifetime.signal, ...signals].filter(
+      (signal): signal is AbortSignal => !!signal
+    );
+    const abort = () =>
+      controller.abort(sources.find((signal) => signal.aborted)?.reason);
+    sources.forEach((signal) =>
+      signal.addEventListener('abort', abort, { once: true })
+    );
+    if (sources.some((signal) => signal.aborted)) abort();
+    const timer = setTimeout(
+      () =>
+        controller.abort(
+          Object.assign(new Error('RPC request deadline exceeded'), {
+            name: 'AbortError',
+          })
+        ),
+      timeoutMs
+    );
+    const signal = controller.signal;
+    let cancel = () => {};
+    try {
+      checkRpcSignal(signal);
+      return await new Promise<T>((resolve, reject) => {
+        cancel = () => reject(rpcAbortError(signal));
+        signal.addEventListener('abort', cancel, { once: true });
+        void work(signal).then(resolve, reject);
+      });
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', cancel);
+      sources.forEach((source) => source.removeEventListener('abort', abort));
+      if (!signal.aborted) controller.abort();
+    }
+  }
+  async request<T>(
+    url: string,
+    init: RequestInit,
+    signal: AbortSignal,
+    policy: RpcHttpPolicy<T>
+  ): Promise<T> {
+    let response: Response | undefined;
+    let admitted = false;
+    let reading = false;
+    try {
+      checkRpcSignal(signal);
+      const bodySize =
+        typeof init.body === 'string'
+          ? rpcByteLength(init.body)
+          : init.body instanceof ArrayBuffer || ArrayBuffer.isView(init.body)
+          ? init.body.byteLength
+          : 0;
+      if (bodySize > this.maxRequestBytes)
+        throw new Error('RPC request exceeded size limit');
+      await new Promise<void>((resolve, reject) => {
+        const entry = {
+          run: () => {
+            signal.removeEventListener('abort', entry.cancel);
+            this.active++;
+            resolve();
+          },
+          cancel: () => {
+            const index = this.queue.indexOf(entry);
+            if (index >= 0) this.queue.splice(index, 1);
+            reject(rpcAbortError(signal));
+          },
+        };
+        if (this.active < this.maximum) entry.run();
+        else {
+          this.queue.push(entry);
+          signal.addEventListener('abort', entry.cancel, { once: true });
+        }
+      });
+      admitted = true;
+      checkRpcSignal(signal);
+      policy.before?.();
+      response = await (policy.fetch ?? this.fetcher)(url, { ...init, signal });
+      checkRpcSignal(signal);
+      policy.validate?.(response);
+      reading = true;
+      const body = await readJsonRpcResponse(
+        response,
+        policy.maxResponseBytes ?? this.maxResponseBytes,
+        signal,
+        policy.format === 'text'
+      );
+      checkRpcSignal(signal);
+      return policy.process(body, response);
+    } catch (error) {
+      throw policy.failed ? policy.failed(error, response) : error;
+    } finally {
+      if (response && !reading) await cancelRpcResponse(response);
+      if (admitted) {
+        this.active--;
+        this.queue.shift()?.run();
+      }
+    }
+  }
+}
+
 // A stale response must never be interpreted as the result of another RPC.
 // Keep the sentinel in the message for callers that serialize errors as text.
 export class RpcResponseIntegrityError extends Error {
@@ -71,11 +292,7 @@ export async function readRpcResponseText(
   if (!response.body?.getReader) {
     try {
       const text = await response.text();
-      if (signal.aborted)
-        throw (
-          signal.reason ??
-          new DOMException('RPC response aborted', 'AbortError')
-        );
+      checkRpcSignal(signal);
       if (new TextEncoder().encode(text).byteLength > maximum)
         throw new RpcResponseSizeError();
       return text;
@@ -118,17 +335,9 @@ export async function readRpcResponseText(
   try {
     let complete = false;
     while (!complete) {
-      if (signal.aborted)
-        throw (
-          signal.reason ??
-          new DOMException('RPC response aborted', 'AbortError')
-        );
+      checkRpcSignal(signal);
       const part = await reader.read();
-      if (signal.aborted)
-        throw (
-          signal.reason ??
-          new DOMException('RPC response aborted', 'AbortError')
-        );
+      checkRpcSignal(signal);
       if (part.done) {
         complete = true;
         continue;
@@ -149,16 +358,15 @@ export async function readRpcResponseText(
 export async function readJsonRpcResponse(
   response: Response,
   maximum: number,
-  signal: AbortSignal
+  signal: AbortSignal,
+  retainText = false
 ): Promise<unknown> {
   let readingBody = false;
   try {
-    if (signal.aborted)
-      throw (
-        signal.reason ?? new DOMException('RPC response aborted', 'AbortError')
-      );
+    checkRpcSignal(signal);
     const contentType = response.headers.get('content-type');
     if (
+      (!retainText || response.status === 200) &&
       contentType &&
       !/^(application\/json|application\/[a-z0-9!#$&^_.+-]+\+json)(?:\s*;|$)/i.test(
         contentType
@@ -170,12 +378,11 @@ export async function readJsonRpcResponse(
       );
     readingBody = true;
     const text = await readRpcResponseText(response, maximum, signal);
-    if (signal.aborted)
-      throw (
-        signal.reason ?? new DOMException('RPC response aborted', 'AbortError')
-      );
+    checkRpcSignal(signal);
+    if (retainText && response.status !== 200) return text;
     try {
-      return JSON.parse(text);
+      const json = JSON.parse(text);
+      return retainText ? text : json;
     } catch {
       throw new RpcResponseIntegrityError(
         'Invalid JSON-RPC JSON response',
@@ -299,13 +506,12 @@ export async function requestJsonRpc(
   transport: RpcJsonTransport,
   recoverResponse = true
 ): Promise<RpcResponse[]> {
+  const source = captureRpcRequests(inputs);
   const canRecover =
     recoverResponse &&
-    inputs.every(({ method }) => RECOVERABLE_READ_METHODS.has(method));
-  const serialized = JSON.stringify(inputs);
+    source.every(({ method }) => RECOVERABLE_READ_METHODS.has(method));
   for (let attempt = 0; attempt < 2; attempt++) {
-    if (signal.aborted) throw signal.reason || new Error('RPC request aborted');
-    const source = JSON.parse(serialized) as RpcTransportRequest[];
+    checkRpcSignal(signal);
     const requests: RpcWireRequest[] = source.map(({ method, params }) => ({
       jsonrpc: '2.0',
       method,
