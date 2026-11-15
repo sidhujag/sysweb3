@@ -8,8 +8,16 @@ import {
   normalizeTransactionRequest,
   type Networkish,
 } from './ethers-v6';
+import {
+  JsonRpcReadClient,
+  type RpcReadOptions,
+  type RpcReadRequest,
+} from './rpc-read-client';
+import { requestJsonRpc, RpcResponseIntegrityError } from './rpc-transport';
 
 import type { JsonRpcPayload } from 'ethers/providers';
+
+export { RpcResponseIntegrityError } from './rpc-transport';
 
 const TRANSACTION_RESPONSE_BIG_NUMBER_FIELDS = new Set([
   'gasLimit',
@@ -31,75 +39,6 @@ const TRANSACTION_RECEIPT_BIG_NUMBER_FIELDS = new Set([
 ]);
 
 const FEE_DATA_CACHE_TTL_MS = 5000;
-
-// A stale response must never be interpreted as the result of another RPC.
-// Keep the sentinel in the message for callers that serialize errors as text.
-export class RpcResponseIntegrityError extends Error {
-  readonly code = 'SYSWEB3_RPC_RESPONSE_INVALID';
-
-  constructor(
-    message = 'JSON-RPC response does not match its request',
-    readonly retryable = true
-  ) {
-    super(`[SYSWEB3_RPC_RESPONSE_INVALID] ${message}`);
-    this.name = 'RpcResponseIntegrityError';
-  }
-}
-
-// Only these standard, side-effect-free reads may recover from a stale cache
-// entry. Never infer retry eligibility from an RPC method prefix.
-const RECOVERABLE_READ_METHODS = new Set([
-  'eth_chainId',
-  'net_version',
-  'web3_clientVersion',
-  'eth_blockNumber',
-  'eth_syncing',
-  'eth_getBalance',
-  'eth_getTransactionCount',
-  'eth_getCode',
-  'eth_getStorageAt',
-  'eth_getProof',
-  'eth_call',
-  'eth_estimateGas',
-  'eth_createAccessList',
-  'eth_gasPrice',
-  'eth_maxPriorityFeePerGas',
-  'eth_feeHistory',
-  'eth_getBlockByNumber',
-  'eth_getBlockByHash',
-  'eth_getBlockTransactionCountByNumber',
-  'eth_getBlockTransactionCountByHash',
-  'eth_getTransactionByHash',
-  'eth_getTransactionByBlockNumberAndIndex',
-  'eth_getTransactionByBlockHashAndIndex',
-  'eth_getTransactionReceipt',
-  'eth_getLogs',
-]);
-
-let rpcRecoveryNonce = 0;
-// Shared across provider instances and seeded anew on process restart. These
-// numeric correlation IDs are not authorization tokens.
-let nextRpcWireId = Math.floor(Math.random() * 2 ** 51);
-const reserveRpcWireId = (): number => {
-  const id = ++nextRpcWireId;
-  if (!Number.isSafeInteger(id)) {
-    throw new RpcResponseIntegrityError(
-      'RPC request ID range exhausted',
-      false
-    );
-  }
-  return id;
-};
-
-const recoveryUrl = (original: string): string => {
-  const url = new URL(original);
-  const token = `${Date.now()}-${++rpcRecoveryNonce}-${Math.random()
-    .toString(36)
-    .slice(2)}`;
-  // Append without reserializing existing query values (including auth data).
-  url.search += `${url.search ? '&' : '?'}sysweb3_rpc_request=${token}`;
-  return url.toString();
-};
 
 const getChainIdFromNetworkish = (network?: Networkish): number | undefined => {
   if (network == null) return undefined;
@@ -227,6 +166,9 @@ class BaseProvider extends JsonRpcProvider {
   private feeDataPromise: Promise<any> | null = null;
   private readonly configuredChainId?: number;
   private chainIdVerificationPromise: Promise<void> | null = null;
+  private readonly readClient: JsonRpcReadClient;
+  private chainIdReadPromise: Promise<any> | null = null;
+  private chainIdGeneration = 0;
   public isInCooldown = false;
   public errorMessage: any = '';
   public serverHasAnError = false;
@@ -250,6 +192,9 @@ class BaseProvider extends JsonRpcProvider {
     );
     this.configuredChainId = getChainIdFromNetworkish(network);
     this.signal = signal;
+    this.readClient = new JsonRpcReadClient(this._getConnection().url, {
+      signal,
+    });
     this._pendingBatchAggregator = null;
     this._pendingBatch = null;
 
@@ -326,13 +271,50 @@ class BaseProvider extends JsonRpcProvider {
   }
 
   private async fetchAndVerifyConfiguredChainId(): Promise<void> {
-    this.isPossibleGetChainId = true;
-    const actualChainId = parseChainId(await this.send('eth_chainId', []));
+    const actual = await this.readChainId(true);
+    const actualChainId = parseChainId(actual);
     if (actualChainId !== this.configuredChainId) {
+      this.isPossibleGetChainId = true;
       throw new Error(
         `Configured EVM chainId ${this.configuredChainId} does not match RPC eth_chainId ${actualChainId}`
       );
     }
+  }
+
+  private readChainId(fresh: boolean): Promise<any> {
+    if (this.signal.aborted || this.destroyed)
+      return Promise.reject(
+        this.signal.reason || new Error('RPC provider destroyed')
+      );
+    if (!fresh && !this.isPossibleGetChainId)
+      return Promise.resolve(this.currentChainId);
+    if (!fresh && this.chainIdReadPromise) return this.chainIdReadPromise;
+    const generation = ++this.chainIdGeneration;
+    if (fresh) {
+      this.chainIdReadPromise = null;
+      this.isPossibleGetChainId = true;
+    }
+    const request = this.requestRpc(
+      [{ method: 'eth_chainId', params: [] }],
+      false
+    ).then(([json]) => {
+      if (json.error) throw makeRpcError(json.error);
+      if (generation === this.chainIdGeneration) {
+        this.currentChainId = json.result;
+        this.isPossibleGetChainId = false;
+      }
+      return json.result;
+    });
+    if (!fresh) {
+      this.chainIdReadPromise = request;
+      void request
+        .finally(() => {
+          if (this.chainIdReadPromise === request)
+            this.chainIdReadPromise = null;
+        })
+        .catch(() => undefined);
+    }
+    return request;
   }
 
   private cooldown = async () => {
@@ -350,147 +332,56 @@ class BaseProvider extends JsonRpcProvider {
     };
   };
 
-  private validateRpcResponses(
-    json: any,
-    requests: JsonRpcPayload[],
-    batch: boolean
-  ): any[] {
-    if (batch ? !Array.isArray(json) : Array.isArray(json)) {
-      throw new RpcResponseIntegrityError();
-    }
-    const responses = batch ? json : [json];
-    if (responses.length !== requests.length) {
-      throw new RpcResponseIntegrityError();
-    }
-    const expectedIds = new Set(requests.map((request) => request.id));
-    const byId = new Map<number, any>();
-    for (const response of responses) {
-      if (
-        !response ||
-        typeof response !== 'object' ||
-        Array.isArray(response) ||
-        typeof response.id !== 'number' ||
-        !expectedIds.has(response.id) ||
-        byId.has(response.id)
-      ) {
-        throw new RpcResponseIntegrityError();
-      }
-      const hasResult = Object.prototype.hasOwnProperty.call(
-        response,
-        'result'
-      );
-      const hasError = Object.prototype.hasOwnProperty.call(response, 'error');
-      if (
-        response.jsonrpc !== '2.0' ||
-        hasResult === hasError ||
-        (hasError &&
-          (!response.error ||
-            typeof response.error.message !== 'string' ||
-            !Number.isSafeInteger(response.error.code)))
-      ) {
-        throw new RpcResponseIntegrityError(
-          'Invalid JSON-RPC response envelope',
-          false
-        );
-      }
-      byId.set(response.id, response);
-    }
-    return requests.map((request) => byId.get(request.id));
-  }
-
   private async requestRpc(
     inputs: Array<Pick<JsonRpcPayload, 'method' | 'params'>>,
     batch: boolean
   ): Promise<any[]> {
-    const canRecover = inputs.every(({ method }) =>
-      RECOVERABLE_READ_METHODS.has(method)
-    );
-    const originalUrl = this._getConnection().url;
-    let originalBody = '';
-    for (let attempt = 0; attempt < 2; attempt++) {
-      if (this.signal.aborted) {
-        throw this.signal.reason || new Error('RPC request aborted');
-      }
-      // Reserve the whole request range before any dispatch or await.
-      // A recovery must repeat the serialized read, even if its caller mutates
-      // an input object while the first response is delayed.
-      const source =
-        attempt === 0
-          ? inputs
-          : batch
-          ? JSON.parse(originalBody)
-          : [JSON.parse(originalBody)];
-      const requests: JsonRpcPayload[] = source.map(({ method, params }) => ({
-        jsonrpc: '2.0',
-        method,
-        params,
-        id: reserveRpcWireId(),
-      }));
-      const options: RequestInit = {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(batch ? requests : requests[0]),
-        signal: this.signal,
-      };
-      if (attempt === 0) originalBody = options.body as string;
-      const json = await this.throttledRequest(async () => {
-        const response = await fetch(
-          attempt === 0 ? originalUrl : recoveryUrl(originalUrl),
-          options
-        );
-        if (!response.ok) {
-          let errorBody = { error: undefined, message: undefined };
-          try {
-            errorBody = await response.json();
-          } catch {
-            console.warn('No body in request');
+    return requestJsonRpc(
+      this._getConnection().url,
+      inputs,
+      batch,
+      this.signal,
+      async (url, body, signal) =>
+        this.throttledRequest(async () => {
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body,
+            signal,
+          });
+          if (!response.ok) {
+            let errorBody = { error: undefined, message: undefined };
+            try {
+              errorBody = await response.json();
+            } catch {
+              console.warn('No body in request');
+            }
+            this.errorMessage =
+              errorBody.error ||
+              errorBody.message ||
+              'No message from Provider';
+            handleStatusCodeError(response.status, this.errorMessage);
           }
-          this.errorMessage =
-            errorBody.error || errorBody.message || 'No message from Provider';
-          handleStatusCodeError(response.status, this.errorMessage);
-        }
-        if (response.status !== 200) {
-          throw new Error(`Unexpected HTTP status code: ${response.status}`);
-        }
-        try {
-          return await response.json();
-        } catch (error) {
-          if (this.signal.aborted || error?.name === 'AbortError') throw error;
-          throw new RpcResponseIntegrityError(
-            'Invalid JSON-RPC JSON response',
-            false
-          );
-        }
-      }).catch((error) => {
-        if (
-          attempt === 0 ||
-          error instanceof RpcResponseIntegrityError ||
-          this.signal.aborted ||
-          error?.name === 'AbortError'
-        ) {
-          throw error;
-        }
-        throw new RpcResponseIntegrityError(
-          'JSON-RPC response recovery failed',
-          false
-        );
-      });
-      try {
-        const responses = this.validateRpcResponses(json, requests, batch);
-        this.serverHasAnError = false;
-        return responses;
-      } catch (error) {
-        if (
-          !(error instanceof RpcResponseIntegrityError) ||
-          !error.retryable ||
-          attempt !== 0 ||
-          !canRecover
-        ) {
-          throw error;
-        }
-      }
-    }
-    throw new RpcResponseIntegrityError();
+          if (response.status !== 200)
+            throw new Error(`Unexpected HTTP status code: ${response.status}`);
+          try {
+            return await response.json();
+          } catch (error) {
+            if (signal.aborted || error?.name === 'AbortError') throw error;
+            throw new RpcResponseIntegrityError(
+              'Invalid JSON-RPC JSON response',
+              false
+            );
+          }
+        })
+    ).then((responses) => {
+      this.serverHasAnError = false;
+      return responses;
+    });
+  }
+
+  readMany(inputs: readonly RpcReadRequest[], options?: RpcReadOptions) {
+    return this.readClient.readMany(inputs, options);
   }
 
   // Ethers uses this primitive for network auto-detection and inherited send.
@@ -509,17 +400,11 @@ class BaseProvider extends JsonRpcProvider {
   }
 
   override send = async (method: string, params: any[]) => {
-    if (!this.isPossibleGetChainId && method === 'eth_chainId') {
-      return this.currentChainId;
-    }
+    if (method === 'eth_chainId') return this.readChainId(false);
     const [json] = await this.requestRpc([{ method, params }], false);
     if (json.error) {
       this.errorMessage = json.error.message;
       throw makeRpcError(json.error);
-    }
-    if (method === 'eth_chainId') {
-      this.currentChainId = json.result;
-      this.isPossibleGetChainId = false;
     }
     return json.result;
   };
@@ -537,6 +422,14 @@ class BaseProvider extends JsonRpcProvider {
       }
       return json.result;
     });
+  }
+
+  override destroy(): void {
+    this.chainIdGeneration++;
+    this.chainIdReadPromise = null;
+    this.isPossibleGetChainId = true;
+    this.readClient.destroy();
+    super.destroy();
   }
 
   async getGasPrice() {

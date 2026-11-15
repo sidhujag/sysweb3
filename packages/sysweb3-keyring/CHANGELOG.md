@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.14
+
+- Add an injectable, bounded JSON-RPC read client with mixed-method batching, per-item results, independent cancellation, and single-request fallback when a server explicitly rejects batches.
+- Share concurrent ordinary chain-ID reads while keeping explicit network verification fresh. Preserve strict response-ID validation and the existing transaction submission behavior.
+
 ## 2.1.13
 
 - Preserve exact UTXO fee rates when converting coin units to satoshis per byte, including JavaScript consumers compiled to ES2015. Keep the existing minimum fee and reject invalid or unrepresentable rates.
