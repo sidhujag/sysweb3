@@ -793,3 +793,26 @@ it('uses a verified scalar RPC error to confirm generic batch refusal', async ()
   expect(second).toEqual({ status: 'fulfilled', value: 'eth_getCode' });
   expect(fetcher).toHaveBeenCalledTimes(3);
 });
+
+it('splits an explicit batch limit while excluding rate-limit wording', async () => {
+  const fetcher = jest.fn(async (_url, init) => {
+    const request = JSON.parse(init.body);
+    return response(
+      Array.isArray(request) && request.length > 2
+        ? {
+            jsonrpc: '2.0',
+            id: null,
+            error: { code: -32005, message: 'Batch limit exceeded' },
+          }
+        : request.map(reply)
+    );
+  });
+  const client = new JsonRpcReadClient(URL, { fetch: fetcher });
+  const inputs = Array.from({ length: 4 }, () => input());
+  expect(
+    (await client.readMany(inputs)).every((item) => item.status === 'fulfilled')
+  ).toBe(true);
+  expect(
+    fetcher.mock.calls.map(([, init]) => JSON.parse(init.body).length)
+  ).toEqual([4, 2, 2]);
+});

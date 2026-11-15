@@ -90,7 +90,7 @@ const batchFailure = (value: unknown): Error | undefined => {
     /batch|array/i.test(error.message)
   ) {
     if (
-      /too (?:large|many)|more than\s+\d+|(?:maximum|max)\s+(?:batch|request|item|size)|(?:batch|request|item)[ -]?(?:size|count)/i.test(
+      /too (?:large|many)|more than\s+\d+|(?:maximum|max)\s+(?:batch|request|item|size)|(?:batch|request|item)[ -]?(?:size|count)|batch[ -]?limit/i.test(
         error.message
       )
     )
