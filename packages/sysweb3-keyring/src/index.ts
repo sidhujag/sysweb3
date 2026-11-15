@@ -18,6 +18,12 @@ export type {
   IEncryptPrivateRecordParams,
 } from './private-records';
 export * from './providers';
+export { JsonRpcReadClient, RpcReadError } from './rpc-read-client';
+export type {
+  RpcReadRequest,
+  RpcReadOptions,
+  RpcReadClientOptions,
+} from './rpc-read-client';
 export * from './utils/derivation-paths';
 export * from './network-utils';
 export * from './hardware-wallet-manager';

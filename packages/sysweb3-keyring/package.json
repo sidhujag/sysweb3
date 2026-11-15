@@ -1,6 +1,6 @@
 {
   "name": "@sidhujag/sysweb3-keyring",
-  "version": "2.1.13",
+  "version": "2.1.14",
   "description": "Keyring Manager for UTXO and Web3 Wallets",
   "main": "cjs/index.js",
   "types": "types/index.d.ts",
@@ -149,6 +149,12 @@
       ],
       "cjs/utils/utxo-fee-rate.js": [
         "types/utils/utxo-fee-rate.d.ts"
+      ],
+      "cjs/rpc-read-client": [
+        "types/rpc-read-client.d.ts"
+      ],
+      "cjs/rpc-read-client.js": [
+        "types/rpc-read-client.d.ts"
       ]
     }
   },

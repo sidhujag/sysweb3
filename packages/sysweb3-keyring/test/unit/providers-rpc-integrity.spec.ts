@@ -84,6 +84,43 @@ describe('JSON-RPC response correlation', () => {
     global.fetch = originalFetch;
   });
 
+  it('coalesces concurrent cold chain reads without hiding a new fresh verification', async () => {
+    const captured: Array<{ body: any; resolve: (value: any) => void }> = [];
+    fetchMock.mockImplementation(
+      (_url, init) =>
+        new Promise((resolve) =>
+          captured.push({ body: JSON.parse(init.body), resolve })
+        )
+    );
+    const provider = providerFor();
+    const cold = Array.from({ length: 50 }, () =>
+      provider.send('eth_chainId', [])
+    );
+    expect(captured).toHaveLength(1);
+    const verify = provider.verifyConfiguredChainId(true);
+    expect(captured).toHaveLength(2);
+    captured[1].resolve(response(resultFor(captured[1].body, '0x1644')));
+    await verify;
+    captured[0].resolve(response(resultFor(captured[0].body, '0x1')));
+    await Promise.all(cold);
+    await expect(provider.send('eth_chainId', [])).resolves.toBe('0x1644');
+    expect(captured).toHaveLength(2);
+  });
+
+  it('does not reuse cached identity after a failed fresh probe', async () => {
+    const provider = providerFor();
+    fetchMock.mockImplementation(async (_url, init) =>
+      response(resultFor(JSON.parse(init.body), '0x1644'))
+    );
+    await provider.send('eth_chainId', []);
+    fetchMock.mockRejectedValueOnce(new Error('probe unavailable'));
+    await expect(provider.verifyConfiguredChainId(true)).rejects.toThrow(
+      'probe unavailable'
+    );
+    await provider.send('eth_chainId', []);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
   it('refuses construction without an explicit session guard factory', () => {
     const unavailable = jest.fn(() => {
       throw new Error('A missing guard must reject before using the wallet');
@@ -140,10 +177,14 @@ describe('JSON-RPC response correlation', () => {
       );
       try {
         await expect(
-          sdk.sendFormattedTransaction({ to: FROM }, true, withEvmSendIdentity(sdk, {
-            mode: 'specialized',
-            assertCurrent: () => undefined,
-          }))
+          sdk.sendFormattedTransaction(
+            { to: FROM },
+            true,
+            withEvmSendIdentity(sdk, {
+              mode: 'specialized',
+              assertCurrent: () => undefined,
+            })
+          )
         ).rejects.toMatchObject({
           message: expect.stringContaining('synchronous'),
           transactionNotBroadcast: true,
