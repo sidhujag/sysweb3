@@ -19,6 +19,7 @@ import {
   isReadOnlyRpcMethod,
   cancelRpcResponse,
   readJsonRpcResponse,
+  readRpcResponseText,
   requestJsonRpc,
 } from './rpc-transport';
 
@@ -554,6 +555,7 @@ class BaseProvider extends JsonRpcProvider {
       let readerFailure: any;
       const pluginReader = async () => {
         try {
+          if (signal.aborted) throw signal.reason;
           return await getFeeData();
         } catch (error) {
           if (
@@ -566,24 +568,148 @@ class BaseProvider extends JsonRpcProvider {
           throw error;
         }
       };
-      let result;
+      const request = new FetchRequest(plugin.url);
+      request.timeout = this.requestTimeoutMs;
+      const controller = new AbortController();
+      const signal = controller.signal;
+      const cancel = () => {
+        controller.abort(this.lifetime.signal.reason);
+        try {
+          request.cancel();
+        } catch {
+          // The plugin may be cancelled before it starts the request.
+        }
+      };
+      this.lifetime.signal.addEventListener('abort', cancel, { once: true });
+      const timer = setTimeout(() => {
+        controller.abort(
+          Object.assign(new Error('Fee request deadline exceeded'), {
+            name: 'AbortError',
+          })
+        );
+        try {
+          request.cancel();
+        } catch {
+          // The plugin may not have started its request.
+        }
+      }, this.requestTimeoutMs);
+      let requestFailure: unknown;
+      let attempts = 0;
+      let redirected: FetchRequest | undefined;
+      // Browsers hide manual cross-origin redirects. Keep their existing
+      // fetch redirect handling and verify the final URL before reading it.
+      const browserRedirects =
+        /^\[object (?:Window|DedicatedWorkerGlobalScope|SharedWorkerGlobalScope|ServiceWorkerGlobalScope)\]$/.test(
+          Object.prototype.toString.call(globalThis)
+        );
+      request.getUrlFunc = async (initial, cancellation) => {
+        let current = redirected ?? initial;
+        try {
+          for (;;) {
+            this.assertActive();
+            if (signal.aborted) throw signal.reason;
+            cancellation?.checkSignal();
+            const protocol = new URL(current.url).protocol;
+            if (protocol !== 'https:' && protocol !== 'http:')
+              throw new Error('Unsupported fee request protocol');
+            if (
+              protocol !== 'https:' &&
+              current.credentials &&
+              !current.allowInsecureAuthentication
+            )
+              throw new Error('Insecure fee request credentials');
+            if (++attempts > 12)
+              throw new Error('Fee request attempt limit exceeded');
+            const body = current.body;
+            const response = await fetch(current.url, {
+              method: current.method,
+              headers: current.headers,
+              body: body ? Uint8Array.from(body).buffer : undefined,
+              redirect: browserRedirects ? 'follow' : 'manual',
+              signal,
+            });
+            if (signal.aborted) {
+              await cancelRpcResponse(response);
+              throw signal.reason;
+            }
+            if (
+              browserRedirects &&
+              response.url &&
+              response.url !== current.url
+            ) {
+              try {
+                current.redirect(response.url);
+              } catch (error) {
+                await cancelRpcResponse(response);
+                throw error;
+              }
+            }
+            const headers: Record<string, string> = {};
+            response.headers.forEach((value, key) => {
+              headers[key.toLowerCase()] = value;
+            });
+            const text =
+              response.status === 200
+                ? JSON.stringify(
+                    await readJsonRpcResponse(
+                      response,
+                      this.maximumResponseBytes,
+                      signal
+                    )
+                  )
+                : await readRpcResponseText(
+                    response,
+                    this.maximumResponseBytes,
+                    signal
+                  );
+            if (signal.aborted) throw signal.reason;
+            if ([301, 302, 307, 308].includes(response.status)) {
+              current = current.redirect(headers.location ?? '');
+              redirected = current;
+              continue;
+            }
+            if (response.status !== 200 && response.status !== 429)
+              throw Object.assign(new Error(`Fee HTTP ${response.status}`), {
+                status: response.status,
+              });
+            return {
+              statusCode: response.status,
+              statusMessage: response.statusText,
+              headers,
+              body: new TextEncoder().encode(text),
+            };
+          }
+        } catch (error) {
+          requestFailure = error;
+          throw error;
+        }
+      };
       try {
         this.assertActive();
-        result = await plugin.processFunc(
-          pluginReader,
-          this,
-          new FetchRequest(plugin.url)
+        const result = await new Promise<any>((resolve, reject) => {
+          const aborted = () => reject(signal.reason);
+          signal.addEventListener('abort', aborted, { once: true });
+          if (signal.aborted) aborted();
+          Promise.resolve(plugin.processFunc(pluginReader, this, request))
+            .then(resolve, reject)
+            .finally(() => signal.removeEventListener('abort', aborted));
+        });
+        this.assertActive();
+        if (signal.aborted) throw signal.reason;
+        if (readerFailure) throw readerFailure;
+        if (requestFailure) throw requestFailure;
+        return new FeeData(
+          result.gasPrice,
+          result.maxFeePerGas,
+          result.maxPriorityFeePerGas
         );
       } catch (error) {
-        throw readerFailure ?? error;
+        throw readerFailure ?? requestFailure ?? error;
+      } finally {
+        clearTimeout(timer);
+        this.lifetime.signal.removeEventListener('abort', cancel);
+        cancel();
       }
-      this.assertActive();
-      if (readerFailure) throw readerFailure;
-      return new FeeData(
-        result.gasPrice,
-        result.maxFeePerGas,
-        result.maxPriorityFeePerGas
-      );
     }
     return getFeeData();
   }

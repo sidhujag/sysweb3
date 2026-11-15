@@ -54,7 +54,7 @@ export async function cancelRpcResponse(response: Response): Promise<void> {
   }
 }
 
-async function responseText(
+export async function readRpcResponseText(
   response: Response,
   maximum: number,
   signal: AbortSignal
@@ -103,6 +103,18 @@ async function responseText(
   };
   let size = 0;
   let text = '';
+  let cancellation: Promise<void> | undefined;
+  const cancel = () => {
+    cancellation ??= (async () => {
+      try {
+        await reader.cancel();
+      } catch {
+        // Keep cleanup owned until cancellation settles, including rejection.
+      }
+    })();
+    return cancellation;
+  };
+  signal.addEventListener('abort', cancel, { once: true });
   try {
     let complete = false;
     while (!complete) {
@@ -127,13 +139,9 @@ async function responseText(
     }
     return text + decode();
   } finally {
-    try {
-      await reader.cancel();
-    } catch {
-      // Keep the physical slot until cancellation settles, including rejection.
-    } finally {
-      reader.releaseLock();
-    }
+    signal.removeEventListener('abort', cancel);
+    await cancel();
+    reader.releaseLock();
   }
 }
 
@@ -161,7 +169,7 @@ export async function readJsonRpcResponse(
         false
       );
     readingBody = true;
-    const text = await responseText(response, maximum, signal);
+    const text = await readRpcResponseText(response, maximum, signal);
     if (signal.aborted)
       throw (
         signal.reason ?? new DOMException('RPC response aborted', 'AbortError')

@@ -2060,4 +2060,345 @@ describe('JSON-RPC response correlation', () => {
       parentGetBlock.mockRestore();
     }
   });
+
+  describe('Polygon fee plugin HTTP ownership', () => {
+    const station = 'https://gasstation.polygon.technology/v2';
+    const payload = JSON.stringify({
+      standard: { maxFee: 3, maxPriorityFee: 1 },
+    });
+    const setup = (
+      options: Record<string, unknown> = {},
+      owner = new AbortController()
+    ) => {
+      const provider = new CustomJsonRpcProvider(
+        owner.signal,
+        RPC_URL,
+        137,
+        options
+      );
+      providers.push(provider);
+      jest.spyOn(provider, 'getNetwork').mockResolvedValue(Network.from(137));
+      jest.spyOn(provider, '_perform').mockResolvedValue('0x2');
+      const block = jest
+        .spyOn(JsonRpcProvider.prototype, 'getBlock')
+        .mockResolvedValue({ baseFeePerGas: 7n });
+      return { provider, owner, block };
+    };
+
+    it.each(['owner', 'destroy', 'deadline'])(
+      'stops actual HTTP retries after %s cancellation',
+      async (kind) => {
+        jest.useFakeTimers();
+        const { provider, owner, block } = setup({ timeoutMs: 100 });
+        fetchMock.mockResolvedValue(
+          new Response('', { status: 429, headers: { 'retry-after': '25' } })
+        );
+        try {
+          const reading = provider.getFeeData();
+          const rejected = expect(reading).rejects.toMatchObject({
+            name: 'AbortError',
+          });
+          await jest.advanceTimersByTimeAsync(0);
+          expect(fetchMock).toHaveBeenCalledTimes(1);
+          if (kind === 'owner')
+            owner.abort(new DOMException('Owner ended', 'AbortError'));
+          if (kind === 'destroy') provider.destroy();
+          await jest.advanceTimersByTimeAsync(kind === 'deadline' ? 100 : 0);
+          await rejected;
+          const attemptsAtCancellation = fetchMock.mock.calls.length;
+          await jest.advanceTimersByTimeAsync(1000);
+          expect(fetchMock).toHaveBeenCalledTimes(attemptsAtCancellation);
+          expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(true);
+        } finally {
+          block.mockRestore();
+          jest.useRealTimers();
+        }
+      }
+    );
+
+    it('preserves a healthy bounded Polygon request and HTTP429 retry', async () => {
+      const { provider, block } = setup();
+      fetchMock
+        .mockResolvedValueOnce(
+          new Response('', { status: 429, headers: { 'retry-after': '1' } })
+        )
+        .mockResolvedValueOnce(
+          new Response(payload, {
+            headers: { 'content-type': 'application/json' },
+          })
+        );
+      try {
+        await expect(provider.getFeeData()).resolves.toEqual({
+          gasPrice: BigNumber.from(2),
+          maxFeePerGas: BigNumber.from('3000000000'),
+          maxPriorityFeePerGas: BigNumber.from('1000000000'),
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(
+          fetchMock.mock.calls.every(
+            ([url, init]) =>
+              url === station &&
+              init.method === 'GET' &&
+              init.redirect === 'manual'
+          )
+        ).toBe(true);
+        expect(fetchMock.mock.calls[0][1].headers['user-agent']).toBe('ethers');
+      } finally {
+        block.mockRestore();
+      }
+    });
+
+    it.each(['declared', 'stream', 'json', 'utf8', 'content-type', 'http'])(
+      'rejects a %s response without retry or fee fallback',
+      async (kind) => {
+        const { provider, block } = setup({ maxResponseBytes: 100 });
+        const cleanup = jest.fn();
+        let value: Response;
+        if (kind === 'declared')
+          value = new Response(payload, {
+            headers: { 'content-length': '101' },
+          });
+        else if (kind === 'stream')
+          value = new Response(
+            new ReadableStream({
+              pull(controller) {
+                controller.enqueue(new Uint8Array(101));
+              },
+              cancel: cleanup,
+            })
+          );
+        else if (kind === 'utf8') value = new Response(new Uint8Array([0xff]));
+        else
+          value = new Response(kind === 'json' ? '{' : payload, {
+            status: kind === 'http' ? 503 : 200,
+            headers: {
+              'content-type':
+                kind === 'content-type' ? 'text/html' : 'application/json',
+            },
+          });
+        fetchMock.mockResolvedValue(value);
+        try {
+          await expect(provider.getFeeData()).rejects.toMatchObject(
+            kind === 'http'
+              ? { status: 503 }
+              : { code: SENTINEL, retryable: false }
+          );
+          expect(fetchMock).toHaveBeenCalledTimes(1);
+          if (kind === 'stream') expect(cleanup).toHaveBeenCalledTimes(1);
+          expect(provider.feeDataCache).toBeNull();
+        } finally {
+          block.mockRestore();
+        }
+      }
+    );
+
+    it('keeps redirects inside the bounded transport', async () => {
+      const { provider, block } = setup({ maxResponseBytes: 100 });
+      fetchMock
+        .mockResolvedValueOnce(
+          new Response('', {
+            status: 302,
+            headers: { location: 'https://fees.example/redirected' },
+          })
+        )
+        .mockResolvedValueOnce(
+          new Response('x'.repeat(101), {
+            headers: { 'content-type': 'application/json' },
+          })
+        );
+      try {
+        await expect(provider.getFeeData()).rejects.toMatchObject({
+          code: SENTINEL,
+          retryable: false,
+        });
+        expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+          station,
+          'https://fees.example/redirected',
+        ]);
+        expect(
+          fetchMock.mock.calls.every(([, init]) => init.redirect === 'manual')
+        ).toBe(true);
+      } finally {
+        block.mockRestore();
+      }
+    });
+
+    it.each([
+      'Window',
+      'ServiceWorkerGlobalScope',
+      'DedicatedWorkerGlobalScope',
+    ])(
+      'preserves %s browser-managed redirects and validates the final URL',
+      async (tag) => {
+        const { provider, block } = setup();
+        const originalTag = Object.getOwnPropertyDescriptor(
+          window,
+          Symbol.toStringTag
+        );
+        Object.defineProperty(window, Symbol.toStringTag, {
+          value: tag,
+          configurable: true,
+        });
+        const redirected = new Response(payload, {
+          headers: { 'content-type': 'application/json' },
+        });
+        Object.defineProperty(redirected, 'url', {
+          value: 'https://fees.example/final',
+        });
+        fetchMock.mockResolvedValue(redirected);
+        try {
+          await expect(provider.getFeeData()).resolves.toMatchObject({
+            maxFeePerGas: BigNumber.from('3000000000'),
+          });
+          expect(fetchMock.mock.calls[0][1].redirect).toBe('follow');
+          provider.feeDataCache = null;
+          const downgrade = new Response(payload, {
+            headers: { 'content-type': 'application/json' },
+          });
+          Object.defineProperty(downgrade, 'url', {
+            value: 'http://fees.example/final',
+          });
+          fetchMock.mockResolvedValue(downgrade);
+          await expect(provider.getFeeData()).rejects.toThrow(
+            'unsupported redirect'
+          );
+        } finally {
+          if (originalTag)
+            Object.defineProperty(window, Symbol.toStringTag, originalTag);
+          else delete window[Symbol.toStringTag];
+          block.mockRestore();
+        }
+      }
+    );
+
+    it('preserves a transport failure when a plugin attempts its own fallback', async () => {
+      const { provider, block } = setup();
+      const plugin = {
+        url: station,
+        processFunc: async (_read, _provider, request) => {
+          try {
+            await request.send();
+          } catch {
+            /* A plugin may offer a fallback. */
+          }
+          return { gasPrice: 1n, maxFeePerGas: 2n, maxPriorityFeePerGas: 1n };
+        },
+      };
+      jest
+        .spyOn(provider, 'getNetwork')
+        .mockResolvedValue({ getPlugin: () => plugin });
+      fetchMock.mockResolvedValue(
+        new Response('{', { headers: { 'content-type': 'application/json' } })
+      );
+      try {
+        await expect(provider.getFeeData()).rejects.toMatchObject({
+          code: SENTINEL,
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      } finally {
+        block.mockRestore();
+      }
+    });
+
+    it('cancels a noncooperative plugin body without accepting its late result', async () => {
+      const { provider, block } = setup();
+      let release!: (value: { done: boolean; value?: Uint8Array }) => void;
+      let started!: () => void;
+      const readingBody = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const held = new Promise<{ done: boolean; value?: Uint8Array }>(
+        (resolve) => {
+          release = resolve;
+        }
+      );
+      const cancel = jest.fn().mockResolvedValue(undefined);
+      const unlock = jest.fn();
+      fetchMock.mockResolvedValue({
+        status: 200,
+        statusText: 'OK',
+        headers: new Headers({ 'content-type': 'application/json' }),
+        body: {
+          getReader: () => ({
+            read: () => {
+              started();
+              return held;
+            },
+            cancel,
+            releaseLock: unlock,
+          }),
+        },
+      });
+      try {
+        const reading = provider.getFeeData();
+        const rejected = expect(reading).rejects.toMatchObject({
+          name: 'AbortError',
+        });
+        await readingBody;
+        provider.destroy();
+        await rejected;
+        expect(cancel).toHaveBeenCalledTimes(1);
+        release({ done: false, value: new TextEncoder().encode(payload) });
+        for (let i = 0; i < 20; i++) await Promise.resolve();
+        expect(cancel).toHaveBeenCalledTimes(1);
+        expect(unlock).toHaveBeenCalledTimes(1);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(provider.feeDataCache).toBeNull();
+      } finally {
+        block.mockRestore();
+      }
+    });
+
+    it('keeps redirect credential and downgrade restrictions', async () => {
+      const { provider, block } = setup();
+      const polygon = Network.from(137).getPlugin(
+        'org.ethers.plugins.network.FetchUrlFeeDataPlugin'
+      );
+      const plugin = {
+        ...polygon,
+        url: 'https://fees.example/start',
+        processFunc: (read, observed, request) => {
+          request.setCredentials('user', 'password');
+          return polygon.processFunc(read, observed, request);
+        },
+      };
+      jest
+        .spyOn(provider, 'getNetwork')
+        .mockResolvedValue({ getPlugin: () => plugin });
+      fetchMock
+        .mockResolvedValueOnce(
+          new Response('', {
+            status: 302,
+            headers: { location: 'https://other.example/fees' },
+          })
+        )
+        .mockResolvedValueOnce(
+          new Response(payload, {
+            headers: { 'content-type': 'application/json' },
+          })
+        );
+      try {
+        await expect(provider.getFeeData()).resolves.toMatchObject({
+          maxFeePerGas: BigNumber.from('3000000000'),
+        });
+        expect(fetchMock.mock.calls[0][1].headers.authorization).toBeDefined();
+        expect(
+          fetchMock.mock.calls[1][1].headers.authorization
+        ).toBeUndefined();
+        provider.feeDataCache = null;
+        fetchMock.mockReset().mockResolvedValue(
+          new Response('', {
+            status: 302,
+            headers: { location: 'http://other.example/fees' },
+          })
+        );
+        await expect(provider.getFeeData()).rejects.toThrow(
+          'unsupported redirect'
+        );
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      } finally {
+        block.mockRestore();
+      }
+    });
+  });
 });
