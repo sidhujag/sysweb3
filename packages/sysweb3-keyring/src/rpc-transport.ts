@@ -1,6 +1,6 @@
 export type RpcReadRequest = Readonly<{
   method: string;
-  params: readonly unknown[];
+  params: readonly unknown[] | Record<string, unknown>;
 }>;
 export type RpcTransportRequest = Readonly<{
   method: string;

@@ -19,6 +19,7 @@ const { Wallet } = jest.requireActual('ethers/wallet');
 const { CustomJsonRpcProvider, RpcResponseIntegrityError } = jest.requireActual(
   '../../src/providers'
 );
+const { RpcReadCapabilities } = jest.requireActual('../../src/rpc-read-client');
 const { EthereumTransactions } = jest.requireActual(
   '../../src/transactions/ethereum'
 );
@@ -84,6 +85,153 @@ describe('JSON-RPC response correlation', () => {
   afterEach(() => {
     for (const provider of providers.splice(0)) provider.destroy();
     global.fetch = originalFetch;
+  });
+
+  it('shares only supplied endpoint capability across new providers', async () => {
+    const capabilities = new RpcReadCapabilities(RPC_URL);
+    fetchMock.mockImplementation(async (_url, init) => {
+      const request = JSON.parse(init.body);
+      return response(
+        Array.isArray(request)
+          ? {
+              jsonrpc: '2.0',
+              id: null,
+              error: { code: -32600, message: 'Batch unsupported' },
+            }
+          : resultFor(request)
+      );
+    });
+    for (let i = 0; i < 2; i++) {
+      const provider = new CustomJsonRpcProvider(
+        new AbortController().signal,
+        RPC_URL,
+        5700,
+        { capabilities }
+      );
+      providers.push(provider);
+      await expect(
+        provider.sendBatch('eth_getBalance', [
+          [FROM, 'latest'],
+          [FROM, 'pending'],
+        ])
+      ).resolves.toEqual(['0x5208', '0x5208']);
+    }
+    expect(requestsFrom(fetchMock).filter(Array.isArray)).toHaveLength(1);
+    expect(
+      () =>
+        new CustomJsonRpcProvider(
+          new AbortController().signal,
+          RPC_URL + '&other=1',
+          5700,
+          { capabilities }
+        )
+    ).toThrow('another endpoint');
+  });
+
+  it('bounds sixty-four ordinary provider reads to four active bodies', async () => {
+    let active = 0;
+    let peak = 0;
+    fetchMock.mockImplementation(async (_url, init) => {
+      active++;
+      peak = Math.max(peak, active);
+      return {
+        ...response(resultFor(JSON.parse(init.body))),
+        text: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 1));
+          active--;
+          return JSON.stringify(resultFor(JSON.parse(init.body)));
+        },
+      };
+    });
+    const provider = providerFor();
+    const results = await Promise.all(
+      Array.from({ length: 64 }, () =>
+        provider.send('eth_getBalance', [FROM, 'latest'])
+      )
+    );
+    expect(peak).toBe(4);
+    expect(results).toEqual(Array(64).fill('0x5208'));
+  });
+
+  it.each(['send', 'sendBatch', '_send'] as const)(
+    'applies bounded response validation through %s',
+    async (entry) => {
+      const provider = providerFor();
+      const run = () =>
+        entry === 'send'
+          ? provider.send('eth_call', [{ data: '0x' }, 'latest'])
+          : entry === 'sendBatch'
+          ? provider.sendBatch('eth_call', [[{ data: '0x' }, 'latest']])
+          : provider._send({
+              jsonrpc: '2.0',
+              id: 7,
+              method: 'eth_call',
+              params: [{ data: '0x' }, 'latest'],
+            });
+      fetchMock.mockImplementation(async (_url, init) => ({
+        ...response(resultFor(JSON.parse(init.body))),
+        headers: new Headers({ 'content-type': 'text/html' }),
+      }));
+      await expect(run()).rejects.toMatchObject({ code: SENTINEL });
+      fetchMock.mockImplementation(async (_url, init) =>
+        response(resultFor(JSON.parse(init.body), 'x'.repeat(2 * 1024 * 1024)))
+      );
+      await expect(run()).rejects.toMatchObject({ code: SENTINEL });
+      provider.destroy();
+      const count = fetchMock.mock.calls.length;
+      await expect(run()).rejects.toMatchObject({ name: 'AbortError' });
+      expect(fetchMock).toHaveBeenCalledTimes(count);
+    }
+  );
+
+  it('holds queued reads during HTTP429 cooldown and resumes after expiry', async () => {
+    const now = jest.spyOn(Date, 'now');
+    let time = 100000;
+    now.mockImplementation(() => time);
+    try {
+      const provider = providerFor();
+      const cancel = jest.fn().mockResolvedValue(undefined);
+      fetchMock.mockResolvedValueOnce({
+        ...response({}),
+        ok: false,
+        status: 429,
+        body: { cancel },
+      });
+      await expect(
+        provider.send('eth_getBalance', [FROM, 'latest'])
+      ).rejects.toMatchObject({ status: 429 });
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(provider.isInCooldown).toBe(true);
+      await expect(
+        provider.send('eth_getCode', [FROM, 'latest'])
+      ).rejects.toMatchObject({ status: 429 });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      time += 120001;
+      await expect(
+        provider.send('eth_getBalance', [FROM, 'latest'])
+      ).resolves.toBe('0x5208');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(provider.isInCooldown).toBe(false);
+      expect(provider.serverHasAnError).toBe(false);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('preserves named read parameters through inherited ethers transport', async () => {
+    const provider = providerFor();
+    await expect(
+      provider._send({
+        jsonrpc: '2.0',
+        id: 11,
+        method: 'eth_getBalance',
+        params: { address: FROM, block: 'latest' },
+      })
+    ).resolves.toEqual([{ jsonrpc: '2.0', id: 11, result: '0x5208' }]);
+    expect(requestsFrom(fetchMock)[0].params).toEqual({
+      address: FROM,
+      block: 'latest',
+    });
   });
 
   it('coalesces concurrent cold chain reads without hiding a new fresh verification', async () => {
@@ -445,6 +593,7 @@ describe('JSON-RPC response correlation', () => {
     const provider = providerFor();
     const first = provider.send('eth_call', [{ data: '0x01' }, 'latest']);
     const second = provider.send('eth_call', [{ data: '0x02' }, 'latest']);
+    await new Promise((resolve) => setImmediate(resolve));
     expect(deferred).toHaveLength(2);
     expect(deferred[0].request.id).not.toBe(deferred[1].request.id);
     deferred[1].resolve(response(resultFor(deferred[1].request, '0x02')));
@@ -792,6 +941,7 @@ describe('JSON-RPC response correlation', () => {
     payload.method = 'eth_sendRawTransaction';
     payload.id = 72;
     (payload.params[0] as { data: string }).data = '0x01';
+    await new Promise((resolve) => setImmediate(resolve));
     release!(response({ jsonrpc: '2.0', id: -1, result: RUNTIME }));
     await expect(pending).resolves.toEqual([
       { jsonrpc: '2.0', id: 71, result: '0x5208' },
@@ -839,9 +989,8 @@ describe('JSON-RPC response correlation', () => {
     fetchMock.mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => {
-        throw new SyntaxError('Unexpected end of JSON input');
-      },
+      headers: new Headers(),
+      text: async () => '{',
     });
     await expect(
       sdkFor(providerFor()).getTxGasLimit({ data: '0x6000' })
@@ -853,7 +1002,8 @@ describe('JSON-RPC response correlation', () => {
     fetchMock.mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => {
+      headers: new Headers(),
+      text: async () => {
         throw new DOMException('Body read aborted', 'AbortError');
       },
     });

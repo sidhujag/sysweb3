@@ -83,9 +83,14 @@ it to independent `JsonRpcReadClient` operations through the `capabilities`
 constructor option. It stores a confirmed batch limit for 30 seconds. Retire the
 owner when the endpoint registration changes. Each client keeps its own fetch
 adapter, cancellation, deadlines, response limits and response data.
+`CustomJsonRpcProvider` accepts the same read-client options as its optional
+fourth constructor argument. Its allowlisted `send`, `sendBatch` and inherited
+Ethers reads use that bounded client. Stateful RPCs and broadcasts remain
+single-attempt requests. HTTP 429 starts a provider-local two-minute cooldown.
 
 ```javascript
 import {
+  CustomJsonRpcProvider,
   JsonRpcReadClient,
   RpcReadCapabilities,
 } from '@sidhujag/sysweb3-keyring';
@@ -98,6 +103,11 @@ const operation = new JsonRpcReadClient(rpcUrl, {
 });
 const results = await operation.readMany(reads);
 operation.destroy();
+
+const provider = new CustomJsonRpcProvider(operationSignal, rpcUrl, chainId, {
+  capabilities,
+  fetch: guardedFetch,
+});
 ```
 
 ### Account Management

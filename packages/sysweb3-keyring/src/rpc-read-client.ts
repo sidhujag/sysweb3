@@ -61,6 +61,11 @@ export class RpcReadCapabilities {
 
 class RpcBatchRefused extends Error {}
 class RpcBatchAmbiguous extends Error {}
+class RpcBatchReplan extends RpcResponseIntegrityError {
+  constructor() {
+    super('Queued RPC batch requires a smaller size', false);
+  }
+}
 class RpcPayloadTooLarge extends Error {
   constructor(readonly endpointLimit = false) {
     super();
@@ -81,6 +86,8 @@ const boundedInteger = (value: number, maximum: number, name: string) => {
     throw new Error(`Invalid RPC ${name}`);
   return value;
 };
+const validParams = (value: unknown): boolean =>
+  value !== null && typeof value === 'object';
 export class RpcReadError extends Error {
   readonly code: number;
   readonly data?: unknown;
@@ -347,7 +354,7 @@ export class JsonRpcReadClient {
         (input) =>
           !input ||
           !isReadOnlyRpcMethod(input.method) ||
-          !Array.isArray(input.params)
+          !validParams(input.params)
       )
     )
       throw new Error('Invalid read-only RPC requests');
@@ -363,7 +370,7 @@ export class JsonRpcReadClient {
         (input) =>
           !input ||
           !isReadOnlyRpcMethod(input.method) ||
-          !Array.isArray(input.params)
+          !validParams(input.params)
       )
     )
       throw new Error('Invalid read-only RPC requests');
@@ -398,6 +405,22 @@ export class JsonRpcReadClient {
     );
     const signal = controller.signal;
     let attempts = 0;
+    const recordBatchLimit = (error: unknown, count: number) => {
+      if (count <= 1) return;
+      if (
+        error instanceof RpcBatchRefused ||
+        error instanceof RpcPayloadTooLarge ||
+        error instanceof RpcBatchLimit
+      ) {
+        const limit =
+          error instanceof RpcBatchRefused
+            ? 1
+            : Math.min(this.batchLimit, Math.ceil(count / 2));
+        if (error instanceof RpcPayloadTooLarge && !error.endpointLimit)
+          this.localBatchLimit = limit;
+        else this.batchLimit = limit;
+      }
+    };
     const request = (
       rows: readonly RpcReadRequest[],
       batch: boolean,
@@ -409,10 +432,17 @@ export class JsonRpcReadClient {
         batch,
         signal,
         async (url, body) => {
-          if (++attempts > 2048) throw new Error('RPC attempt limit exceeded');
-          if (byteLength(body) > this.options.maxRequestBytes)
-            throw new RpcPayloadTooLarge();
+          if (byteLength(body) > this.options.maxRequestBytes) {
+            const error = new RpcPayloadTooLarge();
+            recordBatchLimit(error, rows.length);
+            throw error;
+          }
           return this.slot(signal, async () => {
+            // A preceding request can learn a smaller limit while this chunk
+            // waits for physical capacity. Repartition before sending it.
+            if (rows.length > this.batchLimit) throw new RpcBatchReplan();
+            if (++attempts > 2048)
+              throw new Error('RPC attempt limit exceeded');
             const headers = new Headers(this.options.requestInit.headers);
             headers.set('Content-Type', 'application/json');
             headers.set('Accept', 'application/json');
@@ -461,6 +491,10 @@ export class JsonRpcReadClient {
               if (batchBadRequest)
                 throw Object.assign(new Error('RPC HTTP 400'), { status: 400 });
               return json;
+            } catch (error) {
+              // Publish endpoint feedback before releasing this physical slot.
+              recordBatchLimit(error, rows.length);
+              throw error;
             } finally {
               if (!readingBody) await cancelBody(response);
             }
@@ -468,6 +502,18 @@ export class JsonRpcReadClient {
         },
         recoverResponse
       );
+    const executeChunks = async (
+      rows: readonly RpcReadRequest[],
+      recoverResponse = this.options.recoverResponse
+    ): Promise<PromiseSettledResult<unknown>[]> => {
+      const chunks: Array<Promise<PromiseSettledResult<unknown>[]>> = [];
+      const limit = this.batchLimit;
+      for (let offset = 0; offset < rows.length; offset += limit)
+        chunks.push(
+          execute(rows.slice(offset, offset + limit), recoverResponse)
+        );
+      return (await Promise.all(chunks)).flat();
+    };
     const execute = async (
       rows: readonly RpcReadRequest[],
       recoverResponse = this.options.recoverResponse
@@ -485,6 +531,8 @@ export class JsonRpcReadClient {
         });
       } catch (error) {
         check(signal);
+        if (error instanceof RpcBatchReplan)
+          return executeChunks(rows, recoverResponse);
         if (rows.length > 1 && error instanceof RpcBatchAmbiguous) {
           // A generic envelope error alone is insufficient evidence. Probe one
           // proper single request and retain its result without sending it again.
@@ -494,10 +542,7 @@ export class JsonRpcReadClient {
             probe.reason instanceof RpcReadError
           ) {
             this.batchLimit = 1;
-            const results = [probe];
-            for (const row of rows.slice(1))
-              results.push(...(await execute([row])));
-            return results;
+            return [probe, ...(await executeChunks(rows.slice(1)))];
           }
           return rows.map(() => ({ status: 'rejected', reason: error }));
         }
@@ -507,46 +552,14 @@ export class JsonRpcReadClient {
             error instanceof RpcPayloadTooLarge ||
             error instanceof RpcBatchLimit)
         ) {
-          const limit =
-            error instanceof RpcBatchRefused
-              ? 1
-              : Math.min(this.batchLimit, Math.ceil(rows.length / 2));
-          if (error instanceof RpcPayloadTooLarge && !error.endpointLimit)
-            this.localBatchLimit = limit;
-          else this.batchLimit = limit;
-          const results: PromiseSettledResult<unknown>[] = [];
-          let offset = 0;
-          while (offset < rows.length) {
-            const next = Math.min(rows.length, offset + this.batchLimit);
-            const chunk = rows.slice(offset, next);
-            offset = next;
-            results.push(...(await execute(chunk)));
-          }
-          return results;
+          return executeChunks(rows);
         }
         return rows.map(() => ({ status: 'rejected', reason: error }));
       }
     };
     try {
       check(signal);
-      const batches: RpcReadRequest[][] = [];
-      const batchLimit = this.batchLimit;
-      for (let i = 0; i < snapshot.length; i += batchLimit)
-        batches.push(snapshot.slice(i, i + batchLimit));
-      let next = 0;
-      const results: PromiseSettledResult<unknown>[][] = new Array(
-        batches.length
-      );
-      const workers = Array.from(
-        { length: Math.min(batches.length, this.options.maxConcurrency) },
-        async () => {
-          while (next < batches.length) {
-            const index = next++;
-            results[index] = await execute(batches[index]);
-          }
-        }
-      );
-      const work = Promise.all(workers).then(() => results.flat());
+      const work = executeChunks(snapshot);
       return await new Promise((resolve, reject) => {
         const cancelled = () => reject(aborted(signal));
         signal.addEventListener('abort', cancelled, { once: true });

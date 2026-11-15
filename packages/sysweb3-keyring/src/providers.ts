@@ -10,14 +10,21 @@ import {
 } from './ethers-v6';
 import {
   JsonRpcReadClient,
+  RpcReadError,
+  type RpcReadClientOptions,
   type RpcReadOptions,
   type RpcReadRequest,
 } from './rpc-read-client';
-import { requestJsonRpc, RpcResponseIntegrityError } from './rpc-transport';
+import {
+  isReadOnlyRpcMethod,
+  requestJsonRpc,
+  RpcResponseIntegrityError,
+} from './rpc-transport';
 
 import type { JsonRpcPayload } from 'ethers/providers';
 
 export { RpcResponseIntegrityError } from './rpc-transport';
+export type RpcProviderOptions = Omit<RpcReadClientOptions, 'signal'>;
 
 const TRANSACTION_RESPONSE_BIG_NUMBER_FIELDS = new Set([
   'gasLimit',
@@ -157,9 +164,8 @@ const makeRpcError = (rpcError: {
 
 class BaseProvider extends JsonRpcProvider {
   private cooldownTime = 120 * 1000;
-  private rateLimit = 30;
-  private requestCount = 0;
-  private lastRequestTime = 0;
+  private cooldownUntil = 0;
+  private readonly fetcher: NonNullable<RpcReadClientOptions['fetch']>;
   private feeDataCache: { expiresAt: number; value: any } | null = null;
   private feeDataPromise: Promise<any> | null = null;
   private readonly configuredChainId?: number;
@@ -179,7 +185,8 @@ class BaseProvider extends JsonRpcProvider {
   constructor(
     signal: AbortSignal,
     url?: string | { url: string },
-    network?: Networkish
+    network?: Networkish,
+    options: RpcProviderOptions = {}
   ) {
     super(
       typeof url === 'string' ? url : url?.url,
@@ -188,7 +195,10 @@ class BaseProvider extends JsonRpcProvider {
     );
     this.configuredChainId = getChainIdFromNetworkish(network);
     this.signal = signal;
+    this.fetcher = options.fetch ?? ((address, init) => fetch(address, init));
     this.readClient = new JsonRpcReadClient(this._getConnection().url, {
+      ...options,
+      fetch: (address, init) => this.fetchRpc(address, init),
       signal,
     });
     this._pendingBatchAggregator = null;
@@ -206,53 +216,23 @@ class BaseProvider extends JsonRpcProvider {
     }
   }
 
-  private throttledRequest = <T>(requestFn: () => Promise<T>): Promise<T> => {
-    if (!this.canMakeRequest()) {
-      return this.cooldown();
-    }
-    // Execute request immediately without timeout delay
-    return requestFn().catch((error) => {
-      if (error.name === 'AbortError') {
-        console.log('Aborted request', error);
-        return Promise.reject(error);
-      }
-      throw error;
-    });
-  };
-  private canMakeRequest = () => {
-    const now = Date.now();
-    let elapsedTime = 0;
-    if (this.lastRequestTime > 0) {
-      elapsedTime = now - this.lastRequestTime;
-    }
-    if (elapsedTime <= this.cooldownTime && this.serverHasAnError) {
+  private async fetchRpc(url: string, init: RequestInit): Promise<Response> {
+    if (this.cooldownUntil > Date.now()) {
       this.isInCooldown = true;
-      return false;
+      throw Object.assign(new Error('RPC rate-limit cooldown is active'), {
+        status: 429,
+      });
     }
-
-    if (elapsedTime >= this.cooldownTime && this.serverHasAnError) {
-      this.requestCount = 0;
-      this.serverHasAnError = false;
+    this.isInCooldown = false;
+    this.serverHasAnError = false;
+    const response = await this.fetcher(url, init);
+    if (response.status === 429) {
+      this.cooldownUntil = Date.now() + this.cooldownTime;
+      this.serverHasAnError = true;
       this.isInCooldown = true;
-      return false; //One last blocked request before cooldown ends
     }
-
-    if (this.requestCount < this.rateLimit || !this.serverHasAnError) {
-      this.requestCount++;
-      if (elapsedTime > 1000) {
-        //Uncomment the console.log to see the request per second
-        // console.log(
-        //   `Request/sec to Provider(${this.connection.url}): ${this.requestCount}`
-        // );
-        this.requestCount = 1;
-        this.lastRequestTime = now;
-      } else if (this.lastRequestTime === 0) {
-        this.lastRequestTime = now;
-      }
-      this.isInCooldown = false;
-      return true;
-    }
-  };
+    return response;
+  }
 
   async verifyConfiguredChainId(fresh = false): Promise<void> {
     if (this.configuredChainId == null) return;
@@ -280,21 +260,6 @@ class BaseProvider extends JsonRpcProvider {
     return this.readClient.getChainId({ fresh });
   }
 
-  private cooldown = async () => {
-    const now = Date.now();
-    const elapsedTime = now - this.lastRequestTime;
-    console.error(
-      'Cant make request, rpc cooldown is active for the next: ',
-      (this.cooldownTime - elapsedTime) / 1000,
-      ' seconds'
-    );
-    throw {
-      message: `Cant make request, rpc cooldown is active for the next: ${
-        (this.cooldownTime - elapsedTime) / 1000
-      } seconds`,
-    };
-  };
-
   private async requestRpc(
     inputs: Array<Pick<JsonRpcPayload, 'method' | 'params'>>,
     batch: boolean
@@ -304,47 +269,52 @@ class BaseProvider extends JsonRpcProvider {
       inputs,
       batch,
       this.signal,
-      async (url, body, signal) =>
-        this.throttledRequest(async () => {
-          const response = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body,
-            signal,
-          });
-          if (!response.ok) {
-            let errorBody = { error: undefined, message: undefined };
-            try {
-              errorBody = await response.json();
-            } catch {
-              console.warn('No body in request');
-            }
-            this.errorMessage =
-              errorBody.error ||
-              errorBody.message ||
-              'No message from Provider';
-            handleStatusCodeError(response.status, this.errorMessage);
-          }
-          if (response.status !== 200)
-            throw new Error(`Unexpected HTTP status code: ${response.status}`);
+      async (url, body, signal) => {
+        const response = await this.fetchRpc(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+          signal,
+        });
+        if (!response.ok) {
+          let errorBody = { error: undefined, message: undefined };
           try {
-            return await response.json();
-          } catch (error) {
-            if (signal.aborted || error?.name === 'AbortError') throw error;
-            throw new RpcResponseIntegrityError(
-              'Invalid JSON-RPC JSON response',
-              false
-            );
+            errorBody = await response.json();
+          } catch {
+            console.warn('No body in request');
           }
-        })
-    ).then((responses) => {
-      this.serverHasAnError = false;
-      return responses;
-    });
+          this.errorMessage =
+            errorBody.error || errorBody.message || 'No message from Provider';
+          handleStatusCodeError(response.status, this.errorMessage);
+        }
+        if (response.status !== 200)
+          throw new Error(`Unexpected HTTP status code: ${response.status}`);
+        try {
+          return await response.json();
+        } catch (error) {
+          if (signal.aborted || error?.name === 'AbortError') throw error;
+          throw new RpcResponseIntegrityError(
+            'Invalid JSON-RPC JSON response',
+            false
+          );
+        }
+      },
+      false
+    );
   }
 
-  readMany(inputs: readonly RpcReadRequest[], options?: RpcReadOptions) {
-    return this.readClient.readMany(inputs, options);
+  async readMany(inputs: readonly RpcReadRequest[], options?: RpcReadOptions) {
+    const results = await this.readClient.readMany(inputs, options);
+    for (const result of results) {
+      if (
+        result.status === 'rejected' &&
+        result.reason instanceof RpcReadError
+      ) {
+        this.errorMessage = result.reason.message;
+        break;
+      }
+    }
+    return results;
   }
 
   // Ethers uses this primitive for network auto-detection and inherited send.
@@ -355,6 +325,20 @@ class BaseProvider extends JsonRpcProvider {
     const inputs = Array.isArray(payload) ? payload : [payload];
     if (!inputs.length) return [];
     const callerIds = inputs.map(({ id }) => id);
+    if (inputs.every(({ method }) => isReadOnlyRpcMethod(method))) {
+      const results = await this.readMany(inputs);
+      return results.map((result, index) => {
+        if (result.status === 'fulfilled')
+          return { jsonrpc: '2.0', id: callerIds[index], result: result.value };
+        if (!(result.reason instanceof RpcReadError)) throw result.reason;
+        const { code, message, data } = result.reason;
+        return {
+          jsonrpc: '2.0',
+          id: callerIds[index],
+          error: { code, message, data },
+        };
+      });
+    }
     const responses = await this.requestRpc(inputs, Array.isArray(payload));
     return responses.map((response, index) => ({
       ...response,
@@ -364,6 +348,11 @@ class BaseProvider extends JsonRpcProvider {
 
   override send = async (method: string, params: any[]) => {
     if (method === 'eth_chainId') return this.readChainId(false);
+    if (isReadOnlyRpcMethod(method)) {
+      const [result] = await this.readMany([{ method, params }]);
+      if (result.status === 'rejected') throw result.reason;
+      return result.value;
+    }
     const [json] = await this.requestRpc([{ method, params }], false);
     if (json.error) {
       this.errorMessage = json.error.message;
@@ -374,6 +363,15 @@ class BaseProvider extends JsonRpcProvider {
 
   async sendBatch(method: string, params: Array<any[]>): Promise<any[]> {
     if (!params.length) return [];
+    if (isReadOnlyRpcMethod(method)) {
+      const results = await this.readMany(
+        params.map((param) => ({ method, params: param }))
+      );
+      return results.map((result) => {
+        if (result.status === 'rejected') throw result.reason;
+        return result.value;
+      });
+    }
     const responses = await this.requestRpc(
       params.map((param) => ({ method, params: param })),
       true
@@ -590,8 +588,9 @@ export class CustomJsonRpcProvider extends BaseProvider {
   constructor(
     signal: AbortSignal,
     url?: string | { url: string },
-    network?: Networkish
+    network?: Networkish,
+    options: RpcProviderOptions = {}
   ) {
-    super(signal, url, network);
+    super(signal, url, network, options);
   }
 }
