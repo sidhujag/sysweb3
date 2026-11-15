@@ -26,6 +26,13 @@ import type { JsonRpcPayload } from 'ethers/providers';
 
 export { RpcResponseIntegrityError } from './rpc-transport';
 export type RpcProviderOptions = Omit<RpcReadClientOptions, 'signal'>;
+export type RpcFeeReadTransport = Readonly<{
+  getBlock(tag: 'latest'): Promise<{ baseFeePerGas?: unknown } | null>;
+  send(
+    method: 'eth_gasPrice' | 'eth_maxPriorityFeePerGas',
+    params: unknown[]
+  ): Promise<unknown>;
+}>;
 
 const TRANSACTION_RESPONSE_BIG_NUMBER_FIELDS = new Set([
   'gasLimit',
@@ -446,7 +453,24 @@ class BaseProvider extends JsonRpcProvider {
     return BigNumber.from(await this.send('eth_gasPrice', []));
   }
 
-  async getFeeData(): Promise<any> {
+  async getFeeData(reader?: RpcFeeReadTransport): Promise<any> {
+    this.assertActive();
+    // A host-owned observation must read through its own phase and lifetime.
+    if (reader) {
+      return new Promise((resolve, reject) => {
+        const cancel = () => reject(this.lifetime.signal.reason);
+        this.lifetime.signal.addEventListener('abort', cancel, { once: true });
+        void this.fetchFeeData(reader)
+          .then((value) => {
+            this.assertActive();
+            return value;
+          })
+          .then(resolve, reject)
+          .finally(() =>
+            this.lifetime.signal.removeEventListener('abort', cancel)
+          );
+      });
+    }
     const now = Date.now();
     if (this.feeDataCache && this.feeDataCache.expiresAt > now) {
       return this.feeDataCache.value;
@@ -468,13 +492,23 @@ class BaseProvider extends JsonRpcProvider {
     }
   }
 
-  private async readFeeData(): Promise<FeeData> {
+  private async readFeeData(reader?: RpcFeeReadTransport): Promise<FeeData> {
     const network = await this.getNetwork();
     // Ethers tolerates unavailable optional fee methods; keep that behavior,
     // but never convert a response-integrity failure into an invented quote.
     const optionalFee = async (method: 'getGasPrice' | 'getPriorityFee') => {
       try {
-        return getBigInt(await this._perform({ method }), '%response');
+        return getBigInt(
+          reader
+            ? await reader.send(
+                method === 'getGasPrice'
+                  ? 'eth_gasPrice'
+                  : 'eth_maxPriorityFeePerGas',
+                []
+              )
+            : await this._perform({ method }),
+          '%response'
+        );
       } catch (error) {
         if (
           error?.code === 'SYSWEB3_RPC_RESPONSE_INVALID' ||
@@ -487,7 +521,7 @@ class BaseProvider extends JsonRpcProvider {
     };
     const getFeeData = async () => {
       const [block, gasPrice, priorityFee] = await Promise.all([
-        super.getBlock('latest'),
+        reader ? reader.getBlock('latest') : super.getBlock('latest'),
         optionalFee('getGasPrice'),
         optionalFee('getPriorityFee'),
       ]);
@@ -495,7 +529,9 @@ class BaseProvider extends JsonRpcProvider {
       let maxPriorityFeePerGas: bigint | null = null;
       if (block?.baseFeePerGas != null && priorityFee != null) {
         maxPriorityFeePerGas = priorityFee;
-        maxFeePerGas = block.baseFeePerGas * 2n + maxPriorityFeePerGas;
+        maxFeePerGas =
+          getBigInt(block.baseFeePerGas as any, '%response') * 2n +
+          maxPriorityFeePerGas;
       }
       return new FeeData(gasPrice, maxFeePerGas, maxPriorityFeePerGas);
     };
@@ -541,8 +577,8 @@ class BaseProvider extends JsonRpcProvider {
     return getFeeData();
   }
 
-  private async fetchFeeData(): Promise<any> {
-    const feeData = await this.readFeeData();
+  private async fetchFeeData(reader?: RpcFeeReadTransport): Promise<any> {
+    const feeData = await this.readFeeData(reader);
     const maxFeePerGas =
       feeData.maxFeePerGas == null
         ? null
@@ -553,7 +589,9 @@ class BaseProvider extends JsonRpcProvider {
         : BigNumber.from(feeData.maxPriorityFeePerGas);
 
     if (maxFeePerGas == null || maxPriorityFeePerGas == null) {
-      const block = await super.getBlock('latest');
+      const block = reader
+        ? await reader.getBlock('latest')
+        : await super.getBlock('latest');
       if (!block) throw new Error('Block not found');
       if (block?.baseFeePerGas != null) {
         throw new Error('EIP-1559 fee data unavailable');

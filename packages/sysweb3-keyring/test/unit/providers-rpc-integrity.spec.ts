@@ -1729,6 +1729,113 @@ describe('JSON-RPC response correlation', () => {
     }
   });
 
+  it('uses an explicit fee reader without reusing or publishing the provider cache', async () => {
+    const provider = providerFor();
+    const reader = {
+      getBlock: jest.fn().mockResolvedValue({ baseFeePerGas: 7n }),
+      send: jest.fn(async (method: string) =>
+        method === 'eth_gasPrice' ? '0x2' : '0x3'
+      ),
+    };
+    await expect(provider.getFeeData(reader)).resolves.toEqual({
+      gasPrice: BigNumber.from(2),
+      maxFeePerGas: BigNumber.from(17),
+      maxPriorityFeePerGas: BigNumber.from(3),
+    });
+    reader.getBlock.mockResolvedValue({ baseFeePerGas: 10n });
+    await expect(provider.getFeeData(reader)).resolves.toMatchObject({
+      maxFeePerGas: BigNumber.from(23),
+    });
+    expect(reader.getBlock).toHaveBeenCalledTimes(2);
+    expect(reader.send).toHaveBeenCalledTimes(4);
+    expect(fetchMock).not.toHaveBeenCalled();
+    provider.destroy();
+    await expect(provider.getFeeData(reader)).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    expect(reader.send).toHaveBeenCalledTimes(4);
+  });
+
+  it('preserves the network plugin when a phase owns its fee reads', async () => {
+    const provider = providerFor();
+    const reader = {
+      getBlock: jest.fn().mockResolvedValue({ baseFeePerGas: 7n }),
+      send: jest.fn().mockResolvedValue('0x2'),
+    };
+    const plugin = {
+      url: 'https://fees.example/quote',
+      processFunc: jest.fn(async (read, observedProvider, request) => {
+        expect(observedProvider).toBe(provider);
+        expect(request.url).toBe('https://fees.example/quote');
+        const fees = await read();
+        return { ...fees, maxFeePerGas: 99n, maxPriorityFeePerGas: 11n };
+      }),
+    };
+    jest.spyOn(provider, 'getNetwork').mockResolvedValue({
+      getPlugin: () => plugin,
+    });
+    await expect(provider.getFeeData(reader)).resolves.toEqual({
+      gasPrice: BigNumber.from(2),
+      maxFeePerGas: BigNumber.from(99),
+      maxPriorityFeePerGas: BigNumber.from(11),
+    });
+    expect(plugin.processFunc).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('retires an unfinished host fee reader when the provider is destroyed', async () => {
+    const provider = providerFor();
+    let release!: (value: string) => void;
+    let start!: () => void;
+    const started = new Promise<void>((resolve) => {
+      start = resolve;
+    });
+    const held = new Promise<string>((resolve) => {
+      release = resolve;
+    });
+    const reader = {
+      getBlock: jest.fn().mockResolvedValue({ baseFeePerGas: 7n }),
+      send: jest.fn(async () => {
+        start();
+        return held;
+      }),
+    };
+    const reading = provider.getFeeData(reader);
+    const failed = expect(reading).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    await started;
+    provider.destroy();
+    await failed;
+    release('0x2');
+    await Promise.resolve();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves legacy fallback and integrity errors from the phase fee reader', async () => {
+    const provider = providerFor();
+    const reader = {
+      getBlock: jest.fn().mockResolvedValue({ baseFeePerGas: null }),
+      send: jest.fn(async (method: string) => {
+        if (method === 'eth_maxPriorityFeePerGas')
+          throw new Error('unsupported');
+        return '0x2';
+      }),
+    };
+    await expect(provider.getFeeData(reader)).resolves.toEqual({
+      gasPrice: BigNumber.from(2),
+      maxFeePerGas: null,
+      maxPriorityFeePerGas: null,
+    });
+    const integrity = new RpcResponseIntegrityError(
+      'Malformed phase fees',
+      false
+    );
+    reader.send.mockRejectedValue(integrity);
+    await expect(provider.getFeeData(reader)).rejects.toBe(integrity);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it.each(['', true, false, Number.MAX_SAFE_INTEGER + 1, null])(
     'keeps ethers fallback for malformed optional gas price: %p',
     async (value) => {
