@@ -1,4 +1,8 @@
-import { JsonRpcReadClient, RpcReadError } from '../../src/rpc-read-client';
+import {
+  JsonRpcReadClient,
+  RpcReadCapabilities,
+  RpcReadError,
+} from '../../src/rpc-read-client';
 import { RpcResponseIntegrityError } from '../../src/rpc-transport';
 
 const URL = 'https://rpc.example/read?token=a%2Fb';
@@ -596,7 +600,7 @@ it.each([429, 503])(
   }
 );
 
-it('does not classify a successful HTTP rate-limit envelope as a batch size limit', async () => {
+it('rejects a successful HTTP rate-limit envelope without a whole-batch retry', async () => {
   const fetcher = jest.fn(async () =>
     response({
       jsonrpc: '2.0',
@@ -610,7 +614,7 @@ it('does not classify a successful HTTP rate-limit envelope as a batch size limi
       (item) => item.status === 'rejected'
     )
   ).toBe(true);
-  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(fetcher).toHaveBeenCalledTimes(1);
   expect(
     fetcher.mock.calls.every(([, init]) => Array.isArray(JSON.parse(init.body)))
   ).toBe(true);
@@ -849,14 +853,14 @@ it.each([
     ).toBe(true);
     expect(
       fetcher.mock.calls.map(([, init]) => JSON.parse(init.body).length)
-    ).toEqual([4, 4]);
+    ).toEqual([4]);
     limited = false;
     expect(
       (await client.readMany(inputs)).every(
         (item) => item.status === 'fulfilled'
       )
     ).toBe(true);
-    expect(JSON.parse(fetcher.mock.calls[2][1].body)).toHaveLength(4);
+    expect(JSON.parse(fetcher.mock.calls[1][1].body)).toHaveLength(4);
   }
 );
 
@@ -911,7 +915,7 @@ it.each(
     const attempts = widths();
     if (status === 413) expect(attempts).toEqual([4, 2, 2]);
     else if (recovers) expect(attempts).toEqual([4, 1, 1, 1, 1]);
-    else expect(attempts).toEqual(status === 200 ? [4, 4] : [4]);
+    else expect(attempts).toEqual([4]);
     limited = false;
     await client.readMany(inputs);
     expect(widths().slice(attempts.length)).toEqual(
@@ -919,3 +923,108 @@ it.each(
     );
   }
 );
+
+it('shares only expiring endpoint capability across independent clients', async () => {
+  const clock = jest.spyOn(Date, 'now');
+  let now = 100000;
+  clock.mockImplementation(() => now);
+  const capabilities = new RpcReadCapabilities(URL);
+  const fetcher = jest.fn(async (_url, init) => {
+    const request = JSON.parse(init.body);
+    return response(
+      Array.isArray(request)
+        ? {
+            jsonrpc: '2.0',
+            id: null,
+            error: { code: -32600, message: 'Batch unsupported' },
+          }
+        : reply(request)
+    );
+  });
+  const reads = [input(), input()];
+  try {
+    const first = new JsonRpcReadClient(URL, { fetch: fetcher, capabilities });
+    await first.readMany(reads);
+    first.destroy();
+    fetcher.mockClear();
+    const second = new JsonRpcReadClient(URL, { fetch: fetcher, capabilities });
+    await second.readMany(reads);
+    expect(
+      fetcher.mock.calls.map(([, init]) => Array.isArray(JSON.parse(init.body)))
+    ).toEqual([false, false]);
+    now += 30000;
+    fetcher.mockClear();
+    await second.readMany(reads);
+    expect(
+      fetcher.mock.calls.map(([, init]) => Array.isArray(JSON.parse(init.body)))
+    ).toEqual([true, false, false]);
+    second.destroy();
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+it('refuses capability ownership from another exact endpoint', () => {
+  const capabilities = new RpcReadCapabilities(URL);
+  expect(
+    () => new JsonRpcReadClient(URL + '&other=1', { capabilities })
+  ).toThrow('another endpoint');
+});
+
+it('does not export a local request-byte limit to shared endpoint capability', async () => {
+  const capabilities = new RpcReadCapabilities(URL);
+  const fetcher = jest.fn(async (_url, init) => {
+    const request = JSON.parse(init.body);
+    return response(
+      Array.isArray(request) ? request.map(reply) : reply(request)
+    );
+  });
+  await new JsonRpcReadClient(URL, {
+    fetch: fetcher,
+    capabilities,
+    maxRequestBytes: 160,
+  }).readMany([input(), input()]);
+  fetcher.mockClear();
+  await new JsonRpcReadClient(URL, { fetch: fetcher, capabilities }).readMany([
+    input(),
+    input(),
+  ]);
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(Array.isArray(JSON.parse(fetcher.mock.calls[0][1].body))).toBe(true);
+});
+
+it('keeps a shared capability isolated from another client cancellation', async () => {
+  const capabilities = new RpcReadCapabilities(URL);
+  const held = deferred<Response>();
+  const cancel = new AbortController();
+  const first = new JsonRpcReadClient(URL, {
+    capabilities,
+    fetch: () => held.promise,
+  });
+  const pending = first.readMany([input(), input()], { signal: cancel.signal });
+  const rejected = expect(pending).rejects.toThrow();
+  await tick();
+  cancel.abort();
+  await rejected;
+  held.resolve(
+    response({
+      jsonrpc: '2.0',
+      id: null,
+      error: { code: -32600, message: 'Batch unsupported' },
+    })
+  );
+  await tick();
+  const fetcher = jest.fn(async (_url, init) => {
+    const requests = JSON.parse(init.body);
+    return response(requests.map(reply));
+  });
+  const second = new JsonRpcReadClient(URL, { capabilities, fetch: fetcher });
+  expect(
+    (await second.readMany([input(), input()])).every(
+      (item) => item.status === 'fulfilled'
+    )
+  ).toBe(true);
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  first.destroy();
+  second.destroy();
+});

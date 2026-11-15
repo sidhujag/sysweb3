@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.16
+
+- Share expiring batch capability metadata between operation-owned clients for the same endpoint, preserving independent cancellation and response ownership.
+- Reject recognized top-level rate-limit responses without retrying the complete batch.
+
 ## 2.1.15
 
 - Keep RPC request capacity owned until response bodies finish or cancellation completes, including oversized and rejected responses.
