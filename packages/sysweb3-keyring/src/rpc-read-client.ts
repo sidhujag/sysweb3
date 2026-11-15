@@ -39,6 +39,7 @@ type ChainRequest = {
 /** Endpoint capability metadata only. Responses and request lifetimes remain private to each client. */
 export class RpcReadCapabilities {
   private batch?: { limit: number; expires: number };
+  private acceptedBatchUntil = 0;
   constructor(readonly url: string) {
     if (!['http:', 'https:'].includes(new URL(url).protocol))
       throw new Error('Invalid RPC URL');
@@ -59,6 +60,15 @@ export class RpcReadCapabilities {
       limit: Math.min(current, limit),
       expires: Date.now() + 30000,
     };
+    if (limit === 1) this.acceptedBatchUntil = 0;
+  }
+
+  recordAcceptedBatch(): void {
+    this.acceptedBatchUntil = Date.now() + 30000;
+  }
+
+  get acceptsBatch(): boolean {
+    return this.acceptedBatchUntil > Date.now() && this.getBatchLimit(128) > 1;
   }
 }
 
@@ -227,6 +237,10 @@ export class JsonRpcReadClient {
 
   get url(): string {
     return this.endpoint;
+  }
+
+  get acceptsBatch(): boolean {
+    return this.capabilities.acceptsBatch;
   }
 
   destroy(): void {
@@ -435,6 +449,7 @@ export class JsonRpcReadClient {
       check(signal);
       try {
         const responses = await request(rows, rows.length > 1, recoverResponse);
+        if (rows.length > 1) this.capabilities.recordAcceptedBatch();
         return responses.map((response) => {
           if (response.error)
             return {

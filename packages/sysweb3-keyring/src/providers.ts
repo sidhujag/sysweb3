@@ -56,6 +56,7 @@ const TRANSACTION_RECEIPT_BIG_NUMBER_FIELDS = new Set([
 ]);
 
 const FEE_DATA_CACHE_TTL_MS = 5000;
+const queuedReadFailure = Symbol('queuedReadFailure');
 
 const getChainIdFromNetworkish = (network?: Networkish): number | undefined => {
   if (network == null) return undefined;
@@ -189,12 +190,6 @@ class BaseProvider extends JsonRpcProvider {
   public errorMessage: any = '';
   public serverHasAnError = false;
   signal: AbortSignal;
-  _pendingBatchAggregator: NodeJS.Timer | null;
-  _pendingBatch: Array<{
-    reject: (error: Error) => void;
-    request: { id: number; jsonrpc: '2.0'; method: string; params: Array<any> };
-    resolve: (result: any) => void;
-  }> | null;
 
   constructor(
     signal: AbortSignal,
@@ -205,7 +200,7 @@ class BaseProvider extends JsonRpcProvider {
     super(
       typeof url === 'string' ? url : url?.url,
       network,
-      network == null ? undefined : { staticNetwork: true }
+      network == null ? undefined : { staticNetwork: true, batchStallTime: 4 }
     );
     this.configuredChainId = getChainIdFromNetworkish(network);
     this.signal = this.lifetime.signal;
@@ -222,9 +217,7 @@ class BaseProvider extends JsonRpcProvider {
       fetch: (address, init) => this.fetchRpc(address, init),
       signal: this.lifetime.signal,
     });
-    this._pendingBatchAggregator = null;
-    this._pendingBatch = null;
-
+    this.send = this.send.bind(this);
     this.bindMethods();
   }
 
@@ -386,16 +379,38 @@ class BaseProvider extends JsonRpcProvider {
     if (!inputs.length) return [];
     const callerIds = inputs.map(({ id }) => id);
     if (inputs.every(({ method }) => isReadOnlyRpcMethod(method))) {
-      const results = await this.readMany(inputs);
+      const results = this.readClient.acceptsBatch
+        ? await this.readMany(inputs)
+        : (
+            await Promise.all(inputs.map((input) => this.readMany([input])))
+          ).flat();
+      if (
+        !Array.isArray(payload) &&
+        results[0].status === 'rejected' &&
+        !(results[0].reason instanceof RpcReadError)
+      )
+        throw results[0].reason;
       return results.map((result, index) => {
         if (result.status === 'fulfilled')
           return { jsonrpc: '2.0', id: callerIds[index], result: result.value };
-        if (!(result.reason instanceof RpcReadError)) throw result.reason;
-        const { code, message, data } = result.reason;
         return {
           jsonrpc: '2.0',
           id: callerIds[index],
-          error: { code, message, data },
+          error: {
+            code:
+              result.reason instanceof RpcReadError
+                ? result.reason.code
+                : -32603,
+            message:
+              result.reason instanceof Error
+                ? result.reason.message
+                : 'RPC read failed',
+            data:
+              result.reason instanceof RpcReadError
+                ? result.reason.data
+                : undefined,
+            [queuedReadFailure]: result.reason,
+          },
         };
       });
     }
@@ -406,12 +421,31 @@ class BaseProvider extends JsonRpcProvider {
     }));
   }
 
-  override send = async (method: string, params: any[]) => {
+  override getRpcError(payload: JsonRpcPayload, response: any): Error {
+    if (response.error && queuedReadFailure in response.error)
+      return response.error[queuedReadFailure];
+    return super.getRpcError(payload, response);
+  }
+
+  override async send(method: string, params: any[]) {
     if (method === 'eth_chainId') return this.readChainId(false);
     if (isReadOnlyRpcMethod(method)) {
-      const [result] = await this.readMany([{ method, params }]);
-      if (result.status === 'rejected') throw result.reason;
-      return result.value;
+      this.assertActive();
+      if (this.configuredChainId == null || !this.readClient.acceptsBatch) {
+        const [result] = await this.readMany([{ method, params }]);
+        if (result.status === 'rejected') throw result.reason;
+        return result.value;
+      }
+      const snapshot = JSON.parse(JSON.stringify(params));
+      let result;
+      try {
+        result = await super.send(method, snapshot);
+      } catch (error) {
+        this.assertActive();
+        throw error;
+      }
+      this.assertActive();
+      return result;
     }
     const [json] = await this.requestRpc([{ method, params }], false);
     if (json.error) {
@@ -419,7 +453,7 @@ class BaseProvider extends JsonRpcProvider {
       throw makeRpcError(json.error);
     }
     return json.result;
-  };
+  }
 
   async sendBatch(method: string, params: Array<any[]>): Promise<any[]> {
     if (!params.length) return [];
