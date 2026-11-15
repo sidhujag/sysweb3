@@ -1313,6 +1313,50 @@ describe('JSON-RPC response correlation', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['eth_gasPrice', 'eth_maxPriorityFeePerGas'])(
+    'rejects malformed UTF-8 in %s before optional fee fallback or cache publication',
+    async (method) => {
+      const parentGetBlock = jest
+        .spyOn(JsonRpcProvider.prototype, 'getBlock')
+        .mockResolvedValue({ baseFeePerGas: 7n });
+      const provider = providerFor();
+      let corrupt = true;
+      fetchMock.mockImplementation(async (_url, init) => {
+        const request = JSON.parse(init.body);
+        if (corrupt && request.method === method)
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(Uint8Array.from([0xff]));
+                controller.close();
+              },
+            }),
+            { headers: { 'content-type': 'application/json' } }
+          );
+        return response(resultFor(request, '0x2'));
+      });
+      try {
+        await expect(provider.getFeeData()).rejects.toMatchObject({
+          code: SENTINEL,
+        });
+        expect(
+          requestsFrom(fetchMock).filter((request) => request.method === method)
+        ).toHaveLength(1);
+        corrupt = false;
+        await expect(provider.getFeeData()).resolves.toMatchObject({
+          gasPrice: BigNumber.from(2),
+          maxPriorityFeePerGas: BigNumber.from(2),
+          maxFeePerGas: BigNumber.from(16),
+        });
+        expect(
+          requestsFrom(fetchMock).filter((request) => request.method === method)
+        ).toHaveLength(2);
+      } finally {
+        parentGetBlock.mockRestore();
+      }
+    }
+  );
+
   it('preserves an aborted response-body read', async () => {
     fetchMock.mockResolvedValue({
       ok: true,
