@@ -78,7 +78,17 @@ const batchFailure = (value: unknown): Error | undefined => {
     typeof error.message !== 'string'
   )
     return undefined;
-  if (/rate[ -]?limit|too many requests|quota|throttl/i.test(error.message))
+  // A temporal request limit is transient even if it mentions batches.
+  // A request count explicitly scoped to one batch is a size capability.
+  if (
+    /rate[ -]?limit|quota|throttl|(?:per|\/)\s*(?:second|minute|hour|day|sec\b|ms\b)|\brps\b/i.test(
+      error.message
+    ) ||
+    (/too many requests/i.test(error.message) &&
+      !/(?:in|per|for) (?:a |one |single )?batch|batch (?:size|count|length)/i.test(
+        error.message
+      ))
+  )
     return undefined;
   if (
     error.code === -32600 &&
@@ -90,7 +100,7 @@ const batchFailure = (value: unknown): Error | undefined => {
     /batch|array/i.test(error.message)
   ) {
     if (
-      /too (?:large|many)|more than\s+\d+|(?:maximum|max)\s+(?:batch|request|item|size)|(?:batch|request|item)[ -]?(?:size|count)|batch[ -]?limit/i.test(
+      /too (?:large|many)|more than\s+\d+|(?:maximum|max)\s+(?:batch|request|item|size)|(?:batch|array|request|item)[ -]?(?:size|count|length)|batch[ -]?limit/i.test(
         error.message
       )
     )

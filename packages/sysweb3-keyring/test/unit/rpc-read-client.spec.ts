@@ -794,16 +794,20 @@ it('uses a verified scalar RPC error to confirm generic batch refusal', async ()
   expect(fetcher).toHaveBeenCalledTimes(3);
 });
 
-it('splits an explicit batch limit while excluding rate-limit wording', async () => {
+it.each([
+  'Batch limit exceeded',
+  'Too many requests in a batch; maximum batch size is 2',
+  'Batch of more than 2 requests not allowed',
+  'Maximum batch size is 2',
+  'Batch size exceeded',
+  'Array length exceeds maximum',
+  'Too many items per batch',
+])('splits an explicit per-batch count refusal: %s', async (message) => {
   const fetcher = jest.fn(async (_url, init) => {
     const request = JSON.parse(init.body);
     return response(
       Array.isArray(request) && request.length > 2
-        ? {
-            jsonrpc: '2.0',
-            id: null,
-            error: { code: -32005, message: 'Batch limit exceeded' },
-          }
+        ? { jsonrpc: '2.0', id: null, error: { code: -32005, message } }
         : request.map(reply)
     );
   });
@@ -816,3 +820,42 @@ it('splits an explicit batch limit while excluding rate-limit wording', async ()
     fetcher.mock.calls.map(([, init]) => JSON.parse(init.body).length)
   ).toEqual([4, 2, 2]);
 });
+
+it.each([
+  'Batch rate limit exceeded',
+  'Too many requests; batch endpoint busy',
+  'Batch requests per second exceeded',
+  'Batch quota exhausted',
+  'Batch size 4 was throttled',
+  'Maximum batch requests per second exceeded',
+])(
+  'keeps capacity unchanged for transient batch errors: %s',
+  async (message) => {
+    let limited = true;
+    const fetcher = jest.fn(async (_url, init) => {
+      const request = JSON.parse(init.body);
+      return response(
+        limited
+          ? { jsonrpc: '2.0', id: null, error: { code: -32005, message } }
+          : request.map(reply)
+      );
+    });
+    const client = new JsonRpcReadClient(URL, { fetch: fetcher });
+    const inputs = Array.from({ length: 4 }, () => input());
+    expect(
+      (await client.readMany(inputs)).every(
+        (item) => item.status === 'rejected'
+      )
+    ).toBe(true);
+    expect(
+      fetcher.mock.calls.map(([, init]) => JSON.parse(init.body).length)
+    ).toEqual([4, 4]);
+    limited = false;
+    expect(
+      (await client.readMany(inputs)).every(
+        (item) => item.status === 'fulfilled'
+      )
+    ).toBe(true);
+    expect(JSON.parse(fetcher.mock.calls[2][1].body)).toHaveLength(4);
+  }
+);
