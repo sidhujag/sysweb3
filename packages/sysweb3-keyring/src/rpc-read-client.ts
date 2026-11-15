@@ -25,6 +25,7 @@ export type RpcReadClientOptions = {
 };
 type Waiter = { run(): void; cancel(): void };
 type ChainRequest = {
+  maxResponseBytes: number;
   promise: Promise<string>;
   controller: AbortController;
   subscribers: number;
@@ -453,8 +454,16 @@ export class JsonRpcReadClient {
   getChainId(
     options: RpcReadOptions & { fresh?: boolean } = {}
   ): Promise<string> {
-    if (options.timeoutMs !== undefined)
-      boundedInteger(options.timeoutMs, 30000, 'timeout');
+    const timeout = boundedInteger(
+      options.timeoutMs ?? this.options.timeoutMs,
+      30000,
+      'timeout'
+    );
+    const maxResponseBytes = boundedInteger(
+      options.maxResponseBytes ?? this.options.maxResponseBytes,
+      8 * 1024 * 1024,
+      'response size'
+    );
     if (options.signal?.aborted) return Promise.reject(aborted(options.signal));
     if (this.lifetime.signal.aborted)
       return Promise.reject(aborted(this.lifetime.signal));
@@ -468,12 +477,19 @@ export class JsonRpcReadClient {
       this.chainRequest = undefined;
       this.chainCache = undefined;
     }
-    let request = options.fresh ? undefined : this.chainRequest;
+    let request =
+      !options.fresh && this.chainRequest?.maxResponseBytes === maxResponseBytes
+        ? this.chainRequest
+        : undefined;
     if (!request) {
       const controller = new AbortController();
       const generation = ++this.chainGeneration;
+      // Each subscriber owns its deadline. A short first subscriber must not
+      // impose that deadline on later subscribers sharing the wire response.
       const promise = this.read('eth_chainId', [], {
         signal: controller.signal,
+        timeoutMs: 30000,
+        maxResponseBytes,
       }).then((value) => {
         if (
           typeof value !== 'string' ||
@@ -484,7 +500,13 @@ export class JsonRpcReadClient {
           this.chainCache = { value, expires: Date.now() + 30000 };
         return value;
       });
-      request = { promise, controller, subscribers: 0, settled: false };
+      request = {
+        promise,
+        controller,
+        maxResponseBytes,
+        subscribers: 0,
+        settled: false,
+      };
       const captured = request;
       void promise
         .finally(() => {
@@ -498,7 +520,6 @@ export class JsonRpcReadClient {
     subscribed.subscribers++;
     return new Promise((resolve, reject) => {
       let finished = false;
-      let timer: ReturnType<typeof setTimeout> | undefined;
       const finish = (error?: unknown, value?: string) => {
         if (finished) return;
         finished = true;
@@ -514,18 +535,15 @@ export class JsonRpcReadClient {
       };
       const cancel = () => finish(aborted(options.signal!));
       options.signal?.addEventListener('abort', cancel, { once: true });
-      if (options.timeoutMs !== undefined) {
-        const timeout = boundedInteger(options.timeoutMs, 30000, 'timeout');
-        timer = setTimeout(
-          () =>
-            finish(
-              Object.assign(new Error('RPC read deadline exceeded'), {
-                name: 'AbortError',
-              })
-            ),
-          timeout
-        );
-      }
+      const timer = setTimeout(
+        () =>
+          finish(
+            Object.assign(new Error('RPC read deadline exceeded'), {
+              name: 'AbortError',
+            })
+          ),
+        timeout
+      );
       subscribed.promise.then(
         (value) => finish(undefined, value),
         (error) => finish(error)

@@ -497,3 +497,64 @@ it('refuses further reads after endpoint client destruction', async () => {
   await expect(client.read('eth_chainId', [])).rejects.toThrow();
   expect(fetcher).toHaveBeenCalledTimes(1);
 });
+
+it.each([false, true])(
+  'honors a chain subscriber deadline longer than the client default, fresh=%s',
+  async (fresh) => {
+    jest.useFakeTimers();
+    try {
+      const held = deferred<Response>();
+      const fetcher = jest.fn().mockReturnValue(held.promise);
+      const client = new JsonRpcReadClient(URL, {
+        fetch: fetcher,
+        timeoutMs: 10,
+      });
+      const result = client.getChainId({ fresh, timeoutMs: 1000 });
+      await jest.advanceTimersByTimeAsync(50);
+      expect(fetcher.mock.calls[0][1].signal.aborted).toBe(false);
+      held.resolve(
+        response(reply(JSON.parse(fetcher.mock.calls[0][1].body), '0x1'))
+      );
+      await expect(result).resolves.toBe('0x1');
+    } finally {
+      jest.useRealTimers();
+    }
+  }
+);
+
+it.each([false, true])(
+  'enforces the per-call chain response cap, fresh=%s',
+  async (fresh) => {
+    const client = new JsonRpcReadClient(URL, {
+      fetch: async (_url, init) =>
+        response({
+          ...reply(JSON.parse(String(init.body)), '0x1'),
+          padding: 'x'.repeat(1024),
+        }),
+    });
+    await expect(
+      client.getChainId({ fresh, maxResponseBytes: 100 })
+    ).rejects.toThrow('size limit');
+  }
+);
+
+it('separates concurrent chain reads with different response caps', async () => {
+  const held = deferred<Response>();
+  const fetcher = jest.fn().mockImplementation(async (_url, init) => {
+    await held.promise;
+    return response({
+      ...reply(JSON.parse(init.body), '0x1'),
+      padding: 'x'.repeat(1024),
+    });
+  });
+  const client = new JsonRpcReadClient(URL, { fetch: fetcher });
+  const small = expect(
+    client.getChainId({ maxResponseBytes: 100 })
+  ).rejects.toThrow('size limit');
+  const large = client.getChainId({ maxResponseBytes: 2048 });
+  await tick();
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  held.resolve(response(null));
+  await small;
+  await expect(large).resolves.toBe('0x1');
+});
