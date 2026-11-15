@@ -2148,6 +2148,83 @@ describe('JSON-RPC response correlation', () => {
       }
     });
 
+    it('stops fee-plugin retries when its read phase ends while the provider stays alive', async () => {
+      jest.useFakeTimers();
+      const { provider, block } = setup();
+      const phase = new AbortController();
+      const reader = {
+        signal: phase.signal,
+        getBlock: jest.fn().mockResolvedValue({ baseFeePerGas: 7n }),
+        send: jest.fn().mockResolvedValue('0x2'),
+      };
+      fetchMock.mockResolvedValue(
+        new Response('', { status: 429, headers: { 'retry-after': '25' } })
+      );
+      try {
+        const reading = provider.getFeeData(reader);
+        const rejected = expect(reading).rejects.toMatchObject({
+          name: 'AbortError',
+        });
+        await jest.advanceTimersByTimeAsync(0);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        phase.abort(new DOMException('Read phase expired', 'AbortError'));
+        await jest.advanceTimersByTimeAsync(0);
+        await rejected;
+        await jest.advanceTimersByTimeAsync(100);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(true);
+        expect(provider.signal.aborted).toBe(false);
+        fetchMock.mockResolvedValue(
+          new Response(payload, {
+            headers: { 'content-type': 'application/json' },
+          })
+        );
+        await expect(provider.getFeeData()).resolves.toMatchObject({
+          maxFeePerGas: BigNumber.from('3000000000'),
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+      } finally {
+        phase.abort();
+        provider.destroy();
+        await jest.runOnlyPendingTimersAsync();
+        block.mockRestore();
+        jest.useRealTimers();
+      }
+    });
+
+    it('does not start fee reads for an expired phase or after delayed network discovery', async () => {
+      const { provider, block } = setup();
+      const phase = new AbortController();
+      let release!: (value: unknown) => void;
+      const networkReady = new Promise((resolve) => {
+        release = resolve;
+      });
+      jest.spyOn(provider, 'getNetwork').mockReturnValue(networkReady);
+      const reader = {
+        signal: phase.signal,
+        getBlock: jest.fn(),
+        send: jest.fn(),
+      };
+      try {
+        const reading = provider.getFeeData(reader);
+        const rejected = expect(reading).rejects.toMatchObject({
+          name: 'AbortError',
+        });
+        phase.abort(new DOMException('Read phase expired', 'AbortError'));
+        release(Network.from(137));
+        await rejected;
+        await expect(provider.getFeeData(reader)).rejects.toMatchObject({
+          name: 'AbortError',
+        });
+        expect(reader.send).not.toHaveBeenCalled();
+        expect(reader.getBlock).not.toHaveBeenCalled();
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(provider.signal.aborted).toBe(false);
+      } finally {
+        block.mockRestore();
+      }
+    });
+
     it.each(['declared', 'stream', 'json', 'utf8', 'content-type', 'http'])(
       'rejects a %s response without retry or fee fallback',
       async (kind) => {

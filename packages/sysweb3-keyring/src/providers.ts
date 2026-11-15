@@ -28,6 +28,7 @@ import type { JsonRpcPayload } from 'ethers/providers';
 export { RpcResponseIntegrityError } from './rpc-transport';
 export type RpcProviderOptions = Omit<RpcReadClientOptions, 'signal'>;
 export type RpcFeeReadTransport = Readonly<{
+  signal?: AbortSignal;
   getBlock(tag: 'latest'): Promise<{ baseFeePerGas?: unknown } | null>;
   send(
     method: 'eth_gasPrice' | 'eth_maxPriorityFeePerGas',
@@ -255,10 +256,13 @@ class BaseProvider extends JsonRpcProvider {
     return response;
   }
 
-  private assertActive(): void {
-    if (this.lifetime.signal.aborted)
-      throw this.lifetime.signal.reason instanceof Error
-        ? this.lifetime.signal.reason
+  private assertActive(reader?: RpcFeeReadTransport): void {
+    const ended = [this.lifetime.signal, reader?.signal].find(
+      (signal) => signal?.aborted
+    );
+    if (ended)
+      throw ended.reason instanceof Error
+        ? ended.reason
         : Object.assign(new Error('RPC provider aborted'), {
             name: 'AbortError',
           });
@@ -455,7 +459,7 @@ class BaseProvider extends JsonRpcProvider {
   }
 
   async getFeeData(reader?: RpcFeeReadTransport): Promise<any> {
-    this.assertActive();
+    this.assertActive(reader);
     // A host-owned observation must read through its own phase and lifetime.
     if (reader) return this.fetchFeeDataWithinLifetime(reader);
     const now = Date.now();
@@ -484,28 +488,36 @@ class BaseProvider extends JsonRpcProvider {
     reader?: RpcFeeReadTransport
   ): Promise<any> {
     return new Promise((resolve, reject) => {
-      const cancel = () => reject(this.lifetime.signal.reason);
-      this.lifetime.signal.addEventListener('abort', cancel, { once: true });
+      const sources = [this.lifetime.signal, reader?.signal].filter(
+        (signal): signal is AbortSignal => !!signal
+      );
+      const cancel = () =>
+        reject(sources.find((signal) => signal.aborted)?.reason);
+      sources.forEach((signal) =>
+        signal.addEventListener('abort', cancel, { once: true })
+      );
       void this.fetchFeeData(reader)
         .then((value) => {
-          this.assertActive();
+          this.assertActive(reader);
           return value;
         })
         .then(resolve, reject)
         .finally(() =>
-          this.lifetime.signal.removeEventListener('abort', cancel)
+          sources.forEach((signal) =>
+            signal.removeEventListener('abort', cancel)
+          )
         );
     });
   }
 
   private async readFeeData(reader?: RpcFeeReadTransport): Promise<FeeData> {
     const network = await this.getNetwork();
-    this.assertActive();
+    this.assertActive(reader);
     // Ethers tolerates unavailable optional fee methods; keep that behavior,
     // but never convert a response-integrity failure into an invented quote.
     const optionalFee = async (method: 'getGasPrice' | 'getPriorityFee') => {
       try {
-        this.assertActive();
+        this.assertActive(reader);
         return getBigInt(
           reader
             ? await reader.send(
@@ -521,20 +533,21 @@ class BaseProvider extends JsonRpcProvider {
         if (
           error?.code === 'SYSWEB3_RPC_RESPONSE_INVALID' ||
           error?.name === 'AbortError' ||
-          this.signal.aborted
+          this.signal.aborted ||
+          reader?.signal?.aborted
         )
           throw error;
         return null;
       }
     };
     const getFeeData = async () => {
-      this.assertActive();
+      this.assertActive(reader);
       const [block, gasPrice, priorityFee] = await Promise.all([
         reader ? reader.getBlock('latest') : super.getBlock('latest'),
         optionalFee('getGasPrice'),
         optionalFee('getPriorityFee'),
       ]);
-      this.assertActive();
+      this.assertActive(reader);
       let maxFeePerGas: bigint | null = null;
       let maxPriorityFeePerGas: bigint | null = null;
       if (block?.baseFeePerGas != null && priorityFee != null) {
@@ -561,7 +574,8 @@ class BaseProvider extends JsonRpcProvider {
           if (
             error?.code === 'SYSWEB3_RPC_RESPONSE_INVALID' ||
             error?.name === 'AbortError' ||
-            this.signal.aborted
+            this.signal.aborted ||
+            reader?.signal?.aborted
           ) {
             readerFailure = error;
           }
@@ -572,15 +586,21 @@ class BaseProvider extends JsonRpcProvider {
       request.timeout = this.requestTimeoutMs;
       const controller = new AbortController();
       const signal = controller.signal;
+      const sources = [this.lifetime.signal, reader?.signal].filter(
+        (source): source is AbortSignal => !!source
+      );
       const cancel = () => {
-        controller.abort(this.lifetime.signal.reason);
+        controller.abort(sources.find((source) => source.aborted)?.reason);
         try {
           request.cancel();
         } catch {
           // The plugin may be cancelled before it starts the request.
         }
       };
-      this.lifetime.signal.addEventListener('abort', cancel, { once: true });
+      sources.forEach((source) =>
+        source.addEventListener('abort', cancel, { once: true })
+      );
+      if (sources.some((source) => source.aborted)) cancel();
       const timer = setTimeout(() => {
         controller.abort(
           Object.assign(new Error('Fee request deadline exceeded'), {
@@ -606,7 +626,7 @@ class BaseProvider extends JsonRpcProvider {
         let current = redirected ?? initial;
         try {
           for (;;) {
-            this.assertActive();
+            this.assertActive(reader);
             if (signal.aborted) throw signal.reason;
             cancellation?.checkSignal();
             const protocol = new URL(current.url).protocol;
@@ -685,7 +705,8 @@ class BaseProvider extends JsonRpcProvider {
         }
       };
       try {
-        this.assertActive();
+        this.assertActive(reader);
+        if (signal.aborted) throw signal.reason;
         const result = await new Promise<any>((resolve, reject) => {
           const aborted = () => reject(signal.reason);
           signal.addEventListener('abort', aborted, { once: true });
@@ -694,7 +715,7 @@ class BaseProvider extends JsonRpcProvider {
             .then(resolve, reject)
             .finally(() => signal.removeEventListener('abort', aborted));
         });
-        this.assertActive();
+        this.assertActive(reader);
         if (signal.aborted) throw signal.reason;
         if (readerFailure) throw readerFailure;
         if (requestFailure) throw requestFailure;
@@ -707,7 +728,9 @@ class BaseProvider extends JsonRpcProvider {
         throw readerFailure ?? requestFailure ?? error;
       } finally {
         clearTimeout(timer);
-        this.lifetime.signal.removeEventListener('abort', cancel);
+        sources.forEach((source) =>
+          source.removeEventListener('abort', cancel)
+        );
         cancel();
       }
     }
@@ -716,7 +739,7 @@ class BaseProvider extends JsonRpcProvider {
 
   private async fetchFeeData(reader?: RpcFeeReadTransport): Promise<any> {
     const feeData = await this.readFeeData(reader);
-    this.assertActive();
+    this.assertActive(reader);
     const maxFeePerGas =
       feeData.maxFeePerGas == null
         ? null
@@ -730,6 +753,7 @@ class BaseProvider extends JsonRpcProvider {
       const block = reader
         ? await reader.getBlock('latest')
         : await super.getBlock('latest');
+      this.assertActive(reader);
       if (!block) throw new Error('Block not found');
       if (block?.baseFeePerGas != null) {
         throw new Error('EIP-1559 fee data unavailable');
