@@ -1249,6 +1249,70 @@ describe('JSON-RPC response correlation', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ['invalid byte', [0xff]],
+    ['truncated UTF-8 tail', [0xe2, 0x82]],
+  ])(
+    'rejects %s as response corruption before legacy gas fallback',
+    async (_label, tail) => {
+      const cancellations: jest.SpyInstance[] = [];
+      fetchMock.mockImplementation(async (_url, init) => {
+        const request = JSON.parse(init.body);
+        const prefix = new TextEncoder().encode(
+          `{"jsonrpc":"2.0","id":${request.id},"result":"`
+        );
+        const stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(prefix);
+            controller.enqueue(Uint8Array.from(tail as number[]));
+            controller.close();
+          },
+        });
+        const getReader = stream.getReader.bind(stream);
+        jest.spyOn(stream, 'getReader').mockImplementation(() => {
+          const reader = getReader();
+          cancellations.push(jest.spyOn(reader, 'cancel'));
+          return reader;
+        });
+        return new Response(stream, {
+          headers: { 'content-type': 'application/json' },
+        });
+      });
+      await expect(
+        sdkFor(providerFor()).getTxGasLimit({ data: '0x6000' })
+      ).rejects.toMatchObject({ code: SENTINEL });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(requestsFrom(fetchMock)[0].method).toBe('eth_estimateGas');
+      expect(cancellations).toHaveLength(1);
+      expect(cancellations[0]).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it('accepts valid multibyte UTF-8 split across response chunks', async () => {
+    fetchMock.mockImplementation(async (_url, init) => {
+      const request = JSON.parse(init.body);
+      const encoded = new TextEncoder().encode(
+        JSON.stringify(resultFor(request, '✓'))
+      );
+      const offset = encoded.indexOf(0xe2);
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoded.slice(0, offset + 1));
+            controller.enqueue(encoded.slice(offset + 1, offset + 2));
+            controller.enqueue(encoded.slice(offset + 2));
+            controller.close();
+          },
+        }),
+        { headers: { 'content-type': 'application/json' } }
+      );
+    });
+    await expect(providerFor().send('web3_clientVersion', [])).resolves.toBe(
+      '✓'
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('preserves an aborted response-body read', async () => {
     fetchMock.mockResolvedValue({
       ok: true,
