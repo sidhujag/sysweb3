@@ -38,6 +38,14 @@ export class RpcResponseIntegrityError extends Error {
   }
 }
 
+// Only a local byte limit can be recovered by dividing a read-only batch.
+export class RpcResponseSizeError extends RpcResponseIntegrityError {
+  constructor() {
+    super('RPC response exceeded size limit', false);
+    this.name = 'RpcResponseSizeError';
+  }
+}
+
 export async function cancelRpcResponse(response: Response): Promise<void> {
   try {
     await response.body?.cancel();
@@ -52,15 +60,13 @@ async function responseText(
   signal: AbortSignal
 ): Promise<string> {
   const declared = response.headers.get('content-length');
-  if (
-    declared !== null &&
-    (!/^\d+$/.test(declared) || Number(declared) > maximum)
-  ) {
+  if (declared !== null && !/^\d+$/.test(declared)) {
     await cancelRpcResponse(response);
-    throw new RpcResponseIntegrityError(
-      'RPC response exceeded size limit',
-      false
-    );
+    throw new RpcResponseIntegrityError('Invalid RPC content length', false);
+  }
+  if (declared !== null && Number(declared) > maximum) {
+    await cancelRpcResponse(response);
+    throw new RpcResponseSizeError();
   }
   if (!response.body?.getReader) {
     try {
@@ -71,10 +77,7 @@ async function responseText(
           new DOMException('RPC response aborted', 'AbortError')
         );
       if (new TextEncoder().encode(text).byteLength > maximum)
-        throw new RpcResponseIntegrityError(
-          'RPC response exceeded size limit',
-          false
-        );
+        throw new RpcResponseSizeError();
       return text;
     } finally {
       await cancelRpcResponse(response);
@@ -119,11 +122,7 @@ async function responseText(
         continue;
       }
       size += part.value.byteLength;
-      if (size > maximum)
-        throw new RpcResponseIntegrityError(
-          'RPC response exceeded size limit',
-          false
-        );
+      if (size > maximum) throw new RpcResponseSizeError();
       text += decode(part.value, true);
     }
     return text + decode();

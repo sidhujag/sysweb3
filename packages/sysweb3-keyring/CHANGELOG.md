@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.20
+
+- Split read-only batches when their combined response exceeds the local byte limit, retaining per-response limits, cancellation, request ordering and endpoint capability state.
+- Keep ordinary and host-owned fee observations within the provider lifetime, including network discovery, fee plugins and cache publication.
+
 ## 2.1.19
 
 - Reject malformed UTF-8 RPC responses as nonretryable integrity failures, including truncated multibyte sequences, instead of allowing legacy gas fallback.
