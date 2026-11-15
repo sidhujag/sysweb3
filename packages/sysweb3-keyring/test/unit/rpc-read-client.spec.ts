@@ -859,3 +859,63 @@ it.each([
     expect(JSON.parse(fetcher.mock.calls[2][1].body)).toHaveLength(4);
   }
 );
+
+it.each(
+  [200, 400, 413, 429, 500, 503].flatMap((status) =>
+    ['explicit', 'generic', 'rate'].map((kind) => [status, kind] as const)
+  )
+)(
+  'handles HTTP %s %s batch responses without transient capability poisoning',
+  async (status, kind) => {
+    let limited = true;
+    const fetcher = jest.fn(async (_url, init) => {
+      const request = JSON.parse(init.body);
+      const rows = Array.isArray(request) ? request : [request];
+      if (limited && Array.isArray(request) && request.length > 2) {
+        return response(
+          {
+            jsonrpc: '2.0',
+            id: null,
+            error: {
+              code: kind === 'rate' ? -32005 : -32600,
+              message:
+                kind === 'explicit'
+                  ? 'Batch requests are not supported'
+                  : kind === 'generic'
+                  ? 'Invalid Request'
+                  : 'Batch rate limit exceeded',
+            },
+          },
+          status
+        );
+      }
+      return response(
+        Array.isArray(request) ? rows.map(reply) : reply(request)
+      );
+    });
+    const client = new JsonRpcReadClient(URL, { fetch: fetcher });
+    const inputs = Array.from({ length: 4 }, () => input());
+    const recovers =
+      status === 413 || ([200, 400].includes(status) && kind !== 'rate');
+    const result = await client.readMany(inputs);
+    expect(
+      result.every(
+        (item) => item.status === (recovers ? 'fulfilled' : 'rejected')
+      )
+    ).toBe(true);
+    const widths = () =>
+      fetcher.mock.calls.map(([, init]) => {
+        const request = JSON.parse(init.body);
+        return Array.isArray(request) ? request.length : 1;
+      });
+    const attempts = widths();
+    if (status === 413) expect(attempts).toEqual([4, 2, 2]);
+    else if (recovers) expect(attempts).toEqual([4, 1, 1, 1, 1]);
+    else expect(attempts).toEqual(status === 200 ? [4, 4] : [4]);
+    limited = false;
+    await client.readMany(inputs);
+    expect(widths().slice(attempts.length)).toEqual(
+      status === 413 ? [2, 2] : recovers ? [1, 1, 1, 1] : [4]
+    );
+  }
+);

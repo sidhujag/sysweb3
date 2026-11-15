@@ -381,8 +381,10 @@ export class JsonRpcReadClient {
             try {
               check(signal);
               if (response.status === 413) throw new RpcPayloadTooLarge();
+              // Inspect HTTP 400 for a protocol-level batch refusal.
               // Transient HTTP failures never establish a batch capability.
-              if (!response.ok || response.status !== 200)
+              const batchBadRequest = batch && response.status === 400;
+              if ((!response.ok || response.status !== 200) && !batchBadRequest)
                 throw Object.assign(new Error(`RPC HTTP ${response.status}`), {
                   status: response.status,
                 });
@@ -410,6 +412,8 @@ export class JsonRpcReadClient {
               }
               const batchError = batch ? batchFailure(json) : undefined;
               if (batchError) throw batchError;
+              if (batchBadRequest)
+                throw Object.assign(new Error('RPC HTTP 400'), { status: 400 });
               return json;
             } finally {
               if (!readingBody) await cancelBody(response);
