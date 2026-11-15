@@ -33,6 +33,7 @@ type ChainRequest = {
 };
 
 class RpcBatchRefused extends Error {}
+class RpcBatchAmbiguous extends Error {}
 class RpcPayloadTooLarge extends Error {}
 class RpcBatchLimit extends Error {}
 const aborted = (signal: AbortSignal): Error => {
@@ -77,12 +78,19 @@ const batchFailure = (value: unknown): Error | undefined => {
     typeof error.message !== 'string'
   )
     return undefined;
+  if (/rate[ -]?limit|too many requests|quota|throttl/i.test(error.message))
+    return undefined;
+  if (
+    error.code === -32600 &&
+    /^invalid request[.!]?$/i.test(error.message.trim())
+  )
+    return new RpcBatchAmbiguous();
   if (
     (error.code === -32600 || error.code === -32005) &&
     /batch|array/i.test(error.message)
   ) {
     if (
-      /too (?:large|many)|more than|limit|maximum|max(?:imum)? size/i.test(
+      /too (?:large|many)|more than\s+\d+|(?:maximum|max)\s+(?:batch|request|item|size)|(?:batch|request|item)[ -]?(?:size|count)/i.test(
         error.message
       )
     )
@@ -97,6 +105,14 @@ const batchFailure = (value: unknown): Error | undefined => {
   return undefined;
 };
 
+async function cancelBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // Cancellation may reject after the underlying stream has already closed.
+  }
+}
+
 async function responseText(
   response: Response,
   maximum: number,
@@ -107,23 +123,33 @@ async function responseText(
     declared !== null &&
     (!/^\d+$/.test(declared) || Number(declared) > maximum)
   ) {
-    void response.body?.cancel().catch(() => undefined);
+    await cancelBody(response);
     throw new RpcResponseIntegrityError(
       'RPC response exceeded size limit',
       false
     );
   }
   if (!response.body?.getReader) {
-    const text = await response.text();
-    check(signal);
-    if (byteLength(text) > maximum)
-      throw new RpcResponseIntegrityError(
-        'RPC response exceeded size limit',
-        false
-      );
-    return text;
+    try {
+      const text = await response.text();
+      check(signal);
+      if (byteLength(text) > maximum)
+        throw new RpcResponseIntegrityError(
+          'RPC response exceeded size limit',
+          false
+        );
+      return text;
+    } finally {
+      await cancelBody(response);
+    }
   }
-  const reader = response.body.getReader();
+  let reader: ReadableStreamDefaultReader<Uint8Array>;
+  try {
+    reader = response.body.getReader();
+  } catch (error) {
+    await cancelBody(response);
+    throw error;
+  }
   const decoder = new TextDecoder('utf-8', { fatal: true });
   let size = 0;
   let text = '';
@@ -146,7 +172,13 @@ async function responseText(
     }
     return text + decoder.decode();
   } finally {
-    void reader.cancel().catch(() => undefined);
+    try {
+      await reader.cancel();
+    } catch {
+      // Keep the physical slot until cancellation settles, including rejection.
+    } finally {
+      reader.releaseLock();
+    }
   }
 }
 
@@ -310,7 +342,11 @@ export class JsonRpcReadClient {
     );
     const signal = controller.signal;
     let attempts = 0;
-    const request = (rows: readonly RpcReadRequest[], batch: boolean) =>
+    const request = (
+      rows: readonly RpcReadRequest[],
+      batch: boolean,
+      recoverResponse = this.options.recoverResponse
+    ) =>
       requestJsonRpc(
         this.url,
         rows,
@@ -331,51 +367,54 @@ export class JsonRpcReadClient {
               body,
               signal,
             });
-            check(signal);
-            if (response.status === 413) {
-              void response.body?.cancel().catch(() => undefined);
-              throw new RpcPayloadTooLarge();
-            }
-            const contentType = response.headers.get('content-type');
-            if (
-              contentType &&
-              !/^(application\/json|application\/[a-z0-9!#$&^_.+-]+\+json)(?:\s*;|$)/i.test(
-                contentType
-              )
-            ) {
-              void response.body?.cancel().catch(() => undefined);
-              throw new RpcResponseIntegrityError(
-                'Invalid JSON-RPC content type',
-                false
-              );
-            }
-            const text = await responseText(response, maximum, signal);
-            let json: unknown;
+            let readingBody = false;
             try {
-              json = JSON.parse(text);
-            } catch {
-              throw new RpcResponseIntegrityError(
-                'Invalid JSON-RPC JSON response',
-                false
-              );
+              check(signal);
+              if (response.status === 413) throw new RpcPayloadTooLarge();
+              // Transient HTTP failures never establish a batch capability.
+              if (!response.ok || response.status !== 200)
+                throw Object.assign(new Error(`RPC HTTP ${response.status}`), {
+                  status: response.status,
+                });
+              const contentType = response.headers.get('content-type');
+              if (
+                contentType &&
+                !/^(application\/json|application\/[a-z0-9!#$&^_.+-]+\+json)(?:\s*;|$)/i.test(
+                  contentType
+                )
+              )
+                throw new RpcResponseIntegrityError(
+                  'Invalid JSON-RPC content type',
+                  false
+                );
+              readingBody = true;
+              const text = await responseText(response, maximum, signal);
+              let json: unknown;
+              try {
+                json = JSON.parse(text);
+              } catch {
+                throw new RpcResponseIntegrityError(
+                  'Invalid JSON-RPC JSON response',
+                  false
+                );
+              }
+              const batchError = batch ? batchFailure(json) : undefined;
+              if (batchError) throw batchError;
+              return json;
+            } finally {
+              if (!readingBody) await cancelBody(response);
             }
-            const batchError = batch ? batchFailure(json) : undefined;
-            if (batchError) throw batchError;
-            if (!response.ok || response.status !== 200)
-              throw Object.assign(new Error(`RPC HTTP ${response.status}`), {
-                status: response.status,
-              });
-            return json;
           });
         },
-        this.options.recoverResponse
+        recoverResponse
       );
     const execute = async (
-      rows: readonly RpcReadRequest[]
+      rows: readonly RpcReadRequest[],
+      recoverResponse = this.options.recoverResponse
     ): Promise<PromiseSettledResult<unknown>[]> => {
       check(signal);
       try {
-        const responses = await request(rows, rows.length > 1);
+        const responses = await request(rows, rows.length > 1, recoverResponse);
         return responses.map((response) => {
           if (response.error)
             return {
@@ -386,6 +425,22 @@ export class JsonRpcReadClient {
         });
       } catch (error) {
         check(signal);
+        if (rows.length > 1 && error instanceof RpcBatchAmbiguous) {
+          // A generic envelope error alone is insufficient evidence. Probe one
+          // proper single request and retain its result without sending it again.
+          const [probe] = await execute(rows.slice(0, 1), false);
+          if (
+            probe.status === 'fulfilled' ||
+            probe.reason instanceof RpcReadError
+          ) {
+            this.batchLimit = 1;
+            const results = [probe];
+            for (const row of rows.slice(1))
+              results.push(...(await execute([row])));
+            return results;
+          }
+          return rows.map(() => ({ status: 'rejected', reason: error }));
+        }
         if (
           rows.length > 1 &&
           (error instanceof RpcBatchRefused ||

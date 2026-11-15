@@ -558,3 +558,238 @@ it('separates concurrent chain reads with different response caps', async () => 
   await small;
   await expect(large).resolves.toBe('0x1');
 });
+
+it.each([429, 503])(
+  'does not split or change capabilities for HTTP %s with batch rate-limit JSON',
+  async (status) => {
+    let limited = true;
+    const fetcher = jest.fn(async (_url, init) => {
+      const request = JSON.parse(init.body);
+      return limited
+        ? response(
+            {
+              jsonrpc: '2.0',
+              id: null,
+              error: { code: -32005, message: 'Batch rate limit exceeded' },
+            },
+            status
+          )
+        : response(request.map(reply));
+    });
+    const client = new JsonRpcReadClient(URL, { fetch: fetcher });
+    const inputs = Array.from({ length: 4 }, () => input());
+    expect(
+      (await client.readMany(inputs)).every(
+        (item) => item.status === 'rejected'
+      )
+    ).toBe(true);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    limited = false;
+    expect(
+      (await client.readMany(inputs)).every(
+        (item) => item.status === 'fulfilled'
+      )
+    ).toBe(true);
+    expect(
+      fetcher.mock.calls.map(([, init]) => JSON.parse(init.body).length)
+    ).toEqual([4, 4]);
+  }
+);
+
+it('does not classify a successful HTTP rate-limit envelope as a batch size limit', async () => {
+  const fetcher = jest.fn(async () =>
+    response({
+      jsonrpc: '2.0',
+      id: null,
+      error: { code: -32005, message: 'Batch rate limit exceeded' },
+    })
+  );
+  const client = new JsonRpcReadClient(URL, { fetch: fetcher });
+  expect(
+    (await client.readMany([input(), input()])).every(
+      (item) => item.status === 'rejected'
+    )
+  ).toBe(true);
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(
+    fetcher.mock.calls.every(([, init]) => Array.isArray(JSON.parse(init.body)))
+  ).toBe(true);
+});
+
+it('confirms generic Invalid Request batch refusal with one successful scalar probe', async () => {
+  const fetcher = jest.fn(async (_url, init) => {
+    const request = JSON.parse(init.body);
+    return response(
+      Array.isArray(request)
+        ? {
+            jsonrpc: '2.0',
+            id: null,
+            error: { code: -32600, message: 'Invalid Request' },
+          }
+        : reply(request, request.params[0])
+    );
+  });
+  const client = new JsonRpcReadClient(URL, { fetch: fetcher });
+  const inputs = [input('eth_call', 'first'), input('eth_call', 'second')];
+  expect(await client.readMany(inputs)).toEqual([
+    { status: 'fulfilled', value: 'first' },
+    { status: 'fulfilled', value: 'second' },
+  ]);
+  await client.readMany(inputs);
+  const payloads = fetcher.mock.calls.map(([, init]) => JSON.parse(init.body));
+  expect(payloads.filter(Array.isArray)).toHaveLength(1);
+  expect(payloads.slice(1).every((value) => !Array.isArray(value))).toBe(true);
+  expect(payloads.slice(1).map((value) => value.params[0])).toEqual([
+    'first',
+    'second',
+    'first',
+    'second',
+  ]);
+});
+
+it('keeps batch capability when the generic-refusal scalar probe fails', async () => {
+  let unavailable = true;
+  const fetcher = jest.fn(async (_url, init) => {
+    const request = JSON.parse(init.body);
+    if (unavailable)
+      return response({
+        jsonrpc: '2.0',
+        id: null,
+        error: { code: -32600, message: 'Invalid Request' },
+      });
+    return response(request.map(reply));
+  });
+  const client = new JsonRpcReadClient(URL, {
+    fetch: fetcher,
+    recoverResponse: false,
+  });
+  expect(
+    (await client.readMany([input(), input()])).every(
+      (item) => item.status === 'rejected'
+    )
+  ).toBe(true);
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  unavailable = false;
+  expect(
+    (await client.readMany([input(), input()])).every(
+      (item) => item.status === 'fulfilled'
+    )
+  ).toBe(true);
+  expect(Array.isArray(JSON.parse(fetcher.mock.calls[2][1].body))).toBe(true);
+});
+
+it.each([
+  'payload',
+  'content-type',
+  'content-length',
+  'stream-size',
+  'aborted-headers',
+  'reader-unavailable',
+])('holds physical capacity through %s body cleanup', async (failure) => {
+  const cleanup = deferred<void>();
+  const cancel = jest.fn(() => cleanup.promise);
+  const abort = new AbortController();
+  const fetcher = jest.fn(async (_url, init) => {
+    const request = JSON.parse(init.body);
+    if (fetcher.mock.calls.length > 1)
+      return response(
+        Array.isArray(request) ? request.map(reply) : reply(request)
+      );
+    const headers = new Headers();
+    if (failure === 'content-type') headers.set('content-type', 'text/html');
+    if (failure === 'content-length') headers.set('content-length', '1000000');
+    if (failure === 'aborted-headers') abort.abort();
+    return {
+      ok: failure !== 'payload',
+      status: failure === 'payload' ? 413 : 200,
+      headers,
+      body: {
+        cancel,
+        getReader: () => {
+          if (failure === 'reader-unavailable')
+            throw new Error('Reader unavailable');
+          return {
+            read: async () => ({ done: false, value: new Uint8Array(1025) }),
+            cancel,
+            releaseLock: jest.fn(),
+          };
+        },
+      },
+    } as unknown as Response;
+  });
+  const client = new JsonRpcReadClient(URL, {
+    fetch: fetcher,
+    maxConcurrency: 1,
+    maxResponseBytes: 1024,
+  });
+  const first = client
+    .readMany([input(), input(), input()], { signal: abort.signal })
+    .catch((error) => error);
+  await tick();
+  expect(cancel).toHaveBeenCalledTimes(1);
+  const second = client.read('eth_chainId', []);
+  await tick();
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  cleanup.resolve();
+  await first;
+  await expect(second).resolves.toBe('eth_chainId');
+});
+
+it('settles caller cancellation before held response cleanup releases its slot', async () => {
+  const cleanup = deferred<void>();
+  const cancel = jest.fn(() => cleanup.promise);
+  const controller = new AbortController();
+  const fetcher = jest.fn(async (_url, init) => {
+    if (fetcher.mock.calls.length > 1)
+      return response(reply(JSON.parse(init.body)));
+    return {
+      ok: false,
+      status: 429,
+      headers: new Headers(),
+      body: { cancel },
+    } as unknown as Response;
+  });
+  const client = new JsonRpcReadClient(URL, {
+    fetch: fetcher,
+    maxConcurrency: 1,
+  });
+  const first = client.read('eth_call', [], { signal: controller.signal });
+  await tick();
+  controller.abort();
+  await expect(first).rejects.toMatchObject({ name: 'AbortError' });
+  const second = client.read('eth_getCode', []);
+  await tick();
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  cleanup.resolve();
+  await expect(second).resolves.toBe('eth_getCode');
+});
+
+it('uses a verified scalar RPC error to confirm generic batch refusal', async () => {
+  const fetcher = jest.fn(async (_url, init) => {
+    const request = JSON.parse(init.body);
+    return response(
+      Array.isArray(request)
+        ? {
+            jsonrpc: '2.0',
+            id: null,
+            error: { code: -32600, message: 'Invalid Request' },
+          }
+        : request.method === 'eth_call'
+        ? {
+            jsonrpc: '2.0',
+            id: request.id,
+            error: { code: 3, message: 'reverted', data: '0x1234' },
+          }
+        : reply(request)
+    );
+  });
+  const client = new JsonRpcReadClient(URL, { fetch: fetcher });
+  const [first, second] = await client.readMany([
+    input('eth_call'),
+    input('eth_getCode'),
+  ]);
+  expect(first.status).toBe('rejected');
+  expect((first as PromiseRejectedResult).reason).toBeInstanceOf(RpcReadError);
+  expect(second).toEqual({ status: 'fulfilled', value: 'eth_getCode' });
+  expect(fetcher).toHaveBeenCalledTimes(3);
+});

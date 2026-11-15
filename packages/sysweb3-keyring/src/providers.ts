@@ -156,19 +156,15 @@ const makeRpcError = (rpcError: {
 };
 
 class BaseProvider extends JsonRpcProvider {
-  private isPossibleGetChainId = true;
   private cooldownTime = 120 * 1000;
   private rateLimit = 30;
   private requestCount = 0;
   private lastRequestTime = 0;
-  private currentChainId = '';
   private feeDataCache: { expiresAt: number; value: any } | null = null;
   private feeDataPromise: Promise<any> | null = null;
   private readonly configuredChainId?: number;
   private chainIdVerificationPromise: Promise<void> | null = null;
   private readonly readClient: JsonRpcReadClient;
-  private chainIdReadPromise: Promise<any> | null = null;
-  private chainIdGeneration = 0;
   public isInCooldown = false;
   public errorMessage: any = '';
   public serverHasAnError = false;
@@ -274,47 +270,14 @@ class BaseProvider extends JsonRpcProvider {
     const actual = await this.readChainId(true);
     const actualChainId = parseChainId(actual);
     if (actualChainId !== this.configuredChainId) {
-      this.isPossibleGetChainId = true;
       throw new Error(
         `Configured EVM chainId ${this.configuredChainId} does not match RPC eth_chainId ${actualChainId}`
       );
     }
   }
 
-  private readChainId(fresh: boolean): Promise<any> {
-    if (this.signal.aborted || this.destroyed)
-      return Promise.reject(
-        this.signal.reason || new Error('RPC provider destroyed')
-      );
-    if (!fresh && !this.isPossibleGetChainId)
-      return Promise.resolve(this.currentChainId);
-    if (!fresh && this.chainIdReadPromise) return this.chainIdReadPromise;
-    const generation = ++this.chainIdGeneration;
-    if (fresh) {
-      this.chainIdReadPromise = null;
-      this.isPossibleGetChainId = true;
-    }
-    const request = this.requestRpc(
-      [{ method: 'eth_chainId', params: [] }],
-      false
-    ).then(([json]) => {
-      if (json.error) throw makeRpcError(json.error);
-      if (generation === this.chainIdGeneration) {
-        this.currentChainId = json.result;
-        this.isPossibleGetChainId = false;
-      }
-      return json.result;
-    });
-    if (!fresh) {
-      this.chainIdReadPromise = request;
-      void request
-        .finally(() => {
-          if (this.chainIdReadPromise === request)
-            this.chainIdReadPromise = null;
-        })
-        .catch(() => undefined);
-    }
-    return request;
+  private readChainId(fresh: boolean): Promise<string> {
+    return this.readClient.getChainId({ fresh });
   }
 
   private cooldown = async () => {
@@ -425,9 +388,6 @@ class BaseProvider extends JsonRpcProvider {
   }
 
   override destroy(): void {
-    this.chainIdGeneration++;
-    this.chainIdReadPromise = null;
-    this.isPossibleGetChainId = true;
     this.readClient.destroy();
     super.destroy();
   }

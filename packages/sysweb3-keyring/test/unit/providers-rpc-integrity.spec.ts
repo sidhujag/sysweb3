@@ -32,6 +32,8 @@ const network = { url: RPC_URL, chainId: 5700 };
 const response = (json: any) => ({
   ok: true,
   status: 200,
+  headers: new Headers(),
+  text: async () => JSON.stringify(json),
   json: async () => json,
 });
 const resultFor = (request: any, result = '0x5208') => ({
@@ -96,8 +98,10 @@ describe('JSON-RPC response correlation', () => {
     const cold = Array.from({ length: 50 }, () =>
       provider.send('eth_chainId', [])
     );
+    await new Promise((resolve) => setImmediate(resolve));
     expect(captured).toHaveLength(1);
     const verify = provider.verifyConfiguredChainId(true);
+    await new Promise((resolve) => setImmediate(resolve));
     expect(captured).toHaveLength(2);
     captured[1].resolve(response(resultFor(captured[1].body, '0x1644')));
     await verify;
@@ -105,6 +109,33 @@ describe('JSON-RPC response correlation', () => {
     await Promise.all(cold);
     await expect(provider.send('eth_chainId', [])).resolves.toBe('0x1644');
     expect(captured).toHaveLength(2);
+  });
+
+  it('expires ordinary identity on the shared thirty-second read owner', async () => {
+    const now = jest.spyOn(Date, 'now');
+    let time = 100000;
+    now.mockImplementation(() => time);
+    try {
+      const provider = providerFor();
+      let actual = '0x1644';
+      fetchMock.mockImplementation(async (_url, init) =>
+        response(resultFor(JSON.parse(init.body), actual))
+      );
+      await expect(provider.send('eth_chainId', [])).resolves.toBe('0x1644');
+      actual = '0x1';
+      time += 29999;
+      await expect(provider.send('eth_chainId', [])).resolves.toBe('0x1644');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      time += 1;
+      await expect(provider.send('eth_chainId', [])).resolves.toBe('0x1');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      await expect(provider.verifyConfiguredChainId(true)).rejects.toThrow(
+        'does not match'
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it('does not reuse cached identity after a failed fresh probe', async () => {

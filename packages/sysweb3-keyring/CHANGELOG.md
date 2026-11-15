@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.15
+
+- Keep RPC request capacity owned until response bodies finish or cancellation completes, including oversized and rejected responses.
+- Preserve batch capabilities during rate limiting and verify generic batch rejection with one bounded single-request probe.
+- Share the thirty-second chain identity cache across ordinary provider reads while retaining fresh network verification.
+
 ## 2.1.14
 
 - Add an injectable, bounded JSON-RPC read client with mixed-method batching, per-item results, independent cancellation, and single-request fallback when a server explicitly rejects batches.
