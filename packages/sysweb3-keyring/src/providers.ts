@@ -171,6 +171,8 @@ class BaseProvider extends JsonRpcProvider {
   private readonly configuredChainId?: number;
   private chainIdVerificationPromise: Promise<void> | null = null;
   private readonly readClient: JsonRpcReadClient;
+  private readonly lifetime = new AbortController();
+  private releaseExternalSignal: () => void;
   public isInCooldown = false;
   public errorMessage: any = '';
   public serverHasAnError = false;
@@ -194,12 +196,17 @@ class BaseProvider extends JsonRpcProvider {
       network == null ? undefined : { staticNetwork: true }
     );
     this.configuredChainId = getChainIdFromNetworkish(network);
-    this.signal = signal;
+    this.signal = this.lifetime.signal;
+    const abort = () => this.lifetime.abort(signal.reason);
+    this.releaseExternalSignal = () =>
+      signal.removeEventListener('abort', abort);
+    if (signal.aborted) abort();
+    else signal.addEventListener('abort', abort, { once: true });
     this.fetcher = options.fetch ?? ((address, init) => fetch(address, init));
     this.readClient = new JsonRpcReadClient(this._getConnection().url, {
       ...options,
       fetch: (address, init) => this.fetchRpc(address, init),
-      signal,
+      signal: this.lifetime.signal,
     });
     this._pendingBatchAggregator = null;
     this._pendingBatch = null;
@@ -217,6 +224,7 @@ class BaseProvider extends JsonRpcProvider {
   }
 
   private async fetchRpc(url: string, init: RequestInit): Promise<Response> {
+    this.assertActive();
     if (this.cooldownUntil > Date.now()) {
       this.isInCooldown = true;
       throw Object.assign(new Error('RPC rate-limit cooldown is active'), {
@@ -232,6 +240,15 @@ class BaseProvider extends JsonRpcProvider {
       this.isInCooldown = true;
     }
     return response;
+  }
+
+  private assertActive(): void {
+    if (this.lifetime.signal.aborted)
+      throw this.lifetime.signal.reason instanceof Error
+        ? this.lifetime.signal.reason
+        : Object.assign(new Error('RPC provider aborted'), {
+            name: 'AbortError',
+          });
   }
 
   async verifyConfiguredChainId(fresh = false): Promise<void> {
@@ -268,7 +285,7 @@ class BaseProvider extends JsonRpcProvider {
       this._getConnection().url,
       inputs,
       batch,
-      this.signal,
+      this.lifetime.signal,
       async (url, body, signal) => {
         const response = await this.fetchRpc(url, {
           method: 'POST',
@@ -276,27 +293,43 @@ class BaseProvider extends JsonRpcProvider {
           body,
           signal,
         });
-        if (!response.ok) {
-          let errorBody = { error: undefined, message: undefined };
-          try {
-            errorBody = await response.json();
-          } catch {
-            console.warn('No body in request');
-          }
-          this.errorMessage =
-            errorBody.error || errorBody.message || 'No message from Provider';
-          handleStatusCodeError(response.status, this.errorMessage);
-        }
-        if (response.status !== 200)
-          throw new Error(`Unexpected HTTP status code: ${response.status}`);
         try {
-          return await response.json();
-        } catch (error) {
-          if (signal.aborted || error?.name === 'AbortError') throw error;
-          throw new RpcResponseIntegrityError(
-            'Invalid JSON-RPC JSON response',
-            false
-          );
+          this.assertActive();
+          if (!response.ok) {
+            let errorBody = { error: undefined, message: undefined };
+            try {
+              errorBody = await response.json();
+            } catch {
+              console.warn('No body in request');
+            }
+            this.assertActive();
+            this.errorMessage =
+              errorBody.error ||
+              errorBody.message ||
+              'No message from Provider';
+            handleStatusCodeError(response.status, this.errorMessage);
+          }
+          if (response.status !== 200)
+            throw new Error(`Unexpected HTTP status code: ${response.status}`);
+          try {
+            const json = await response.json();
+            this.assertActive();
+            return json;
+          } catch (error) {
+            if (signal.aborted || error?.name === 'AbortError') throw error;
+            throw new RpcResponseIntegrityError(
+              'Invalid JSON-RPC JSON response',
+              false
+            );
+          }
+        } finally {
+          if (signal.aborted) {
+            try {
+              await response.body?.cancel();
+            } catch {
+              /* Preserve the original cancellation error. */
+            }
+          }
         }
       },
       false
@@ -386,6 +419,10 @@ class BaseProvider extends JsonRpcProvider {
   }
 
   override destroy(): void {
+    this.lifetime.abort(
+      Object.assign(new Error('RPC provider destroyed'), { name: 'AbortError' })
+    );
+    this.releaseExternalSignal();
     this.readClient.destroy();
     super.destroy();
   }

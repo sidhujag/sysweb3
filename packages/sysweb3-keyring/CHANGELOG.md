@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.18
+
+- Give provider reads, broadcasts and stateful requests one owned cancellation lifetime. Destruction aborts pending transports and rejects late responses without retrying writes.
+
 ## 2.1.17
 
 - Route allowlisted provider reads through the bounded read client and accept endpoint capability ownership through provider options.

@@ -87,6 +87,94 @@ describe('JSON-RPC response correlation', () => {
     global.fetch = originalFetch;
   });
 
+  it.each(['send', 'sendBatch', '_send'] as const)(
+    'refuses stateful %s after provider destruction without HTTP',
+    async (entry) => {
+      const provider = providerFor();
+      provider.destroy();
+      const pending =
+        entry === 'send'
+          ? provider.send('eth_sendRawTransaction', ['0x01'])
+          : entry === 'sendBatch'
+          ? provider.sendBatch('eth_sendRawTransaction', [['0x01']])
+          : provider._send({
+              jsonrpc: '2.0',
+              id: 1,
+              method: 'eth_newFilter',
+              params: [{}],
+            });
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(['owner', 'destroy'] as const)(
+    'cancels stateful HTTP when its %s lifetime ends during body consumption',
+    async (end) => {
+      const owner = new AbortController();
+      const provider = new CustomJsonRpcProvider(owner.signal, RPC_URL, 5700);
+      providers.push(provider);
+      let release!: () => void;
+      let bodyStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        bodyStarted = resolve;
+      });
+      const cancel = jest.fn().mockResolvedValue(undefined);
+      let wireSignal: AbortSignal;
+      fetchMock.mockImplementation(async (_url, init) => {
+        wireSignal = init.signal;
+        return {
+          ...response({}),
+          body: { cancel },
+          json: () =>
+            new Promise((resolve) => {
+              bodyStarted();
+              release = () =>
+                resolve(resultFor(JSON.parse(init.body), '0xhash'));
+            }),
+        };
+      });
+      const pending = provider.send('eth_sendRawTransaction', ['0x01']);
+      const rejected = expect(pending).rejects.toMatchObject({
+        name: 'AbortError',
+      });
+      await started;
+      if (end === 'owner') owner.abort();
+      else provider.destroy();
+      expect(wireSignal!.aborted).toBe(true);
+      release();
+      await rejected;
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(cancel).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it('cancels a late stateful response after destroy instead of accepting it', async () => {
+    const provider = providerFor();
+    let release!: () => void;
+    const cancel = jest.fn().mockResolvedValue(undefined);
+    fetchMock.mockImplementation(
+      (_url, init) =>
+        new Promise((resolve) => {
+          release = () =>
+            resolve({
+              ...response(resultFor(JSON.parse(init.body))),
+              body: { cancel },
+            });
+        })
+    );
+    const pending = provider.send('eth_sendRawTransaction', ['0x01']);
+    const rejected = expect(pending).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    provider.destroy();
+    release();
+    await rejected;
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('shares only supplied endpoint capability across new providers', async () => {
     const capabilities = new RpcReadCapabilities(RPC_URL);
     fetchMock.mockImplementation(async (_url, init) => {

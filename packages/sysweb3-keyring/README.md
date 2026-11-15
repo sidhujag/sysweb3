@@ -87,6 +87,8 @@ adapter, cancellation, deadlines, response limits and response data.
 fourth constructor argument. Its allowlisted `send`, `sendBatch` and inherited
 Ethers reads use that bounded client. Stateful RPCs and broadcasts remain
 single-attempt requests. HTTP 429 starts a provider-local two-minute cooldown.
+The supplied signal and `destroy()` cancel the provider's reads, broadcasts and
+stateful requests. Late responses are rejected after that lifetime ends.
 
 ```javascript
 import {
