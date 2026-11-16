@@ -5,6 +5,9 @@ const reply = (request: any, chain = '0x1') => ({
   id: request.id,
   result: request.method === 'eth_chainId' ? chain : '0x2',
 });
+beforeEach(() => {
+  jest.clearAllMocks();
+});
 afterEach(() => {
   jest.restoreAllMocks();
   jest.useRealTimers();
