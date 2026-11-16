@@ -2,10 +2,6 @@ import { TypedDataUtils, SignTypedDataVersion } from '@metamask/eth-sig-util';
 import { hashMessage, Signature, Transaction, Wallet } from 'ethers';
 import { of, Subject } from 'rxjs';
 
-import {
-  createLedgerEvmAdapter,
-  offlineLedgerContext,
-} from '../../../src/ledger/dmk-evm';
 import { LedgerDmkSession } from '../../../src/ledger/dmk-session';
 import {
   ledgerCancelledError,
@@ -24,28 +20,47 @@ const mockSigner = {
   signMessage: jest.fn(),
   signTypedData: jest.fn(),
 };
-jest.mock(
-  '@ledgerhq/device-signer-kit-ethereum',
+const mockBuilder = jest.fn();
+const mockBuild = jest.fn(() => mockSigner);
+// The offline host graph may have resolved these modules in an earlier suite.
+// Bind the mocks to the installed paths so cached and fresh resolutions agree.
+jest.doMock(
+  require.resolve('@ledgerhq/device-signer-kit-ethereum'),
   () => ({
     SignerEthBuilder: class {
+      constructor(options: unknown) {
+        mockBuilder(options);
+      }
       withContextModule(context: unknown) {
         mockContexts.push(context);
         return this;
       }
       build() {
-        return mockSigner;
+        return mockBuild();
       }
     },
   }),
   { virtual: true }
 );
-jest.mock(
-  '@ledgerhq/context-module',
+jest.doMock(
+  require.resolve('@ledgerhq/context-module'),
   () => ({
     ClearSignContextType: { ERROR: 'error' },
   }),
   { virtual: true }
 );
+
+let createLedgerEvmAdapter: typeof import('../../../src/ledger/dmk-evm').createLedgerEvmAdapter;
+let offlineLedgerContext: typeof import('../../../src/ledger/dmk-evm').offlineLedgerContext;
+// Shared setup can already have loaded the host. Reload it only after this
+// suite's device mocks are installed, keeping real Ledger SDKs out of fixtures.
+jest.isolateModules(() => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  ({
+    createLedgerEvmAdapter,
+    offlineLedgerContext,
+  } = require('../../../src/ledger/dmk-evm'));
+});
 
 // Public synthetic key used only to verify fixture signatures locally.
 const wallet = new Wallet(`0x${'11'.repeat(32)}`);
@@ -160,6 +175,12 @@ it('preserves address-index derivation and validates the returned public key', a
   await expect(
     host.getAddress({ accountIndex: 3, checkOnDevice: true, chainId: 57 })
   ).resolves.toEqual({ address, publicKey });
+  expect(mockBuilder).toHaveBeenCalledWith({
+    dmk: {},
+    sessionId: 'public-fixture',
+  });
+  expect(mockBuild).toHaveBeenCalledTimes(1);
+  expect(mockBuild.mock.results[0]?.value).toBe(mockSigner);
   expect(mockSigner.getAddress).toHaveBeenCalledWith("44'/60'/0'/0/3", {
     checkOnDevice: true,
     chainId: 57,
