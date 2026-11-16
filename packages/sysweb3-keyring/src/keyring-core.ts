@@ -98,6 +98,7 @@ import {
   assertPsbtAccountScope,
   createPsbtDerivationGuard,
 } from './utils/psbt-account-scope';
+import { selectUtxoAddress } from './utils/utxo-address-discovery';
 import { deriveDescriptorAddress } from './utils/watch-descriptor';
 
 import type { KeyringHostBinding, SessionOwner } from './keyring-host';
@@ -114,6 +115,10 @@ import type {
   SignedPreparedEvmTransaction,
 } from './transactions/prepared-evm';
 import type { TrezorKeyring } from './trezor';
+import type {
+  UtxoAddressDiscoveryState,
+  UtxoIssuedAddress,
+} from './utils/utxo-address-discovery';
 
 /** Explicit asynchronous host storage; no browser or global DI fallback. */
 export interface KeyringStoragePort extends VaultStoragePort {
@@ -1758,7 +1763,7 @@ export class KeyringCore<
   ): Promise<string> => {
     const { account, read } = this.getActiveUtxoAddressAccount(id, ownedRead);
     this.assertUtxoDerivationAvailable(account, 'BIP32 path');
-    return this.getAddressBip32Path(id, isChangeAddress, read);
+    return this.getAddressBip32Path(isChangeAddress, read);
   };
 
   public updateReceivingAddress = async (
@@ -1768,13 +1773,14 @@ export class KeyringCore<
       this.getVault().activeAccount.id,
       ownedRead
     );
-    return this.getAddressForUtxoAccount(account, false, read);
+    return this.getAddressForUtxoAccount(account, false, read, true);
   };
 
   private getAddressForUtxoAccount = (
     account: IKeyringAccountState,
     change: boolean,
-    read: SyscoinUtxoReadContext
+    read: SyscoinUtxoReadContext,
+    rotateReceiving = false
   ): Promise<string> => {
     const { xpub, isImported, address } = account;
     if (
@@ -1784,7 +1790,7 @@ export class KeyringCore<
       !this.isXpubLike(xpub)
     )
       return Promise.resolve(address);
-    return this.discoverUtxoAddress(change, read);
+    return this.discoverUtxoAddress(change, read, rotateReceiving);
   };
 
   private assertUtxoDerivationAvailable(
@@ -2429,26 +2435,78 @@ export class KeyringCore<
 
   private fetchCurrentAccountData = async (
     isChangeAddress: boolean,
-    read: SyscoinUtxoReadContext
+    read: SyscoinUtxoReadContext,
+    rotateReceiving = false
   ) => {
     read.assertCurrent();
-    const { tokens } = await fetchOwnedBlockbookAccount(
-      read.network.url,
-      read.xpub,
-      read.transport
-    );
+    const tokens = rotateReceiving
+      ? (
+          await fetchOwnedBlockbookAccount(
+            read.network.url,
+            read.xpub,
+            read.transport
+          )
+        ).tokens
+      : undefined;
     read.assertCurrent();
-    const { receivingIndex, changeIndex } =
-      this.setLatestIndexesFromXPubTokens(tokens);
+    const currentAccount = this.loadBip84AddressAccount(
+      read.xpub,
+      read.network
+    );
+    let selected: UtxoIssuedAddress | undefined;
+    const select = (state: UtxoAddressDiscoveryState | undefined) => {
+      read.assertCurrent();
+      const result = selectUtxoAddress(
+        {
+          account: { address: read.accountAddress, xpub: read.xpub },
+          accountId: read.accountId,
+          accountType: read.accountType,
+          network: read.network,
+        },
+        tokens,
+        isChangeAddress ? 1 : 0,
+        (index, branch) => {
+          const address = currentAccount.getAddress(
+            index,
+            branch === 1,
+            84
+          ) as string;
+          return {
+            address,
+            script: Buffer.from(
+              bjs.address.toOutputScript(address, currentAccount.network)
+            ).toString('hex'),
+          };
+        },
+        state,
+        rotateReceiving
+      );
+      selected = result.issued;
+      return result;
+    };
+    const issued = read.allocateUtxoAddress
+      ? await read.allocateUtxoAddress(select)
+      : select(undefined).issued;
+    read.assertCurrent();
+    const approved = selected;
+    if (
+      !approved ||
+      (['branch', 'index', 'path', 'address', 'script'] as const).some(
+        (field) => issued?.[field] !== approved[field]
+      )
+    )
+      throw new Error('UTXO_ADDRESS_DISCOVERY_UNAVAILABLE');
     return {
-      currentAccount: this.loadBip84AddressAccount(read.xpub, read.network),
-      addressIndex: isChangeAddress ? changeIndex : receivingIndex,
+      currentAccount,
+      addressIndex: issued.index,
+      path: issued.path,
     };
   };
 
   private discoverUtxoAddress = async (
     isChangeAddress: boolean,
-    read: SyscoinUtxoReadContext
+    read: SyscoinUtxoReadContext,
+    rotateReceiving = false
   ) => {
     read.assertCurrent();
     if (this.isDescriptor(read.xpub))
@@ -2457,7 +2515,8 @@ export class KeyringCore<
       );
     const { currentAccount, addressIndex } = await this.fetchCurrentAccountData(
       isChangeAddress,
-      read
+      read,
+      rotateReceiving
     );
     read.assertCurrent();
     return currentAccount.getAddress(
@@ -2503,22 +2562,12 @@ export class KeyringCore<
   };
 
   private getAddressBip32Path = async (
-    id: number,
     isChangeAddress: boolean,
     read: SyscoinUtxoReadContext
   ): Promise<string> => {
-    const { addressIndex } = await this.fetchCurrentAccountData(
-      isChangeAddress,
-      read
-    );
+    const { path } = await this.fetchCurrentAccountData(isChangeAddress, read);
     read.assertCurrent();
-    return getAddressDerivationPath(
-      read.network.currency.toLowerCase(),
-      read.network.slip44,
-      id,
-      isChangeAddress,
-      addressIndex
-    );
+    return path;
   };
 
   public getCurrentAddressBip32Path = async (
@@ -2530,7 +2579,7 @@ export class KeyringCore<
     const { account, read } = this.getActiveUtxoAddressAccount(id, ownedRead);
     if (xpub !== read.xpub) throw new Error('UTXO account is not active');
     this.assertUtxoDerivationAvailable(account, 'BIP32 path');
-    return this.getAddressBip32Path(id, isChangeAddress, read);
+    return this.getAddressBip32Path(isChangeAddress, read);
   };
 
   public logout = () => {
@@ -3633,40 +3682,6 @@ export class KeyringCore<
       xpub,
     };
   };
-  private setLatestIndexesFromXPubTokens = function (tokens) {
-    let changeIndexInternal = -1,
-      receivingIndexInternal = -1;
-    if (tokens) {
-      tokens.forEach((token) => {
-        if (!token.transfers || !token.path) {
-          return {
-            changeIndex: changeIndexInternal + 1,
-            receivingIndex: receivingIndexInternal + 1,
-          };
-        }
-        const transfers = parseInt(token.transfers, 10);
-        if (token.path && transfers > 0) {
-          const splitPath = token.path.split('/');
-          if (splitPath.length >= 6) {
-            const change = parseInt(splitPath[4], 10);
-            const index = parseInt(splitPath[5], 10);
-            if (change === 1) {
-              if (index > changeIndexInternal) {
-                changeIndexInternal = index;
-              }
-            } else if (index > receivingIndexInternal) {
-              receivingIndexInternal = index;
-            }
-          }
-        }
-      });
-    }
-    return {
-      changeIndex: changeIndexInternal + 1,
-      receivingIndex: receivingIndexInternal + 1,
-    };
-  };
-
   // Common helper method for UTXO account creation
   private async createUTXOAccountAtIndex(accountId: number, label?: string) {
     try {

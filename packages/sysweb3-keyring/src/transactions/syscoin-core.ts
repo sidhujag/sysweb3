@@ -223,6 +223,10 @@ export type SyscoinUtxoReadContext = Readonly<{
   network: Readonly<INetwork>;
   transport: BlockbookRead;
   xpub: string;
+  accountId: number;
+  accountType: KeyringAccountType;
+  accountAddress: string;
+  allocateUtxoAddress?: SyscoinOwnedReadOptions['allocateUtxoAddress'];
 }>;
 
 type OwnedPreparation = Readonly<{
@@ -275,11 +279,26 @@ export function captureOwnedSyscoinRead(
     )
       throw new Error('Wallet UTXO preparation context changed');
   });
+  if (
+    options.allocateUtxoAddress !== undefined &&
+    typeof options.allocateUtxoAddress !== 'function'
+  )
+    throw new Error('Invalid owned UTXO address discovery');
   return {
     account,
     accountId: activeAccountId,
     accountType: activeAccountType,
-    read: Object.freeze({ ...read, network, xpub: account.xpub }),
+    read: Object.freeze({
+      ...read,
+      network,
+      xpub: account.xpub,
+      accountId: activeAccountId,
+      accountType: activeAccountType,
+      accountAddress: account.address,
+      ...(options.allocateUtxoAddress
+        ? { allocateUtxoAddress: options.allocateUtxoAddress }
+        : {}),
+    }),
   };
 }
 

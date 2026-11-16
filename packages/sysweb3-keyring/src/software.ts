@@ -41,6 +41,10 @@ export type {
   EvmRetainedCancellationOrigin,
   IKeyringAccountState,
   SyscoinOwnedReadOptions,
+  AllocateUtxoAddress,
+  UtxoAddressDiscoveryState,
+  UtxoAddressSelection,
+  UtxoIssuedAddress,
   SyscoinOwnedSubmissionOptions,
   SyscoinSubmissionDescriptor,
 } from './types';

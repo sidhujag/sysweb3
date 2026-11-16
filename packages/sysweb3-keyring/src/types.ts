@@ -262,7 +262,14 @@ export type SyscoinOwnedReadOptions = Readonly<{
   assertCurrent: () => void;
   fetch: typeof globalThis.fetch;
   signal: AbortSignal;
+  allocateUtxoAddress?: import('./utils/utxo-address-discovery').AllocateUtxoAddress;
 }>;
+export type {
+  AllocateUtxoAddress,
+  UtxoAddressDiscoveryState,
+  UtxoAddressSelection,
+  UtxoIssuedAddress,
+} from './utils/utxo-address-discovery';
 
 /** Exact signed bytes presented to a wallet host before the only POST. */
 export type SyscoinSubmissionDescriptor = Readonly<{
