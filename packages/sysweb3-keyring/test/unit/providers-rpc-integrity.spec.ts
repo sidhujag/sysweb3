@@ -883,6 +883,118 @@ describe('JSON-RPC response correlation', () => {
     expect(fetchMock.mock.calls[0][0]).toBe(RPC_URL);
   });
 
+  it('captures endpoint fetch policy consistently for reads and controls', async () => {
+    const headers = new Headers({ Authorization: 'Bearer fixture' });
+    const init: RequestInit = {
+      headers,
+      credentials: 'include',
+      cache: 'no-store',
+      referrerPolicy: 'no-referrer',
+      redirect: 'follow',
+    };
+    const provider = new CustomJsonRpcProvider(
+      new AbortController().signal,
+      RPC_URL,
+      1,
+      { requestInit: init }
+    );
+    providers.push(provider);
+    headers.set('Authorization', 'changed');
+    await provider.send('eth_getBalance', [FROM, 'latest']);
+    await provider.send('eth_newBlockFilter', []);
+    for (const [, actual] of fetchMock.mock.calls) {
+      expect(actual).toMatchObject({
+        credentials: 'include',
+        cache: 'no-store',
+        referrerPolicy: 'no-referrer',
+        redirect: 'error',
+      });
+      expect(new Headers(actual.headers).get('Authorization')).toBe(
+        'Bearer fixture'
+      );
+    }
+  });
+
+  it.each([307, 308])(
+    'refuses an actual HTTP %s stateful redirect without a second POST',
+    async (status) => {
+      const http = jest.requireActual('http');
+      const nodeFetch = jest.requireActual('node-fetch');
+      const redirected: string[] = [];
+      const target = http.createServer((request, reply) => {
+        redirected.push(request.method);
+        reply.end('{}');
+      });
+      await new Promise<void>((resolve) =>
+        target.listen(0, '127.0.0.1', resolve)
+      );
+      const endpoint = http.createServer((request, reply) => {
+        request.resume();
+        reply.writeHead(status, {
+          Location: `http://127.0.0.1:${target.address().port}/redirected`,
+        });
+        reply.end();
+      });
+      await new Promise<void>((resolve) =>
+        endpoint.listen(0, '127.0.0.1', resolve)
+      );
+      const fetcher = jest.fn(nodeFetch.default ?? nodeFetch);
+      const provider = new CustomJsonRpcProvider(
+        new AbortController().signal,
+        `http://127.0.0.1:${endpoint.address().port}/rpc`,
+        1,
+        { fetch: fetcher }
+      );
+      try {
+        await expect(
+          provider.send('eth_sendRawTransaction', ['0xdeadbeef'])
+        ).rejects.toBeDefined();
+        expect(fetcher).toHaveBeenCalledTimes(1);
+        expect(redirected).toEqual([]);
+      } finally {
+        provider.destroy();
+        await Promise.all([
+          new Promise<void>((resolve) => endpoint.close(resolve)),
+          new Promise<void>((resolve) => target.close(resolve)),
+        ]);
+      }
+    }
+  );
+
+  it('cancels only the owned control request and keeps the shared provider usable', async () => {
+    const provider = providerFor();
+    const owner = new AbortController();
+    let ready!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let physical!: AbortSignal;
+    fetchMock.mockImplementationOnce(async (_url, init) => {
+      physical = init.signal;
+      ready();
+      await held;
+      return response(resultFor(JSON.parse(init.body), '0x1'));
+    });
+    const request = provider.send('eth_newBlockFilter', [], {
+      signal: owner.signal,
+    });
+    const failed = expect(request).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    await started;
+    owner.abort();
+    await failed;
+    expect(physical.aborted).toBe(true);
+    expect(provider.signal.aborted).toBe(false);
+    await expect(provider.send('eth_blockNumber', [])).resolves.toBe('0x5208');
+    release();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps exact bigint chain configuration out of serializable provider state', async () => {
     const chainId = 9007199254740993n;
     const provider = new CustomJsonRpcProvider(
@@ -2740,6 +2852,106 @@ describe('JSON-RPC response correlation', () => {
         block.mockRestore();
       }
     });
+
+    it.each(['seconds', 'date'])(
+      'honors %s Retry-After before retrying fee HTTP',
+      async (kind) => {
+        jest.useFakeTimers();
+        jest.setSystemTime(new Date('2026-11-15T12:00:00Z'));
+        const { provider, block } = setup();
+        const retryAfter =
+          kind === 'seconds' ? '1' : new Date(Date.now() + 1000).toUTCString();
+        fetchMock
+          .mockResolvedValueOnce(
+            new Response('', {
+              status: 429,
+              headers: { 'retry-after': retryAfter },
+            })
+          )
+          .mockResolvedValueOnce(
+            new Response(payload, {
+              headers: { 'content-type': 'application/json' },
+            })
+          );
+        try {
+          const reading = provider.getFeeData();
+          await jest.advanceTimersByTimeAsync(0);
+          expect(fetchMock).toHaveBeenCalledTimes(1);
+          await jest.advanceTimersByTimeAsync(999);
+          expect(fetchMock).toHaveBeenCalledTimes(1);
+          await jest.advanceTimersByTimeAsync(1);
+          await expect(reading).resolves.toMatchObject({
+            maxFeePerGas: BigNumber.from('3000000000'),
+          });
+          expect(fetchMock).toHaveBeenCalledTimes(2);
+        } finally {
+          provider.destroy();
+          block.mockRestore();
+          jest.useRealTimers();
+        }
+      }
+    );
+
+    it.each(['0', 'invalid', 'Sun, 15 Nov 2020 12:00:00 GMT'])(
+      'keeps bounded retry behavior for Retry-After %s',
+      async (retryAfter) => {
+        jest.useFakeTimers();
+        const { provider, block } = setup();
+        fetchMock
+          .mockResolvedValueOnce(
+            new Response('', {
+              status: 429,
+              headers: { 'retry-after': retryAfter },
+            })
+          )
+          .mockResolvedValueOnce(
+            new Response(payload, {
+              headers: { 'content-type': 'application/json' },
+            })
+          );
+        try {
+          const reading = provider.getFeeData();
+          await jest.advanceTimersByTimeAsync(0);
+          await jest.advanceTimersByTimeAsync(1000);
+          await expect(reading).resolves.toMatchObject({
+            maxFeePerGas: BigNumber.from('3000000000'),
+          });
+          expect(fetchMock).toHaveBeenCalledTimes(2);
+        } finally {
+          provider.destroy();
+          block.mockRestore();
+          jest.useRealTimers();
+        }
+      }
+    );
+
+    it.each(['1', '9'.repeat(400)])(
+      'does not retry beyond the operation deadline for Retry-After %s',
+      async (retryAfter) => {
+        jest.useFakeTimers();
+        const { provider, block } = setup({ timeoutMs: 50 });
+        fetchMock.mockResolvedValue(
+          new Response('', {
+            status: 429,
+            headers: { 'retry-after': retryAfter },
+          })
+        );
+        try {
+          const reading = provider.getFeeData();
+          const failed = expect(reading).rejects.toMatchObject({
+            name: 'AbortError',
+          });
+          await jest.advanceTimersByTimeAsync(50);
+          await failed;
+          await jest.advanceTimersByTimeAsync(1000);
+          expect(fetchMock).toHaveBeenCalledTimes(1);
+        } finally {
+          provider.destroy();
+          block.mockRestore();
+          jest.useRealTimers();
+        }
+      }
+    );
 
     it('stops fee-plugin retries when its read phase ends while the provider stays alive', async () => {
       jest.useFakeTimers();

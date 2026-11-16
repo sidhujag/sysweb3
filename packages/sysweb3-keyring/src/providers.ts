@@ -142,6 +142,9 @@ export class CustomJsonRpcProvider extends JsonRpcProvider {
   private cooldownTime = 120 * 1000;
   private cooldownUntil = 0;
   private readonly fetcher: NonNullable<RpcReadClientOptions['fetch']>;
+  private readonly requestInit: NonNullable<
+    RpcReadClientOptions['requestInit']
+  >;
   private readonly http: RpcHttpExecutor;
   private feeDataCache: { expiresAt: number; value: any } | null = null;
   private feeBlock?: {
@@ -179,6 +182,10 @@ export class CustomJsonRpcProvider extends JsonRpcProvider {
     if (signal.aborted) abort();
     else signal.addEventListener('abort', abort, { once: true });
     this.fetcher = options.fetch ?? ((address, init) => fetch(address, init));
+    this.requestInit = {
+      ...options.requestInit,
+      headers: new Headers(options.requestInit?.headers),
+    };
     this.http = new RpcHttpExecutor({
       ...options,
       fetch: (address, init) => this.fetchRpc(address, init),
@@ -188,6 +195,7 @@ export class CustomJsonRpcProvider extends JsonRpcProvider {
       this._getConnection().url,
       {
         ...options,
+        requestInit: this.requestInit,
         fetch: (address, init) => this.fetchRpc(address, init),
         signal: this.lifetime.signal,
       },
@@ -266,11 +274,15 @@ export class CustomJsonRpcProvider extends JsonRpcProvider {
 
   private async requestRpc(
     inputs: Array<Pick<JsonRpcPayload, 'method' | 'params'>>,
-    batch: boolean
+    batch: boolean,
+    signal?: AbortSignal
   ): Promise<any[]> {
     this.assertActive();
     const captured = captureRpcRequests(inputs as RpcReadRequest[]);
-    return this.http.run([], (signal) =>
+    const headers = new Headers(this.requestInit.headers);
+    headers.set('Content-Type', 'application/json');
+    headers.set('Accept', 'application/json');
+    return this.http.run([signal], (signal) =>
       requestJsonRpc(
         this._getConnection().url,
         captured,
@@ -280,8 +292,9 @@ export class CustomJsonRpcProvider extends JsonRpcProvider {
           this.http.request(
             url,
             {
+              ...this.requestInit,
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers,
               body,
               redirect: 'error',
             },
@@ -373,12 +386,20 @@ export class CustomJsonRpcProvider extends JsonRpcProvider {
     return super.getRpcError(payload, response);
   }
 
-  override async send(method: string, params: any[]) {
-    if (method === 'eth_chainId') return this.readChainId(false);
+  override async send(
+    method: string,
+    params: any[],
+    options: Pick<RpcReadOptions, 'signal'> = {}
+  ) {
+    if (method === 'eth_chainId') return this.readClient.getChainId(options);
     if (isReadOnlyRpcMethod(method)) {
       this.assertActive();
-      if (this.configuredChainId == null || !this.readClient.supportsBatch) {
-        const [result] = await this.readMany([{ method, params }]);
+      if (
+        options.signal ||
+        this.configuredChainId == null ||
+        !this.readClient.supportsBatch
+      ) {
+        const [result] = await this.readMany([{ method, params }], options);
         if (result.status === 'rejected') throw result.reason;
         return result.value;
       }
@@ -393,7 +414,11 @@ export class CustomJsonRpcProvider extends JsonRpcProvider {
       this.assertActive();
       return result;
     }
-    const [json] = await this.requestRpc([{ method, params }], false);
+    const [json] = await this.requestRpc(
+      [{ method, params }],
+      false,
+      options.signal
+    );
     if (json.error) {
       this.errorMessage = json.error.message;
       throw new RpcReadError(json.error);
@@ -606,6 +631,18 @@ export class CustomJsonRpcProvider extends JsonRpcProvider {
                 response.headers.forEach((value, key) => {
                   headers[key.toLowerCase()] = value;
                 });
+                if (response.status === 429 && headers['retry-after']) {
+                  const retry = headers['retry-after'].trim();
+                  const delay = /^\d+$/.test(retry)
+                    ? Number(retry) * 1000
+                    : Date.parse(retry) - Date.now();
+                  if (delay > 0)
+                    headers['retry-after'] = String(
+                      Math.min(Math.ceil(delay), this.http.timeoutMs + 1)
+                    );
+                  else if (delay === 0) headers['retry-after'] = '1';
+                  else delete headers['retry-after'];
+                }
                 return {
                   statusCode: response.status,
                   statusMessage: response.statusText,

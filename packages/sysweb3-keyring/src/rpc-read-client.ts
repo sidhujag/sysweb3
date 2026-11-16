@@ -151,7 +151,6 @@ export class JsonRpcReadClient {
   private readonly options;
   private readonly lifetime = new AbortController();
   private readonly capabilities: RpcReadCapabilities;
-  private localBatchLimit: number;
   private chainGeneration = 0;
   private chainCache?: { value: string; expires: number };
   private chainRequest?: ChainRequest;
@@ -183,7 +182,6 @@ export class JsonRpcReadClient {
       timeoutMs: this.http.timeoutMs,
     };
     this.capabilities = options.capabilities ?? new RpcReadCapabilities(url);
-    this.localBatchLimit = this.options.maxBatchItems;
     if (options.signal?.aborted) this.destroy();
     else
       options.signal?.addEventListener('abort', () => this.destroy(), {
@@ -192,10 +190,7 @@ export class JsonRpcReadClient {
   }
 
   private get batchLimit(): number {
-    return Math.min(
-      this.localBatchLimit,
-      this.capabilities.getBatchLimit(this.options.maxBatchItems)
-    );
+    return this.capabilities.getBatchLimit(this.options.maxBatchItems);
   }
 
   private set batchLimit(limit: number) {
@@ -262,6 +257,7 @@ export class JsonRpcReadClient {
     return this.http.run(
       [options.signal, this.lifetime.signal],
       async (signal) => {
+        let localBatchLimit = this.batchLimit;
         let attempts = 0;
         const recordBatchLimit = (error: unknown, count: number) => {
           if (count <= 1) return;
@@ -275,7 +271,7 @@ export class JsonRpcReadClient {
                 ? 1
                 : Math.min(this.batchLimit, Math.ceil(count / 2));
             if (error instanceof RpcPayloadTooLarge && !error.endpointLimit)
-              this.localBatchLimit = limit;
+              localBatchLimit = Math.min(localBatchLimit, limit);
             else this.batchLimit = limit;
           }
         };
@@ -360,7 +356,7 @@ export class JsonRpcReadClient {
           recoverResponse = this.options.recoverResponse
         ): Promise<PromiseSettledResult<unknown>[]> => {
           const chunks: Array<Promise<PromiseSettledResult<unknown>[]>> = [];
-          const limit = this.batchLimit;
+          const limit = Math.min(this.batchLimit, localBatchLimit);
           for (let offset = 0; offset < rows.length; offset += limit)
             chunks.push(
               execute(rows.slice(offset, offset + limit), recoverResponse)

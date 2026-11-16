@@ -32,6 +32,33 @@ const tick = async () => {
 };
 
 describe('bounded JSON-RPC read client', () => {
+  it('keeps local request-byte splitting scoped to one operation', async () => {
+    const fetcher = jest.fn(async (_url, init) => {
+      const request = JSON.parse(init.body);
+      return response(
+        Array.isArray(request)
+          ? request.map((row) => reply(row, '0x1'))
+          : reply(request, '0x1')
+      );
+    });
+    const client = new JsonRpcReadClient(URL, {
+      fetch: fetcher,
+      maxRequestBytes: 400,
+    });
+    await client.readMany(
+      Array.from({ length: 4 }, () => input('eth_call', 'x'.repeat(250)))
+    );
+    fetcher.mockClear();
+    const result = await client.readMany(
+      Array.from({ length: 4 }, () => ({
+        method: 'eth_blockNumber',
+        params: [],
+      }))
+    );
+    expect(result.every((row) => row.status === 'fulfilled')).toBe(true);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fetcher.mock.calls[0][1].body)).toHaveLength(4);
+  });
   it('counts all cold, warm and expired scalar capability traffic', async () => {
     let now = Date.now();
     const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
