@@ -214,6 +214,11 @@ export class CustomJsonRpcProvider extends JsonRpcProvider {
     if (new.target !== CustomJsonRpcProvider) this.bindMethods();
   }
 
+  /** Share endpoint capability metadata without sharing requests or their owners. */
+  get readCapabilities() {
+    return this.readClient.capabilities;
+  }
+
   private bindMethods() {
     const proto = Object.getPrototypeOf(this);
     for (const key of Object.getOwnPropertyNames(proto)) {

@@ -431,6 +431,68 @@ describe('JSON-RPC response correlation', () => {
     ).toThrow('another endpoint');
   });
 
+  it('exposes only reusable endpoint capabilities while provider request ownership remains independent', async () => {
+    const original = providerFor();
+    fetchMock.mockImplementation(async (_url, init) => {
+      const request = JSON.parse(init.body);
+      return response(
+        Array.isArray(request)
+          ? {
+              jsonrpc: '2.0',
+              id: null,
+              error: { code: -32600, message: 'Batch unsupported' },
+            }
+          : resultFor(request)
+      );
+    });
+    await original.sendBatch('eth_getBalance', [
+      [FROM, 'latest'],
+      [FROM, 'pending'],
+    ]);
+    const child = new CustomJsonRpcProvider(
+      new AbortController().signal,
+      RPC_URL,
+      5700,
+      { capabilities: original.readCapabilities }
+    );
+    providers.push(child);
+    expect(child.readCapabilities).toBe(original.readCapabilities);
+    await child.sendBatch('eth_getBalance', [
+      [FROM, 'latest'],
+      [FROM, 'pending'],
+    ]);
+    expect(requestsFrom(fetchMock).filter(Array.isArray)).toHaveLength(1);
+    let release!: (response: unknown) => void;
+    let wire!: any;
+    fetchMock.mockImplementationOnce((_url, init) => {
+      wire = init;
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    });
+    const cancelled = child.send('eth_getBalance', [FROM, 'latest']);
+    const rejection = expect(cancelled).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    while (!wire) await new Promise((resolve) => setImmediate(resolve));
+    child.destroy();
+    await rejection;
+    expect(wire.signal.aborted).toBe(true);
+    await expect(
+      original.send('eth_getBalance', [FROM, 'pending'])
+    ).resolves.toBe('0x5208');
+    release(response(resultFor(JSON.parse(wire.body))));
+    expect(
+      () =>
+        new CustomJsonRpcProvider(
+          new AbortController().signal,
+          RPC_URL + '&wrong=1',
+          5700,
+          { capabilities: original.readCapabilities }
+        )
+    ).toThrow('another endpoint');
+  });
+
   it('bounds sixty-four ordinary provider reads to four active bodies', async () => {
     let active = 0;
     let peak = 0;

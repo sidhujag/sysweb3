@@ -150,7 +150,7 @@ export class JsonRpcReadClient {
   private readonly endpoint: string;
   private readonly options;
   private readonly lifetime = new AbortController();
-  private readonly capabilities: RpcReadCapabilities;
+  readonly capabilities: RpcReadCapabilities;
   private chainGeneration = 0;
   private chainCache?: { value: string; expires: number };
   private chainRequest?: ChainRequest;
