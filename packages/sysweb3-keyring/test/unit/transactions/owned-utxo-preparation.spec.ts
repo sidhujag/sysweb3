@@ -879,10 +879,7 @@ it('replays authenticated bytes only to their original verified endpoint after d
   const pending = replay(txid, authority);
   await Promise.race([preparing.promise, pending]);
   expect(authority.readRetained).toHaveBeenCalledWith(retained.owner, txid);
-  expect(authority.readJson.mock.calls).toEqual([
-    [statusUrl, authority.signal],
-    [genesisUrl, authority.signal],
-  ]);
+  expect(authority.readJson).not.toHaveBeenCalled();
   expect(authority.prepare).toHaveBeenCalledWith({
     url: submitUrl,
     rawTransaction: raw,
@@ -892,6 +889,10 @@ it('replays authenticated bytes only to their original verified endpoint after d
   expect(state.activeNetwork.url).toBe(replacementEndpoint);
   hold.resolve();
   await expect(pending).resolves.toEqual({ txid });
+  expect(authority.readJson.mock.calls).toEqual([
+    [statusUrl, authority.signal],
+    [genesisUrl, authority.signal],
+  ]);
   expect(authority.fetch).toHaveBeenCalledTimes(1);
   expect(authority.fetch).toHaveBeenCalledWith(
     submitUrl,
@@ -987,7 +988,7 @@ it('requires the original endpoint genesis and the live wallet owner after admis
     .mockResolvedValueOnce(testnetStatus)
     .mockResolvedValueOnce({ blockHash: '0'.repeat(64) });
   await expect(replay(txid, authority)).rejects.toMatchObject(notDispatched);
-  expect(authority.prepare).not.toHaveBeenCalled();
+  expect(authority.prepare).toHaveBeenCalledTimes(1);
   expect(authority.fetch).not.toHaveBeenCalled();
 
   const hold = deferred();
@@ -1006,6 +1007,44 @@ it('requires the original endpoint genesis and the live wallet owner after admis
   expect(authority.fetch).not.toHaveBeenCalled();
   expect(globalThis.fetch).not.toHaveBeenCalled();
 });
+
+it.each(['healthy', 'wrong-genesis', 'cancelled'])(
+  'checks retained endpoint identity after held durable admission: %s',
+  async (outcome) => {
+    const { txid, authority, replay } = await retainedReplayFixture();
+    const entered = deferred(),
+      release = deferred();
+    const controller = new AbortController();
+    authority.signal = controller.signal;
+    let genesis = testnetGenesis;
+    authority.readJson.mockImplementation(async (url) => {
+      return url === statusUrl ? testnetStatus : { blockHash: genesis };
+    });
+    authority.prepare.mockImplementation(async () => {
+      entered.resolve();
+      await release.promise;
+    });
+    const pending = replay(txid, authority);
+    const result =
+      outcome === 'healthy'
+        ? expect(pending).resolves.toEqual({ txid })
+        : expect(pending).rejects.toMatchObject({
+            transactionNotBroadcast: true,
+          });
+    await entered.promise;
+    expect(authority.readJson).not.toHaveBeenCalled();
+    if (outcome === 'wrong-genesis') genesis = '0'.repeat(64);
+    if (outcome === 'cancelled') controller.abort();
+    release.resolve();
+    await result;
+    expect(authority.fetch).toHaveBeenCalledTimes(
+      outcome === 'healthy' ? 1 : 0
+    );
+    expect(authority.readJson).toHaveBeenCalledTimes(
+      outcome === 'cancelled' ? 0 : 2
+    );
+  }
+);
 
 it('requires the retained journal port and preserves a lost ACK after the original POST', async () => {
   const { txid, authority, replay } = await retainedReplayFixture();

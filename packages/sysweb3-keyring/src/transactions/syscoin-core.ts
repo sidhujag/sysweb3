@@ -1352,6 +1352,12 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
             descriptor.rawTransaction !== rawTransaction
           )
             throw notDispatched();
+          const admitted = prepare(descriptor);
+          if (
+            typeof admitted?.then !== 'function' ||
+            (await admitted) !== undefined
+          )
+            throw notDispatched();
           const verified = await verifyOwnedUtxoRpc(backend, {
             registration,
             backendChain,
@@ -1360,13 +1366,6 @@ export class SyscoinTransactionsCore implements ISyscoinTransactions {
             readJson,
           });
           if (verified.coin.hashGenesisBlock !== genesisHash)
-            throw notDispatched();
-          verified.assertCurrent();
-          const admitted = prepare(descriptor);
-          if (
-            typeof admitted?.then !== 'function' ||
-            (await admitted) !== undefined
-          )
             throw notDispatched();
           verified.assertCurrent();
         },
