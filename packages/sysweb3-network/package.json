@@ -58,6 +58,18 @@
       ],
       "cjs/ownedUtxoRpc.js": [
         "types/ownedUtxoRpc.d.ts"
+      ],
+      "cjs/rpc-transport": [
+        "types/rpc-transport.d.ts"
+      ],
+      "cjs/rpc-transport.js": [
+        "types/rpc-transport.d.ts"
+      ],
+      "cjs/rpc-read-client": [
+        "types/rpc-read-client.d.ts"
+      ],
+      "cjs/rpc-read-client.js": [
+        "types/rpc-read-client.d.ts"
       ]
     }
   }

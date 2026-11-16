@@ -18,17 +18,14 @@ export async function retryWithBackoff<T>(
     return await fn();
   } catch (error: any) {
     // Check if it's a retryable error (503 Service Unavailable or 429 Too Many Requests)
+    const status = error?.response?.status ?? error?.status;
     const isRetryableError =
-      (error.response &&
-        (error.response.status === 503 || error.response.status === 429)) ||
-      error.status === 503 ||
-      error.status === 429 ||
-      (error.message &&
-        (error.message.includes('503') ||
-          error.message.includes('429') ||
-          error.message.includes('Service Unavailable') ||
-          error.message.includes('Too many requests') ||
-          error.message.includes('rate limit')));
+      typeof status === 'number'
+        ? status === 503 || status === 429
+        : typeof error?.message === 'string' &&
+          /503|429|Service Unavailable|Too many requests|rate limit/.test(
+            error.message
+          );
 
     if (isRetryableError && retryCount < MAX_RETRIES) {
       const delay = INITIAL_RETRY_DELAY * Math.pow(2, retryCount);
@@ -91,8 +88,11 @@ export async function retryableFetch(
         } else {
           // For non-retryable errors, get the response text for better error messages
           const responseData = await response.text();
-          throw new Error(
-            `HTTP error! Status: ${response.status}. Details: ${responseData}`
+          throw Object.assign(
+            new Error(
+              `HTTP error! Status: ${response.status}. Details: ${responseData}`
+            ),
+            { status: response.status }
           );
         }
       }

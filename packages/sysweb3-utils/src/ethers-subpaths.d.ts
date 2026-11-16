@@ -11,5 +11,5 @@ declare module 'ethers/contract' {
 }
 
 declare module 'ethers/providers' {
-  export type { JsonRpcProvider } from 'ethers';
+  export type { JsonRpcProvider, ContractRunner } from 'ethers';
 }

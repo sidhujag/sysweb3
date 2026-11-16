@@ -42,15 +42,17 @@ describe('EVM endpoint latency probe', () => {
 
   it('samples the existing two-method EVM batch and checks the selected chain', async () => {
     jest.useFakeTimers();
-    const read = jest.spyOn(globalThis, 'fetch').mockImplementation(
-      async () =>
-        new Response(
-          JSON.stringify([
-            { jsonrpc: '2.0', id: 1, result: '0x539' },
-            { jsonrpc: '2.0', id: 2, result: '0x2' },
-          ])
+    const read = jest
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async (_url, options) =>
+        Response.json(
+          JSON.parse(String(options?.body)).map((request: any) => ({
+            jsonrpc: '2.0',
+            id: request.id,
+            result: request.method === 'eth_chainId' ? '0x539' : '0x2',
+          }))
         )
-    );
+      );
     const endpoint = 'https://evm-catalogue-probe.invalid/';
     const result = validateEvmRpcBatch(endpoint, 1337);
     await jest.runAllTimersAsync();
@@ -63,8 +65,8 @@ describe('EVM endpoint latency probe', () => {
     for (const [, options] of samples) {
       expect(options?.method).toBe('POST');
       expect(JSON.parse(String(options?.body))).toMatchObject([
-        { method: 'eth_chainId', id: 1 },
-        { method: 'eth_blockNumber', id: 2 },
+        { method: 'eth_chainId', id: expect.any(Number) },
+        { method: 'eth_blockNumber', id: expect.any(Number) },
       ]);
     }
   });
