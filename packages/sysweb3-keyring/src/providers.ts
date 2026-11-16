@@ -566,12 +566,18 @@ export class CustomJsonRpcProvider extends JsonRpcProvider {
                       false
                     );
                 },
-                process: (text, response) => ({
-                  statusCode: response.status,
-                  statusMessage: response.statusText,
-                  headers: Object.fromEntries(response.headers.entries()),
-                  body: new TextEncoder().encode(text),
-                }),
+                process: (text, response) => {
+                  const headers: Record<string, string> = {};
+                  response.headers.forEach((value, name) => {
+                    headers[name] = value;
+                  });
+                  return {
+                    statusCode: response.status,
+                    statusMessage: response.statusText,
+                    headers,
+                    body: new TextEncoder().encode(text),
+                  };
+                },
               }
             );
           } catch (error) {
