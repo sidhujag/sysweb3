@@ -9,17 +9,19 @@ import {
   requestJsonRpc,
   RpcResponseIntegrityError,
   RpcResponseSizeError,
+  RpcResponseBudget,
+  type RpcResponseBudgetOptions,
   type RpcReadRequest,
   type RpcResponse,
 } from './rpc-transport';
 
 export type { RpcReadRequest } from './rpc-transport';
-export type RpcReadOptions = {
+export type RpcReadOptions = RpcResponseBudgetOptions & {
   signal?: AbortSignal;
   timeoutMs?: number;
   maxResponseBytes?: number;
 };
-export type RpcReadClientOptions = {
+export type RpcReadClientOptions = RpcResponseBudgetOptions & {
   fetch?: (url: string, init: RequestInit) => Promise<Response>;
   capabilities?: RpcReadCapabilities;
   requestInit?: Omit<RequestInit, 'method' | 'body' | 'signal'>;
@@ -33,6 +35,7 @@ export type RpcReadClientOptions = {
 };
 type ChainRequest = {
   maxResponseBytes: number;
+  responseBudgetKey: string;
   promise: Promise<string>;
   controller: AbortController;
   subscribers: number;
@@ -173,6 +176,7 @@ export class JsonRpcReadClient {
     if (options.capabilities && options.capabilities.url !== url)
       throw new Error('RPC capabilities belong to another endpoint');
     this.http = http ?? new RpcHttpExecutor(options);
+    const responseBudget = new RpcResponseBudget(options);
     this.options = {
       requestInit: options.requestInit ?? {},
       recoverResponse: options.recoverResponse ?? true,
@@ -180,6 +184,9 @@ export class JsonRpcReadClient {
       maxRequestBytes: this.http.maxRequestBytes,
       maxResponseBytes: this.http.maxResponseBytes,
       timeoutMs: this.http.timeoutMs,
+      maxTotalResponseBytes: responseBudget.maxTotalResponseBytes,
+      maxTotalResponseNodes: responseBudget.maxTotalResponseNodes,
+      maxResponseDepth: responseBudget.maxResponseDepth,
     };
     this.capabilities = options.capabilities ?? new RpcReadCapabilities(url);
     if (options.signal?.aborted) this.destroy();
@@ -256,7 +263,20 @@ export class JsonRpcReadClient {
     );
     return this.http.run(
       [options.signal, this.lifetime.signal],
-      async (signal) => {
+      async (signal, abort) => {
+        const responseBudget = new RpcResponseBudget(
+          {
+            maxTotalResponseBytes:
+              options.maxTotalResponseBytes ??
+              this.options.maxTotalResponseBytes,
+            maxTotalResponseNodes:
+              options.maxTotalResponseNodes ??
+              this.options.maxTotalResponseNodes,
+            maxResponseDepth:
+              options.maxResponseDepth ?? this.options.maxResponseDepth,
+          },
+          abort
+        );
         let localBatchLimit = this.batchLimit;
         let attempts = 0;
         const recordBatchLimit = (error: unknown, count: number) => {
@@ -306,7 +326,8 @@ export class JsonRpcReadClient {
                 signal,
                 {
                   maxResponseBytes: maximum,
-                  format: batch ? 'text' : 'json',
+                  format: batch ? 'error-text' : 'json',
+                  responseBudget,
                   before: () => {
                     if (rows.length > this.batchLimit)
                       throw new RpcBatchReplan();
@@ -463,6 +484,19 @@ export class JsonRpcReadClient {
       8 * 1024 * 1024,
       'response size'
     );
+    const responseBudget = new RpcResponseBudget({
+      maxTotalResponseBytes:
+        options.maxTotalResponseBytes ?? this.options.maxTotalResponseBytes,
+      maxTotalResponseNodes:
+        options.maxTotalResponseNodes ?? this.options.maxTotalResponseNodes,
+      maxResponseDepth:
+        options.maxResponseDepth ?? this.options.maxResponseDepth,
+    });
+    const responseBudgetKey = [
+      responseBudget.maxTotalResponseBytes,
+      responseBudget.maxTotalResponseNodes,
+      responseBudget.maxResponseDepth,
+    ].join(':');
     if (options.signal?.aborted) return Promise.reject(aborted(options.signal));
     if (this.lifetime.signal.aborted)
       return Promise.reject(aborted(this.lifetime.signal));
@@ -477,7 +511,9 @@ export class JsonRpcReadClient {
       this.chainCache = undefined;
     }
     let request =
-      !options.fresh && this.chainRequest?.maxResponseBytes === maxResponseBytes
+      !options.fresh &&
+      this.chainRequest?.maxResponseBytes === maxResponseBytes &&
+      this.chainRequest.responseBudgetKey === responseBudgetKey
         ? this.chainRequest
         : undefined;
     if (!request) {
@@ -489,6 +525,9 @@ export class JsonRpcReadClient {
         signal: controller.signal,
         timeoutMs: 30000,
         maxResponseBytes,
+        maxTotalResponseBytes: responseBudget.maxTotalResponseBytes,
+        maxTotalResponseNodes: responseBudget.maxTotalResponseNodes,
+        maxResponseDepth: responseBudget.maxResponseDepth,
       }).then((value) => {
         if (
           typeof value !== 'string' ||
@@ -503,6 +542,7 @@ export class JsonRpcReadClient {
         promise,
         controller,
         maxResponseBytes,
+        responseBudgetKey,
         subscribers: 0,
         settled: false,
       };

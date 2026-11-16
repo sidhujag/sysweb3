@@ -95,9 +95,10 @@ type RpcHttpOptions = {
   timeoutMs?: number;
 };
 type RpcHttpPolicy<T> = {
-  format?: 'json' | 'text';
+  format?: 'json' | 'text' | 'error-text';
   fetch?: RpcHttpOptions['fetch'];
   maxResponseBytes?: number;
+  responseBudget?: RpcResponseBudget;
   before?: () => void;
   validate?: (response: Response) => void;
   process: (body: any, response: Response) => T;
@@ -141,7 +142,7 @@ export class RpcHttpExecutor {
   }
   async run<T>(
     signals: readonly (AbortSignal | undefined)[],
-    work: (signal: AbortSignal) => Promise<T>,
+    work: (signal: AbortSignal, abort: (reason: Error) => void) => Promise<T>,
     timeoutMs = this.timeoutMs
   ): Promise<T> {
     rpcBound(timeoutMs, 30000, 'timeout');
@@ -171,7 +172,10 @@ export class RpcHttpExecutor {
       return await new Promise<T>((resolve, reject) => {
         cancel = () => reject(rpcAbortError(signal));
         signal.addEventListener('abort', cancel, { once: true });
-        void work(signal).then(resolve, reject);
+        void work(signal, (reason) => controller.abort(reason)).then(
+          resolve,
+          reject
+        );
       });
     } finally {
       clearTimeout(timer);
@@ -230,6 +234,11 @@ export class RpcHttpExecutor {
         policy.maxResponseBytes ?? this.maxResponseBytes,
         signal,
         policy.format === 'text'
+          ? true
+          : policy.format === 'error-text'
+          ? 'error-text'
+          : false,
+        policy.responseBudget
       );
       checkRpcSignal(signal);
       return policy.process(body, response);
@@ -267,6 +276,109 @@ export class RpcResponseSizeError extends RpcResponseIntegrityError {
   }
 }
 
+/** Terminal work limit, never a reason to split a batch or retry a response. */
+export class RpcResponseBudgetError extends RpcResponseIntegrityError {
+  constructor(detail: string) {
+    super(`RPC operation exceeded ${detail}`, false);
+    this.name = 'RpcResponseBudgetError';
+  }
+}
+
+export type RpcResponseBudgetOptions = {
+  /** Consumed UTF-8 response bytes across all attempts, default 16 MiB, maximum 128 MiB. */
+  maxTotalResponseBytes?: number;
+  /** JSON values, containers and keys across all attempts, default 1 Mi, maximum 4 Mi. */
+  maxTotalResponseNodes?: number;
+  /** JSON container depth including the RPC envelope, default 64, maximum 256. */
+  maxResponseDepth?: number;
+};
+
+/** One allowance for all bodies and decoded JSON work belonging to an operation. */
+export class RpcResponseBudget {
+  readonly maxTotalResponseBytes: number;
+  readonly maxTotalResponseNodes: number;
+  readonly maxResponseDepth: number;
+  private bytes = 0;
+  private nodes = 0;
+
+  constructor(
+    options: RpcResponseBudgetOptions = {},
+    private readonly abort?: (error: RpcResponseBudgetError) => void
+  ) {
+    this.maxTotalResponseBytes = rpcBound(
+      options.maxTotalResponseBytes ?? 16 * 1024 * 1024,
+      128 * 1024 * 1024,
+      'total response size'
+    );
+    this.maxTotalResponseNodes = rpcBound(
+      options.maxTotalResponseNodes ?? 1024 * 1024,
+      4 * 1024 * 1024,
+      'total response values'
+    );
+    this.maxResponseDepth = rpcBound(
+      options.maxResponseDepth ?? 64,
+      256,
+      'response depth'
+    );
+  }
+
+  private fail(detail: string): never {
+    const error = new RpcResponseBudgetError(detail);
+    this.abort?.(error);
+    throw error;
+  }
+
+  consumeBytes(bytes: number): void {
+    this.bytes += bytes;
+    if (this.bytes > this.maxTotalResponseBytes)
+      this.fail('total response byte limit');
+  }
+
+  /** Count JSON containers, values and keys before JSON.parse allocates them.
+   * This only bounds work; JSON.parse remains responsible for syntax validation.
+   */
+  inspectJson(text: string): void {
+    let depth = 0;
+    const node = () => {
+      if (++this.nodes > this.maxTotalResponseNodes)
+        this.fail('total response JSON value limit');
+    };
+    const separator = (code: number) =>
+      code === 32 ||
+      (code >= 9 && code <= 13) ||
+      code === 44 ||
+      code === 58 ||
+      code === 91 ||
+      code === 93 ||
+      code === 123 ||
+      code === 125 ||
+      code === 34;
+    for (let index = 0; index < text.length; index++) {
+      const code = text.charCodeAt(index);
+      if (code === 34) {
+        node();
+        while (++index < text.length) {
+          if (text.charCodeAt(index) === 92) index++;
+          else if (text.charCodeAt(index) === 34) break;
+        }
+      } else if (code === 91 || code === 123) {
+        if (++depth > this.maxResponseDepth)
+          this.fail('response JSON depth limit');
+        node();
+      } else if (code === 93 || code === 125) {
+        depth = Math.max(0, depth - 1);
+      } else if (!separator(code)) {
+        node();
+        while (
+          index + 1 < text.length &&
+          !separator(text.charCodeAt(index + 1))
+        )
+          index++;
+      }
+    }
+  }
+}
+
 export async function cancelRpcResponse(response: Response): Promise<void> {
   try {
     await response.body?.cancel();
@@ -278,7 +390,8 @@ export async function cancelRpcResponse(response: Response): Promise<void> {
 export async function readRpcResponseText(
   response: Response,
   maximum: number,
-  signal: AbortSignal
+  signal: AbortSignal,
+  budget?: RpcResponseBudget
 ): Promise<string> {
   const declared = response.headers.get('content-length');
   if (declared !== null && !/^\d+$/.test(declared)) {
@@ -293,8 +406,9 @@ export async function readRpcResponseText(
     try {
       const text = await response.text();
       checkRpcSignal(signal);
-      if (new TextEncoder().encode(text).byteLength > maximum)
-        throw new RpcResponseSizeError();
+      const bytes = rpcByteLength(text);
+      budget?.consumeBytes(bytes);
+      if (bytes > maximum) throw new RpcResponseSizeError();
       return text;
     } finally {
       await cancelRpcResponse(response);
@@ -343,6 +457,7 @@ export async function readRpcResponseText(
         continue;
       }
       size += part.value.byteLength;
+      budget?.consumeBytes(part.value.byteLength);
       if (size > maximum) throw new RpcResponseSizeError();
       text += decode(part.value, true);
     }
@@ -359,7 +474,8 @@ export async function readJsonRpcResponse(
   response: Response,
   maximum: number,
   signal: AbortSignal,
-  retainText = false
+  retainText: boolean | 'error-text' = false,
+  budget?: RpcResponseBudget
 ): Promise<unknown> {
   let readingBody = false;
   try {
@@ -377,12 +493,13 @@ export async function readJsonRpcResponse(
         false
       );
     readingBody = true;
-    const text = await readRpcResponseText(response, maximum, signal);
+    const text = await readRpcResponseText(response, maximum, signal, budget);
     checkRpcSignal(signal);
+    budget?.inspectJson(text);
     if (retainText && response.status !== 200) return text;
     try {
       const json = JSON.parse(text);
-      return retainText ? text : json;
+      return retainText === true ? text : json;
     } catch {
       throw new RpcResponseIntegrityError(
         'Invalid JSON-RPC JSON response',

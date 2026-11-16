@@ -35,6 +35,15 @@ contacting the endpoint. The caller supplies a bounded, redirect-rejecting
 Use the root `getSysRpc` API with the same owner when you also need the formatted
 network registration.
 
+### RPC read response limits
+
+`JsonRpcReadClient.readMany` shares one response budget across batches, splits,
+scalar fallbacks and retries: 16 MiB of consumed UTF-8 response bytes, 1,048,576
+JSON values/keys and 64 container levels by default. `maxTotalResponseBytes`,
+`maxTotalResponseNodes` and `maxResponseDepth` configure those operation limits.
+`RpcResponseBudgetError` ends the operation without destroying the client;
+per-response `RpcResponseSizeError` can still trigger bounded batch splitting.
+
 For a new custom endpoint, `observeFirstUseUtxoRpc` uses the same transport
 and owner guard. It requires HTTPS, with HTTP permitted for `127.0.0.1`
 and `[::1]` in local development. It accepts an optional exact SDK coin selection and

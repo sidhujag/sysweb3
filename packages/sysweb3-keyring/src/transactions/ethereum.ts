@@ -869,12 +869,15 @@ export class EthereumTransactions<
     const owner = captured.authority;
     if (!Array.isArray(params) || params.length !== 2)
       throw new Error('Invalid personal message request');
-    params = [0, 1].map((index) => {
-      const field = Object.getOwnPropertyDescriptor(params, String(index));
-      if (!field || !('value' in field) || typeof field.value !== 'string')
-        throw new Error('Invalid personal message request');
-      return field.value;
-    });
+    params = captureHardwareSigningData(
+      [0, 1].map((index) => {
+        const field = Object.getOwnPropertyDescriptor(params, String(index));
+        if (!field || !('value' in field) || typeof field.value !== 'string')
+          throw new Error('Invalid personal message request');
+        return field.value;
+      }),
+      () => new Error('Invalid personal message request')
+    );
     const { address, decryptedPrivateKey } = this.getDecryptedPrivateKey();
     owner.assertCurrent();
     const { activeAccountId, activeAccountType, activeNetwork, activeAccount } =

@@ -8,6 +8,7 @@ export {
   RpcHttpExecutor,
   RpcResponseIntegrityError,
   RpcResponseSizeError,
+  RpcResponseBudgetError,
   cancelRpcResponse,
   readRpcResponseText,
   readJsonRpcResponse,

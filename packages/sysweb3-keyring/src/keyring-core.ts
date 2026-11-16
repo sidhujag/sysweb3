@@ -3290,11 +3290,7 @@ export class KeyringCore<
     // Session/encryption key derivation (used to encrypt/decrypt xprv in-memory and persisted state).
     // PBKDF2 with SHA-512, 20,000 iterations (prod default), 256-bit output.
     // NOTE: Tests override iterations to keep CI fast.
-    const isTestEnv =
-      typeof process !== 'undefined' && process?.env?.NODE_ENV === 'test';
-    const iterations =
-      Number.parseInt(process?.env?.SYSWEB3_PBKDF2_ENC_ITERS || '', 10) ||
-      (isTestEnv ? 1_000 : 20_000);
+    const iterations = this.getEncIterations(20_000);
     const key = CryptoJS.PBKDF2(password, CryptoJS.enc.Hex.parse(salt), {
       keySize: 256 / 32, // 256 bits
       iterations,
@@ -3330,13 +3326,15 @@ export class KeyringCore<
     return hex;
   };
 
-  private getEncIterations = (): number => {
+  private getEncIterations = (productionDefault = 900_000): number => {
     const isTestEnv =
       typeof process !== 'undefined' && process?.env?.NODE_ENV === 'test';
-    return (
-      Number.parseInt(process?.env?.SYSWEB3_PBKDF2_ENC_ITERS || '', 10) ||
-      (isTestEnv ? 1_000 : 900_000)
+    if (!isTestEnv) return productionDefault;
+    const override = Number.parseInt(
+      process.env.SYSWEB3_PBKDF2_ENC_ITERS || '',
+      10
     );
+    return Number.isSafeInteger(override) && override > 0 ? override : 1_000;
   };
 
   private async pbkdf2WebCryptoHex(params: {

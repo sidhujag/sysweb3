@@ -29,6 +29,16 @@ full rekey of those account records to 900,000 iterations. The profile is writte
 before rewrapping, so interruption of either write remains recoverable. Arbitrary
 KDF profiles or parameters are rejected.
 
+`SYSWEB3_PBKDF2_ENC_ITERS` is a test-only speed override; non-test builds ignore
+it. Earlier SDK vaults created with a custom non-test override do not store that
+work factor and require their original SDK/configuration to reopen. The SDK does
+not guess historical iteration counts or migrate such custom configurations.
+
+Personal-message requests use the existing 1 MiB captured signing-payload limit
+before key access or device dispatch. Hexadecimal messages count their encoded
+text, so hardware transport can reach this limit before an equivalent plaintext
+software-signing request.
+
 Storage clients must return their asynchronous write/delete promises. The core
 adapter preserves them so rejected writes do not silently advance vault migration.
 Fresh wallet creation additionally requires conditional batch creation. Native

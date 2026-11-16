@@ -148,6 +148,25 @@ const cryptoHost = () => {
   return { host, ledger: new LedgerKeyring(undefined, host) };
 };
 
+test.each(['61'.repeat(512 * 1024 + 1), '雪'.repeat(400000)])(
+  'Ledger bounds personal messages before connection or hex conversion',
+  async (message) => {
+    const { host, ledger } = cryptoHost();
+    try {
+      await expect(
+        ledger.evm.signPersonalMessage(
+          { accountIndex: 2, expectedAddress: signingWallet.address, message },
+          messageAuthority()
+        )
+      ).rejects.toMatchObject({ code: 'LEDGER_INVALID_REQUEST' });
+      expect(host.connect).not.toHaveBeenCalled();
+      expect(host.evm.signPersonalMessage).not.toHaveBeenCalled();
+    } finally {
+      await ledger.retire();
+    }
+  }
+);
+
 test('rejects a direct Ledger transaction without explicit approval before connection', async () => {
   const { host, ledger } = cryptoHost();
   host.getStatus = () => ({ connected: false });

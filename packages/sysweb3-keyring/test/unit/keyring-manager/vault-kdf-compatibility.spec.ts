@@ -26,6 +26,7 @@ const deferred = () => {
 describe('production KDF compatibility through the real core adapter', () => {
   const data: Record<string, any> = {};
   let Keyring: any;
+  let coreCryptoJS: typeof CryptoJS;
   let createFixedBrowserStateStorage: any;
   let createKeyringHost: any;
   let HardwareWalletManager: any;
@@ -83,6 +84,7 @@ describe('production KDF compatibility through the real core adapter', () => {
       jest.requireActual('@sidhujag/sysweb3-core')
     );
     jest.isolateModules(() => {
+      coreCryptoJS = require('crypto-js');
       ({
         KeyringManager: Keyring,
         createKeyringHost,
@@ -173,7 +175,67 @@ describe('production KDF compatibility through the real core adapter', () => {
     }
   );
 
-  it('uses 900k PBKDF2/SHA-512 for a new wallet and stores only authenticated encryption', async () => {
+  it.each([
+    ['production', '1', 900_000, 20_000],
+    ['development', '1000', 900_000, 20_000],
+    ['canary', '-1', 900_000, 20_000],
+    [undefined, '1', 900_000, 20_000],
+    ['test', '7', 7, 7],
+    ['test', undefined, 1_000, 1_000],
+    ['test', '-1', 1_000, 1_000],
+    ['test', 'invalid', 1_000, 1_000],
+  ])(
+    'limits iteration override to tests (NODE_ENV=%s, override=%s)',
+    (environment, override, currentIterations, legacyIterations) => {
+      if (environment === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = String(environment);
+      if (override === undefined) delete process.env.SYSWEB3_PBKDF2_ENC_ITERS;
+      else process.env.SYSWEB3_PBKDF2_ENC_ITERS = String(override);
+      const derive = jest.spyOn(coreCryptoJS, 'PBKDF2').mockReturnValue({
+        toString: () => 'synthetic derived key',
+      } as any);
+      expect(ring.getEncIterations()).toBe(currentIterations);
+      expect(ring.encryptSHA512(password, salt)).toBe('synthetic derived key');
+      expect(derive).toHaveBeenCalledWith(
+        password,
+        expect.anything(),
+        expect.objectContaining({ iterations: legacyIterations })
+      );
+    }
+  );
+
+  it.each([undefined, {}])(
+    'keeps production defaults when process or process.env is absent (%p)',
+    (browserProcess) => {
+      const descriptor = Object.getOwnPropertyDescriptor(
+        globalThis,
+        'process'
+      )!;
+      const derive = jest.spyOn(coreCryptoJS, 'PBKDF2').mockReturnValue({
+        toString: () => 'synthetic derived key',
+      } as any);
+      let iterations: number;
+      try {
+        Object.defineProperty(globalThis, 'process', {
+          configurable: true,
+          value: browserProcess,
+        });
+        iterations = ring.getEncIterations();
+        ring.encryptSHA512(password, salt);
+      } finally {
+        Object.defineProperty(globalThis, 'process', descriptor);
+      }
+      expect(iterations!).toBe(900_000);
+      expect(derive).toHaveBeenCalledWith(
+        password,
+        expect.anything(),
+        expect.objectContaining({ iterations: 20_000 })
+      );
+    }
+  );
+
+  it('ignores an unsafe production override through new vault creation and reopening', async () => {
+    process.env.SYSWEB3_PBKDF2_ENC_ITERS = '1';
     await ring.initializeSession(mnemonic, password);
     const freshSalt = data['sysweb3-vault-keys'].salt;
     const expected = pbkdf2Sync(
@@ -185,8 +247,12 @@ describe('production KDF compatibility through the real core adapter', () => {
     ).toString('hex');
     expect(ring.getSessionPasswordString()).toBe(expected);
     expect(expected).not.toBe(legacyKey);
+    expect(data['sysweb3-vault-keys']).toEqual({ salt: freshSalt });
     expect(JSON.parse(data['sysweb3-vault']).alg).toBe('A256GCM');
     expect(await getDecryptedVault(expected)).toEqual({ mnemonic });
+    await ring.lockWallet();
+    await expect(ring.unlock(password)).resolves.toEqual({ canLogin: true });
+    expect(ring.getSessionPasswordString()).toBe(expected);
   });
 
   it('publishes a fresh salt and ciphertext together only after the native write succeeds', async () => {

@@ -321,6 +321,24 @@ it.each([
   expect(mockContexts).toEqual([offlineLedgerContext]);
 });
 
+it('bounds direct personal-message requests before a DMK session or byte conversion', async () => {
+  const active = session();
+  const host = createLedgerEvmAdapter(active.value);
+  await expect(
+    host.signPersonalMessage(
+      {
+        accountIndex: 1,
+        expectedAddress: address,
+        messageHex: '61'.repeat(512 * 1024 + 1),
+      },
+      messageAuthority()
+    )
+  ).rejects.toMatchObject({ code: 'LEDGER_INVALID_REQUEST' });
+  expect(active.runExclusive).not.toHaveBeenCalled();
+  expect(mockSigner.getAddress).not.toHaveBeenCalled();
+  expect(mockSigner.signMessage).not.toHaveBeenCalled();
+});
+
 it('has no remote metadata or reporting behavior in the default context', async () => {
   const fetch = jest
     .spyOn(globalThis, 'fetch')

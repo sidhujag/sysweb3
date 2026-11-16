@@ -159,9 +159,11 @@ export class LedgerKeyring {
       signPersonalMessage: async (request, authority) => {
         const owner = captureHardwareTransactionAuthority(authority);
         const expected = approvedAddress(request.expectedAddress);
-        const messageHex = Buffer.from(hexBytes(request.message)).toString(
-          'hex'
-        );
+        const message = request.message;
+        if (typeof message !== 'string') throw invalidRequest();
+        const messageHex = Buffer.from(
+          hexBytes(captureHardwareSigningData(message, invalidRequest))
+        ).toString('hex');
         const digest = hashMessage(hexBytes(messageHex));
         const approved = {
           accountIndex: accountIndex(request.accountIndex),
