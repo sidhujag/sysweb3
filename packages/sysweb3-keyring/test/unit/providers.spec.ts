@@ -8,6 +8,21 @@ const { CustomJsonRpcProvider, wrapTransactionResponse } = jest.requireActual(
   '../../src/providers'
 );
 
+const fullFeeBlock = (baseFeePerGas: string) => ({
+  hash: `0x${'11'.repeat(32)}`,
+  parentHash: `0x${'22'.repeat(32)}`,
+  number: '0x1',
+  timestamp: '0x1',
+  nonce: '0x0000000000000000',
+  difficulty: '0x0',
+  gasLimit: '0x1c9c380',
+  gasUsed: '0x0',
+  miner: '0x0000000000000000000000000000000000000001',
+  extraData: '0x',
+  transactions: [],
+  baseFeePerGas,
+});
+
 describe('CustomJsonRpcProvider', () => {
   it('wraps read-only transaction response numeric fields without redefining them', async () => {
     const transaction = {
@@ -83,7 +98,7 @@ describe('CustomJsonRpcProvider', () => {
         id: request.id,
         result:
           request.method === 'eth_getBlockByNumber'
-            ? { baseFeePerGas: '0x0' }
+            ? fullFeeBlock('0x0')
             : request.method === 'eth_gasPrice'
             ? '0x7'
             : '0x2',
@@ -117,7 +132,7 @@ describe('CustomJsonRpcProvider', () => {
         id: request.id,
         result:
           request.method === 'eth_getBlockByNumber'
-            ? { baseFeePerGas: '0x3' }
+            ? fullFeeBlock('0x3')
             : request.method === 'eth_gasPrice'
             ? '0x7'
             : '0x3',

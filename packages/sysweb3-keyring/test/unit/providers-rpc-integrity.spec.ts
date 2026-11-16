@@ -31,6 +31,20 @@ const RPC_URL = 'https://rpc.example/v1/token?existing=a%2Fb&space=a%20b';
 const FROM = '0x0000000000000000000000000000000000000001';
 const RUNTIME = `0x${'60'.repeat(512)}`;
 const network = { url: RPC_URL, chainId: 5700 };
+const fullFeeBlock = (fields: Record<string, unknown> = {}) => ({
+  hash: `0x${'11'.repeat(32)}`,
+  parentHash: `0x${'22'.repeat(32)}`,
+  number: '0x1',
+  timestamp: '0x1',
+  nonce: '0x0000000000000000',
+  difficulty: '0x0',
+  gasLimit: '0x1c9c380',
+  gasUsed: '0x0',
+  miner: FROM,
+  extraData: '0x',
+  transactions: [],
+  ...fields,
+});
 
 const response = (json: any) => ({
   ok: true,
@@ -54,7 +68,7 @@ const feeResponse = async (body: string, evaluate: (request: any) => any) => {
         JsonRpcProvider.prototype.getBlock as any
       ).getMockImplementation?.();
       if (block) {
-        return resultFor(row, await block());
+        return resultFor(row, fullFeeBlock(await block()));
       }
     }
     return evaluate(row);
@@ -883,6 +897,92 @@ describe('JSON-RPC response correlation', () => {
     expect(fetchMock.mock.calls[0][0]).toBe(RPC_URL);
   });
 
+  it('rejects an incomplete raw fee header before caching legacy evidence', async () => {
+    const provider = providerFor();
+    fetchMock.mockImplementation(async (_url, init) =>
+      response(
+        JSON.parse(init.body).map((request) =>
+          resultFor(
+            request,
+            request.method === 'eth_getBlockByNumber' ? {} : '0x2'
+          )
+        )
+      )
+    );
+    await expect(provider.getFeeData()).rejects.toMatchObject({
+      code: 'BAD_DATA',
+    });
+    expect(provider.feeBlock).toBeUndefined();
+    expect(provider.feeDataCache).toBeNull();
+  });
+
+  it.each([null, '0x0', '0x1'])(
+    'normalizes one complete remote fee block with base fee %p',
+    async (baseFeePerGas) => {
+      const provider = providerFor();
+      fetchMock.mockImplementation(async (_url, init) =>
+        response(
+          JSON.parse(init.body).map((request) =>
+            resultFor(
+              request,
+              request.method === 'eth_getBlockByNumber'
+                ? fullFeeBlock({ baseFeePerGas })
+                : '0x2'
+            )
+          )
+        )
+      );
+      const value = await provider.getFeeData();
+      expect(value.maxFeePerGas?.toString() ?? null).toBe(
+        baseFeePerGas === null ? null : String(BigInt(baseFeePerGas) * 2n + 2n)
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(
+        requestsFrom(fetchMock)
+          .flat()
+          .filter((request) => request.method === 'eth_getBlockByNumber')
+      ).toHaveLength(1);
+    }
+  );
+
+  it.each(['ascii', 'unicode'])(
+    'keeps automatic collection within a custom aggregate request budget for %s',
+    async (encoding) => {
+      const fetcher = jest.fn(async (_url, init) => {
+        expect(
+          new TextEncoder().encode(init.body).byteLength
+        ).toBeLessThanOrEqual(1024);
+        const requests = JSON.parse(init.body);
+        return response(
+          Array.isArray(requests)
+            ? requests.map((request) =>
+                resultFor(request, request.params[0].data)
+              )
+            : resultFor(requests, requests.params[0].data)
+        );
+      });
+      const provider = new CustomJsonRpcProvider(
+        new AbortController().signal,
+        RPC_URL,
+        1,
+        { fetch: fetcher, maxRequestBytes: 1024 }
+      );
+      providers.push(provider);
+      const values = Array.from({ length: 100 }, (_, index) =>
+        encoding === 'ascii'
+          ? `0x${index.toString(16).padStart(2, '0')}${'ab'.repeat(100)}`
+          : `value${index}${'界'.repeat(85)}`
+      );
+      await expect(
+        Promise.all(
+          values.map((data) =>
+            provider.send('eth_call', [{ to: FROM, data }, 'latest'])
+          )
+        )
+      ).resolves.toEqual(values);
+    }
+  );
+
   it('captures endpoint fetch policy consistently for reads and controls', async () => {
     const headers = new Headers({ Authorization: 'Bearer fixture' });
     const init: RequestInit = {
@@ -1051,7 +1151,7 @@ describe('JSON-RPC response correlation', () => {
           resultFor(
             request,
             request.method === 'eth_getBlockByNumber'
-              ? { baseFeePerGas: '0x7' }
+              ? fullFeeBlock({ baseFeePerGas: '0x7' })
               : '0x2'
           )
         );
@@ -1284,7 +1384,7 @@ describe('JSON-RPC response correlation', () => {
           resultFor(
             request,
             request.method === 'eth_getBlockByNumber'
-              ? { baseFeePerGas: null }
+              ? fullFeeBlock({ baseFeePerGas: null })
               : '0x2'
           )
         )

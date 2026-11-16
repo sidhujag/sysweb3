@@ -170,7 +170,17 @@ export class CustomJsonRpcProvider extends JsonRpcProvider {
     super(
       typeof url === 'string' ? url : url?.url,
       network,
-      network == null ? undefined : { staticNetwork: true, batchStallTime: 4 }
+      network == null
+        ? undefined
+        : {
+            staticNetwork: true,
+            batchStallTime: 4,
+            // Ethers counts UTF-16 code units; the executor enforces UTF-8 bytes.
+            batchMaxSize: Math.min(
+              1024 * 1024,
+              Math.floor(((options.maxRequestBytes ?? 256 * 1024) * 16) / 3)
+            ),
+          }
     );
     Object.defineProperty(this, 'configuredChainId', {
       value: network == null ? undefined : Network.from(network).chainId,
@@ -514,6 +524,11 @@ export class CustomJsonRpcProvider extends JsonRpcProvider {
           (typeof result.value !== 'object' || Array.isArray(result.value))
         )
           throw new RpcResponseIntegrityError('Invalid fee block', false);
+        if (index === 0 && result.value !== null)
+          return this._wrapBlock(
+            result.value as Parameters<typeof this._wrapBlock>[0],
+            network
+          );
         return result.value;
       });
     };
