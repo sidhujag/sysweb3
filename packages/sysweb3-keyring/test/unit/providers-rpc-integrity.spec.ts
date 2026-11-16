@@ -945,9 +945,14 @@ describe('JSON-RPC response correlation', () => {
     }
   );
 
-  it.each(['ascii', 'unicode'])(
-    'keeps automatic collection within a custom aggregate request budget for %s',
-    async (encoding) => {
+  it.each([
+    [1, 'ascii'],
+    [1, 'unicode'],
+    [undefined, 'ascii'],
+    [undefined, 'unicode'],
+  ])(
+    'keeps automatic collection within a custom aggregate request budget for network %p and %s',
+    async (network, encoding) => {
       const fetcher = jest.fn(async (_url, init) => {
         expect(
           new TextEncoder().encode(init.body).byteLength
@@ -964,10 +969,13 @@ describe('JSON-RPC response correlation', () => {
       const provider = new CustomJsonRpcProvider(
         new AbortController().signal,
         RPC_URL,
-        1,
+        network,
         { fetch: fetcher, maxRequestBytes: 1024 }
       );
       providers.push(provider);
+      expect(provider._getOption('batchMaxSize')).toBe(
+        Math.floor((1024 * 16) / 3)
+      );
       const values = Array.from({ length: 100 }, (_, index) =>
         encoding === 'ascii'
           ? `0x${index.toString(16).padStart(2, '0')}${'ab'.repeat(100)}`

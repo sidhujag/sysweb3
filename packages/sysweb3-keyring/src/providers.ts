@@ -167,21 +167,15 @@ export class CustomJsonRpcProvider extends JsonRpcProvider {
     network?: Networkish,
     options: RpcProviderOptions = {}
   ) {
-    super(
-      typeof url === 'string' ? url : url?.url,
-      network,
-      network == null
-        ? undefined
-        : {
-            staticNetwork: true,
-            batchStallTime: 4,
-            // Ethers counts UTF-16 code units; the executor enforces UTF-8 bytes.
-            batchMaxSize: Math.min(
-              1024 * 1024,
-              Math.floor(((options.maxRequestBytes ?? 256 * 1024) * 16) / 3)
-            ),
-          }
-    );
+    super(typeof url === 'string' ? url : url?.url, network, {
+      ...(network == null ? {} : { staticNetwork: true }),
+      batchStallTime: 4,
+      // Ethers counts UTF-16 code units; the executor enforces UTF-8 bytes.
+      batchMaxSize: Math.min(
+        1024 * 1024,
+        Math.floor(((options.maxRequestBytes ?? 256 * 1024) * 16) / 3)
+      ),
+    });
     Object.defineProperty(this, 'configuredChainId', {
       value: network == null ? undefined : Network.from(network).chainId,
     });
