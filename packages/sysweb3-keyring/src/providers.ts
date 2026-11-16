@@ -155,6 +155,10 @@ export class CustomJsonRpcProvider extends JsonRpcProvider {
   private chainIdVerificationPromise: Promise<void> | null = null;
   private readonly readClient: JsonRpcReadClient;
   private readonly lifetime = new AbortController();
+  private readonly ccipReads = new WeakMap<
+    string[],
+    { signal: AbortSignal; failure?: unknown }
+  >();
   private releaseExternalSignal: () => void;
   public isInCooldown = false;
   public errorMessage: any = '';
@@ -385,7 +389,11 @@ export class CustomJsonRpcProvider extends JsonRpcProvider {
   }
 
   override getRpcError(payload: JsonRpcPayload, response: any): Error {
-    if (response.error && queuedReadFailure in response.error)
+    if (
+      response.error &&
+      queuedReadFailure in response.error &&
+      !(response.error[queuedReadFailure] instanceof RpcReadError)
+    )
       return response.error[queuedReadFailure];
     return super.getRpcError(payload, response);
   }
@@ -404,7 +412,13 @@ export class CustomJsonRpcProvider extends JsonRpcProvider {
         !this.readClient.supportsBatch
       ) {
         const [result] = await this.readMany([{ method, params }], options);
-        if (result.status === 'rejected') throw result.reason;
+        if (result.status === 'rejected') {
+          if (!(result.reason instanceof RpcReadError)) throw result.reason;
+          throw this.getRpcError(
+            { jsonrpc: '2.0', id: 1, method, params },
+            { error: result.reason }
+          );
+        }
         return result.value;
       }
       const [{ params: snapshot }] = captureRpcRequests([{ method, params }]);
@@ -461,6 +475,114 @@ export class CustomJsonRpcProvider extends JsonRpcProvider {
     this.releaseExternalSignal();
     this.readClient.destroy();
     super.destroy();
+  }
+
+  override ccipReadFetch(
+    transaction: Parameters<JsonRpcProvider['ccipReadFetch']>[0],
+    calldata: string,
+    urls: string[]
+  ): Promise<string | null> {
+    const capturedUrls = [...urls];
+    return this.http.run([], async (signal) => {
+      const owner = { signal, failure: undefined as unknown };
+      this.ccipReads.set(capturedUrls, owner);
+      try {
+        const value = await super.ccipReadFetch(
+          transaction,
+          calldata,
+          capturedUrls
+        );
+        checkRpcSignal(signal);
+        if (owner.failure) throw owner.failure;
+        return value;
+      } catch (error) {
+        checkRpcSignal(signal);
+        throw owner.failure ?? error;
+      } finally {
+        this.ccipReads.delete(capturedUrls);
+      }
+    });
+  }
+
+  override emit(
+    event: Parameters<JsonRpcProvider['emit']>[0],
+    ...args: unknown[]
+  ): Promise<boolean> {
+    const value = args[0] as
+      | { action?: string; request?: FetchRequest; urls?: string[] }
+      | undefined;
+    if (event === 'debug' && value?.action === 'sendCcipReadFetchRequest') {
+      const owner = value.urls && this.ccipReads.get(value.urls);
+      if (owner && value.request instanceof FetchRequest) {
+        const request = value.request;
+        checkRpcSignal(owner.signal);
+        if (owner.failure) throw owner.failure;
+        request.timeout = this.http.timeoutMs;
+        request.setThrottleParams({ maxAttempts: 1 });
+        request.getUrlFunc = async (wire) => {
+          try {
+            checkRpcSignal(owner.signal);
+            if (owner.failure) throw owner.failure;
+            const url = new URL(wire.url);
+            if (
+              wire.url.length > 4096 ||
+              url.username ||
+              url.password ||
+              url.hash ||
+              (url.protocol !== 'https:' &&
+                !(
+                  url.protocol === 'http:' &&
+                  ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+                )) ||
+              !['GET', 'POST'].includes(wire.method)
+            )
+              throw new RpcResponseIntegrityError(
+                'Invalid CCIP gateway request',
+                false
+              );
+            return await this.http.request(
+              wire.url,
+              {
+                method: wire.method,
+                headers: wire.headers,
+                body: wire.body ? Uint8Array.from(wire.body).buffer : undefined,
+                credentials: 'omit',
+                redirect: 'error',
+                cache: 'no-store',
+                referrerPolicy: 'no-referrer',
+              },
+              owner.signal,
+              {
+                fetch: (url, init) => fetch(url, init),
+                format: 'text',
+                validate: (response) => {
+                  if (
+                    response.redirected ||
+                    (response.url && response.url !== wire.url) ||
+                    (response.status >= 300 && response.status < 400)
+                  )
+                    throw new RpcResponseIntegrityError(
+                      'CCIP gateway redirect refused',
+                      false
+                    );
+                },
+                process: (text, response) => ({
+                  statusCode: response.status,
+                  statusMessage: response.statusText,
+                  headers: Object.fromEntries(response.headers.entries()),
+                  body: new TextEncoder().encode(text),
+                }),
+              }
+            );
+          } catch (error) {
+            if (error instanceof RpcResponseIntegrityError)
+              owner.failure = error;
+            throw error;
+          }
+        };
+      }
+    }
+    return super.emit(event, ...args);
   }
 
   async getGasPrice() {

@@ -1439,33 +1439,32 @@ describe('JSON-RPC response correlation', () => {
     expect(requestsFrom(fetchMock)[0]).toHaveLength(2);
   });
 
-  it('preserves mixed batch results and the original per-item rejection', async () => {
+  it('preserves mixed batch results and normalizes genuine RPC reverts', async () => {
     fetchMock.mockImplementation(async (_url, init) =>
       feeResponse(init.body, (row) =>
-        row.params[0] === 'bad'
+        row.params[0].data === 'bad'
           ? {
               jsonrpc: '2.0',
               id: row.id,
               error: { code: 3, message: 'reverted', data: '0x1234' },
             }
-          : resultFor(row, row.params[0])
+          : resultFor(row, row.params[0].data)
       )
     );
     const provider = providerFor();
     await enableBatch(provider, fetchMock);
     const result = await Promise.allSettled(
       ['good', 'bad'].map((value) =>
-        provider.send('eth_call', [value, 'latest'])
+        provider.send('eth_call', [{ to: FROM, data: value }, 'latest'])
       )
     );
     expect(result[0]).toEqual({ status: 'fulfilled', value: 'good' });
     expect(result[1]).toMatchObject({
       status: 'rejected',
       reason: {
-        name: 'RpcReadError',
-        code: 3,
+        code: 'CALL_EXCEPTION',
         data: '0x1234',
-        message: 'reverted',
+        info: { error: { code: 3, message: 'reverted' } },
       },
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -1482,12 +1481,15 @@ describe('JSON-RPC response correlation', () => {
     await enableBatch(provider, fetchMock);
     fetchMock.mockImplementation(async (_url, init) =>
       feeResponse(init.body, (row) =>
-        resultFor(row, row.params[0] === 'large' ? 'x'.repeat(300) : 'small')
+        resultFor(
+          row,
+          row.params[0].data === 'large' ? 'x'.repeat(300) : 'small'
+        )
       )
     );
     const result = await Promise.allSettled(
       ['small', 'large'].map((value) =>
-        provider.send('eth_call', [value, 'latest'])
+        provider.send('eth_call', [{ to: FROM, data: value }, 'latest'])
       )
     );
     expect(result[0]).toEqual({ status: 'fulfilled', value: 'small' });
@@ -1730,7 +1732,7 @@ describe('JSON-RPC response correlation', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
-  it('preserves a matched RPC error and advances the next request ID', async () => {
+  it('normalizes a matched RPC error and advances the next request ID', async () => {
     fetchMock.mockImplementationOnce(async (_url, options) => {
       const request = JSON.parse(options.body);
       return response({
@@ -1743,9 +1745,9 @@ describe('JSON-RPC response correlation', () => {
     await expect(
       provider.send('eth_call', [{ data: '0x01' }, 'latest'])
     ).rejects.toMatchObject({
-      code: 3,
-      message: 'execution reverted',
+      code: 'CALL_EXCEPTION',
       data: '0x1234',
+      info: { error: { code: 3, message: 'execution reverted' } },
     });
     await expect(
       provider.send('eth_getBalance', [FROM, 'latest'])
