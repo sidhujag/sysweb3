@@ -148,7 +148,7 @@ export class CustomJsonRpcProvider extends JsonRpcProvider {
     expiresAt: number;
     block: { baseFeePerGas?: unknown } | null;
   };
-  readonly #configuredChainId?: bigint;
+  private readonly configuredChainId?: bigint;
   private chainIdVerificationPromise: Promise<void> | null = null;
   private readonly readClient: JsonRpcReadClient;
   private readonly lifetime = new AbortController();
@@ -169,8 +169,9 @@ export class CustomJsonRpcProvider extends JsonRpcProvider {
       network,
       network == null ? undefined : { staticNetwork: true, batchStallTime: 4 }
     );
-    this.#configuredChainId =
-      network == null ? undefined : Network.from(network).chainId;
+    Object.defineProperty(this, 'configuredChainId', {
+      value: network == null ? undefined : Network.from(network).chainId,
+    });
     this.signal = this.lifetime.signal;
     const abort = () => this.lifetime.abort(signal.reason);
     this.releaseExternalSignal = () =>
@@ -238,7 +239,7 @@ export class CustomJsonRpcProvider extends JsonRpcProvider {
   }
 
   async verifyConfiguredChainId(fresh = false): Promise<void> {
-    if (this.#configuredChainId == null) return;
+    if (this.configuredChainId == null) return;
     if (fresh) return this.fetchAndVerifyConfiguredChainId();
     if (!this.chainIdVerificationPromise) {
       this.chainIdVerificationPromise =
@@ -252,11 +253,9 @@ export class CustomJsonRpcProvider extends JsonRpcProvider {
   private async fetchAndVerifyConfiguredChainId(): Promise<void> {
     const actual = await this.readChainId(true);
     const actualChainId = BigInt(actual);
-    if (actualChainId !== this.#configuredChainId) {
+    if (actualChainId !== this.configuredChainId) {
       throw new Error(
-        `Configured EVM chainId ${
-          this.#configuredChainId
-        } does not match RPC eth_chainId ${actualChainId}`
+        `Configured EVM chainId ${this.configuredChainId} does not match RPC eth_chainId ${actualChainId}`
       );
     }
   }
@@ -378,7 +377,7 @@ export class CustomJsonRpcProvider extends JsonRpcProvider {
     if (method === 'eth_chainId') return this.readChainId(false);
     if (isReadOnlyRpcMethod(method)) {
       this.assertActive();
-      if (this.#configuredChainId == null || !this.readClient.supportsBatch) {
+      if (this.configuredChainId == null || !this.readClient.supportsBatch) {
         const [result] = await this.readMany([{ method, params }]);
         if (result.status === 'rejected') throw result.reason;
         return result.value;
