@@ -16,9 +16,11 @@ const { Transaction } = jest.requireActual('ethers/transaction');
 const { FetchRequest } = jest.requireActual('ethers/utils');
 const { Wallet } = jest.requireActual('ethers/wallet');
 
-const { CustomJsonRpcProvider, RpcResponseIntegrityError } = jest.requireActual(
-  '../../src/providers'
-);
+const {
+  CustomJsonRpcProvider,
+  RpcResponseIntegrityError,
+  wrapTransactionResponse,
+} = jest.requireActual('../../src/providers');
 const { RpcReadCapabilities } = jest.requireActual('../../src/rpc-read-client');
 const { EthereumTransactions } = jest.requireActual(
   '../../src/transactions/ethereum'
@@ -879,6 +881,44 @@ describe('JSON-RPC response correlation', () => {
     ).resolves.toBe('0x5208');
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][0]).toBe(RPC_URL);
+  });
+
+  it('keeps exact bigint chain configuration out of serializable provider state', async () => {
+    const chainId = 9007199254740993n;
+    const provider = new CustomJsonRpcProvider(
+      new AbortController().signal,
+      RPC_URL,
+      chainId
+    );
+    providers.push(provider);
+    expect(() => JSON.stringify(provider)).not.toThrow();
+    const transaction = {
+      provider,
+      chainId,
+      value: 0n,
+      gasLimit: 1n,
+      gasPrice: 1n,
+      maxFeePerGas: null,
+      maxPriorityFeePerGas: null,
+      wait: async () => ({}),
+    };
+    expect(() =>
+      JSON.stringify(wrapTransactionResponse(transaction))
+    ).not.toThrow();
+    fetchMock.mockImplementation(async (_url, init) =>
+      response(resultFor(JSON.parse(init.body), `0x${chainId.toString(16)}`))
+    );
+    await expect(
+      provider.verifyConfiguredChainId(true)
+    ).resolves.toBeUndefined();
+    fetchMock.mockImplementation(async (_url, init) =>
+      response(
+        resultFor(JSON.parse(init.body), `0x${(chainId - 1n).toString(16)}`)
+      )
+    );
+    await expect(provider.verifyConfiguredChainId(true)).rejects.toThrow(
+      'does not match'
+    );
   });
 
   it('shares physical capacity across read, stateful and fee HTTP requests', async () => {
