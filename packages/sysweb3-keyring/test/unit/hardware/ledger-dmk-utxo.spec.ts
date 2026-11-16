@@ -16,6 +16,42 @@ import {
 
 jest.unmock('syscoinjs-lib');
 
+test('the offline Ledger host graph does not load the Network RPC barrel', () => {
+  const browserGlobals = ['window', 'document', 'self'];
+  const descriptors = browserGlobals.map((name) =>
+    Object.getOwnPropertyDescriptor(globalThis, name)
+  );
+  for (const name of browserGlobals) delete (globalThis as any)[name];
+  jest.doMock('@sidhujag/sysweb3-network', () => {
+    throw new Error('Offline Ledger imported the Network RPC barrel');
+  });
+  try {
+    jest.isolateModules(() => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      expect(
+        require('../../../src/ledger/dmk-host').createLedgerHostForDmk
+      ).toBeInstanceOf(Function);
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const paths = require('../../../src/utils/derivation-paths');
+      expect(paths.getCoinInfo('BTC', 0)).toMatchObject({
+        slip44: 0,
+        isEvm: false,
+      });
+      expect(paths.getCoinInfo('ETH', 60)).toEqual({
+        slip44: 60,
+        segwit: false,
+        isEvm: true,
+      });
+    });
+  } finally {
+    jest.dontMock('@sidhujag/sysweb3-network');
+    browserGlobals.forEach((name, index) => {
+      const descriptor = descriptors[index];
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+    });
+  }
+});
+
 const owner = (assertCurrent = () => undefined) => ({
   assertCurrent,
   signal: new AbortController().signal,

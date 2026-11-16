@@ -41,6 +41,12 @@
   },
   "typesVersions": {
     "*": {
+      "cjs/networks": [
+        "types/networks.d.ts"
+      ],
+      "cjs/networks.js": [
+        "types/networks.d.ts"
+      ],
       "cjs/coin-utils": [
         "types/coin-utils.d.ts"
       ],

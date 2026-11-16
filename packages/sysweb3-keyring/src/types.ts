@@ -3,7 +3,6 @@ import {
   TypedMessage,
   SignTypedDataVersion,
 } from '@metamask/eth-sig-util';
-import { INetwork, INetworkType } from '@sidhujag/sysweb3-network';
 import { ITxid } from '@sidhujag/sysweb3-utils';
 import { CustomJsonRpcProvider } from 'providers';
 
@@ -26,7 +25,11 @@ import { TrezorKeyring } from './trezor';
 
 import type { KeyringCore, PreparedSessionTransfer } from './keyring-core';
 import type { PreparedEvmTransaction } from './transactions/evm-envelope';
-import type { OwnedUtxoRpcVerification } from '@sidhujag/sysweb3-network';
+import type {
+  INetwork,
+  INetworkType,
+  OwnedUtxoRpcVerification,
+} from '@sidhujag/sysweb3-network';
 
 export type AccessListish =
   | Array<{ address: string; storageKeys: string[] }>

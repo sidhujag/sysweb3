@@ -10,6 +10,10 @@ module.exports = {
   },
   testMatch: ['**/test/**/*.spec.ts'],
   moduleNameMapper: {
+    '^@sidhujag/sysweb3-network/cjs/networks(?:\\.js)?$':
+      '<rootDir>/../sysweb3-network/src/networks.ts',
+    '^@sidhujag/sysweb3-network/cjs/coin-utils(?:\\.js)?$':
+      '<rootDir>/../sysweb3-network/src/coin-utils.ts',
     '^@sidhujag/sysweb3-network/cjs/evm(?:\\.js)?$':
       '<rootDir>/../sysweb3-network/src/evm.ts',
     '^@sidhujag/sysweb3-utils$': '<rootDir>/../sysweb3-utils/src',
