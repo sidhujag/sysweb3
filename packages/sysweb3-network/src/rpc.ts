@@ -166,8 +166,15 @@ const getEthChainId = async (
     }
 
     const chainId = Number(data.result);
+    if (!chainId) {
+      throw new Error('Invalid RPC URL. Could not get chain ID for network.');
+    }
 
-    // Cache the result
+    if (!isValidChainIdForEthNetworks(chainId)) {
+      throw new Error('Invalid chain ID for ethereum networks.');
+    }
+
+    // Rejected discovery data must not prevent a fresh, healthy retry.
     ethChainIdCache.set(url, {
       chainId,
       timestamp: Date.now(),
@@ -220,13 +227,6 @@ export const validateEthRpc = async (
 }> => {
   try {
     const { chainId } = await getEthChainId(url, isInCooldown);
-    if (!chainId) {
-      throw new Error('Invalid RPC URL. Could not get chain ID for network.');
-    }
-
-    if (!isValidChainIdForEthNetworks(Number(chainId))) {
-      throw new Error('Invalid chain ID for ethereum networks.');
-    }
 
     const { valid, hexChainId } = validateChainId(chainId);
     const details = getChainById(chainId);
