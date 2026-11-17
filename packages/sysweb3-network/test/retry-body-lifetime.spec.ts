@@ -4,6 +4,7 @@ import { clearRpcCaches, validateEthRpc } from '../src/rpc';
 const endpoint = 'https://discovery-body-lifetime.invalid';
 
 beforeEach(() => {
+  jest.clearAllMocks();
   jest.useFakeTimers();
   clearRpcCaches();
 });
