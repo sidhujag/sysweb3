@@ -3,7 +3,9 @@ jest.unmock('syscoinjs-lib');
 if ((global as any).window)
   (global as any).window.location = { href: 'http://localhost/' };
 
+import { getNetworkConfig } from '@sidhujag/sysweb3-network/cjs/networks.js';
 import * as syscoinjs from 'syscoinjs-lib';
+import * as BIP84 from 'syscoinjs-lib/bip84-replacement';
 
 import {
   INetworkType,
@@ -140,6 +142,96 @@ afterEach(async () => {
   jest.restoreAllMocks();
 });
 
+it('ignores backend change-index claims without querying them and refuses failed allocation storage before funding or signing', async () => {
+  const { ring, account, state } = await fixture();
+  const config = getNetworkConfig(
+    state.activeNetwork.slip44,
+    state.activeNetwork.currency
+  );
+  const publicAccount = new BIP84.fromZPub(
+    account.xpub,
+    config.types.zPubType,
+    config.networks
+  );
+  const token = {
+    name: publicAccount.getAddress(1_000_000_000, true, 84),
+    transfers: 1,
+    path: "m/84'/1'/0'/1/1000000000",
+  };
+  const read = owned((url) => {
+    if (url === accountRoute(account.xpub))
+      return Response.json({ tokens: [token] });
+    if (url === fundingRoute(account.xpub))
+      return Response.json([witness(account.address)]);
+    throw new Error('Unexpected route');
+  });
+  const sign = jest.spyOn(ring.syscoinTransaction, 'signPSBT');
+  const change = await ring.getChangeAddress(account.id, read.options);
+  expect(change).toBe(publicAccount.getAddress(0, true, 84));
+  expect(read.calls).toEqual([]);
+  const quote = await ring.syscoinTransaction.getEstimateSysTransactionFee(
+    { ...request, feeRate: 0.00000002 },
+    read.options
+  );
+  expect(
+    PsbtUtils.fromPali(quote.psbt, state.activeNetwork).txOutputs[1].address
+  ).toBe(change);
+  expect(read.calls).toEqual([fundingRoute(account.xpub)]);
+  const failed = owned(() => Response.json({ tokens: [] }));
+  const allocateUtxoAddress = jest.fn(async () => {
+    throw new Error('Allocation storage unavailable');
+  });
+  await expect(
+    ring.syscoinTransaction.getEstimateSysTransactionFee(
+      { ...request, feeRate: 0.00000002 },
+      { ...failed.options, allocateUtxoAddress }
+    )
+  ).rejects.toMatchObject({ message: 'Allocation storage unavailable' });
+  expect(allocateUtxoAddress).toHaveBeenCalledTimes(1);
+  expect(failed.calls).toEqual([]);
+  expect(sign).not.toHaveBeenCalled();
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
+it('keeps the real address, pubkey and canonical path consistent without backend reads', async () => {
+  const { ring, account, state } = await fixture();
+  const read = owned(() => {
+    throw new Error('Address selection must remain local');
+  });
+  let discovery;
+  const options = {
+    ...read.options,
+    allocateUtxoAddress: async (select) => {
+      const selected = select(discovery);
+      discovery = selected.state;
+      // Host snapshots may put equivalent fields in another insertion order.
+      const { script, address, path, index, branch } = selected.issued;
+      return { script, address, path, index, branch };
+    },
+  };
+  const config = getNetworkConfig(
+    state.activeNetwork.slip44,
+    state.activeNetwork.currency
+  );
+  const publicAccount = new BIP84.fromZPub(
+    account.xpub,
+    config.types.zPubType,
+    config.networks
+  );
+  expect(await ring.getAddress(account.xpub, false, options)).toBe(
+    account.address
+  );
+  expect(await ring.getPubkey(account.id, false, options)).toBe(
+    publicAccount.getPublicKey(0, false)
+  );
+  expect(await ring.getBip32Path(account.id, false, options)).toBe(
+    "m/84'/1'/0'/0/0"
+  );
+  expect(discovery).toEqual({ receivingIndex: 0, changeIndex: 0 });
+  expect(read.calls).toEqual([]);
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
 it('requires ownership and routes real legacy PSBT fee, funding and prevout through one scoped GET transport', async () => {
   const { ring, state } = await fixture();
   const signer = bitcoin.ECPair.fromPrivateKey(Buffer.alloc(32, 1), {
@@ -217,15 +309,21 @@ it('requires ownership and routes real legacy PSBT fee, funding and prevout thro
 
 it('uses the SDK change-address lookup and the originally captured exclusions after a held fee', async () => {
   const { ring, state, account } = await fixture();
+  const firstChange = await ring.getChangeAddress(
+    account.id,
+    owned(() => Response.json({ tokens: [] })).options
+  );
   const accountReply = () =>
-    Response.json({ tokens: [{ transfers: 2, path: "m/84'/1'/0'/1/0" }] });
+    Response.json({
+      tokens: [{ name: firstChange, transfers: 2, path: "m/84'/1'/0'/1/0" }],
+    });
   const ambient = jest.mocked(globalThis.fetch);
   const readChange = owned((url) => {
     expect(String(url)).toBe(accountRoute(account.xpub));
     return accountReply();
   });
   const change = await ring.getAddress(account.xpub, true, readChange.options);
-  expect(readChange.calls).toEqual([accountRoute(account.xpub)]);
+  expect(readChange.calls).toEqual([]);
   expect(ambient).not.toHaveBeenCalled();
   const feeStarted = deferred();
   const release = deferred();
@@ -261,11 +359,7 @@ it('uses the SDK change-address lookup and the originally captured exclusions af
   release.resolve();
   const quote = await pending;
   const psbt = PsbtUtils.fromPali(quote.psbt, state.activeNetwork);
-  expect(transport.calls).toEqual([
-    feeUrl,
-    accountRoute(account.xpub),
-    fundingRoute(account.xpub),
-  ]);
+  expect(transport.calls).toEqual([feeUrl, fundingRoute(account.xpub)]);
   expect(psbt.txInputs).toHaveLength(1);
   expect(Buffer.from(psbt.txInputs[0].hash).reverse().toString('hex')).toBe(
     parent(2)
@@ -297,24 +391,24 @@ it('rejects absent ownership and a nonselected ID or xpub before any address rea
   expect(read.calls).toEqual([]);
 });
 
-it('discards address, pubkey and path results if the SDK wallet locks during body parsing', async () => {
+it('discards address, pubkey and path results if the SDK wallet locks during owned allocation', async () => {
   const { ring, account } = await fixture();
   const parsing = deferred();
   const release = deferred();
   let entered = 0;
-  const read = owned(() => {
-    const response = Response.json({ tokens: [] });
-    jest.spyOn(response, 'json').mockImplementation(async () => {
+  const read = owned(() => Response.json({ tokens: [] }));
+  const options = {
+    ...read.options,
+    allocateUtxoAddress: async (select) => {
       if (++entered === 3) parsing.resolve();
       await release.promise;
-      return { tokens: [] };
-    });
-    return response;
-  });
+      return select(undefined).issued;
+    },
+  };
   const pending = Promise.allSettled([
-    ring.updateReceivingAddress(read.options),
-    ring.getPubkey(account.id, false, read.options),
-    ring.getBip32Path(account.id, true, read.options),
+    ring.updateReceivingAddress(options),
+    ring.getPubkey(account.id, false, options),
+    ring.getBip32Path(account.id, true, options),
   ]);
   await Promise.race([parsing.promise, pending]);
   await ring.lockWallet();
@@ -326,7 +420,7 @@ it('discards address, pubkey and path results if the SDK wallet locks during bod
         message: 'Wallet signing context changed',
       }),
     });
-  expect(read.calls).toEqual(Array(3).fill(accountRoute(account.xpub)));
+  expect(read.calls).toEqual([accountRoute(account.xpub)]);
   expect(globalThis.fetch).not.toHaveBeenCalled();
 });
 
@@ -376,7 +470,7 @@ it('keeps the original asset funding policy when a Map is changed during a fee r
   expect(globalThis.fetch).not.toHaveBeenCalled();
 });
 
-it('keeps identical account lookups independently owned and builds MAX from one funding snapshot', async () => {
+it('keeps identical funding lookups independently owned and builds MAX from one funding snapshot', async () => {
   const first = await fixture();
   const second = await fixture();
   expect(first.account.xpub).toBe(second.account.xpub);
@@ -384,10 +478,10 @@ it('keeps identical account lookups independently owned and builds MAX from one 
   const started = deferred();
   const release = deferred();
   const one = owned(async (url) => {
-    expect(url).toBe(accountRoute(xpub));
+    expect(url).toBe(fundingRoute(xpub));
     started.resolve();
     await release.promise;
-    return Response.json({ tokens: [] });
+    return Response.json([witness(first.account.address)]);
   });
   const two = owned((url) => {
     if (url === accountRoute(xpub)) return Response.json({ tokens: [] });
@@ -415,7 +509,7 @@ it('keeps identical account lookups independently owned and builds MAX from one 
     expect(psbt.txInputs).toHaveLength(2);
     expect(psbt.txOutputs).toHaveLength(1);
     expect(psbt.txOutputs[0].address).toBe(receive);
-    expect(two.calls).toEqual([accountRoute(xpub), fundingRoute(xpub)]);
+    expect(two.calls).toEqual([fundingRoute(xpub)]);
   } finally {
     one.control.abort();
     release.resolve();
@@ -423,7 +517,7 @@ it('keeps identical account lookups independently owned and builds MAX from one 
       code: 'TRANSACTION_CREATION_FAILED',
     });
   }
-  expect(one.calls).toEqual([accountRoute(xpub)]);
+  expect(one.calls).toEqual([fundingRoute(xpub)]);
   expect(globalThis.fetch).not.toHaveBeenCalled();
 });
 
@@ -879,10 +973,7 @@ it('replays authenticated bytes only to their original verified endpoint after d
   const pending = replay(txid, authority);
   await Promise.race([preparing.promise, pending]);
   expect(authority.readRetained).toHaveBeenCalledWith(retained.owner, txid);
-  expect(authority.readJson.mock.calls).toEqual([
-    [statusUrl, authority.signal],
-    [genesisUrl, authority.signal],
-  ]);
+  expect(authority.readJson).not.toHaveBeenCalled();
   expect(authority.prepare).toHaveBeenCalledWith({
     url: submitUrl,
     rawTransaction: raw,
@@ -892,6 +983,10 @@ it('replays authenticated bytes only to their original verified endpoint after d
   expect(state.activeNetwork.url).toBe(replacementEndpoint);
   hold.resolve();
   await expect(pending).resolves.toEqual({ txid });
+  expect(authority.readJson.mock.calls).toEqual([
+    [statusUrl, authority.signal],
+    [genesisUrl, authority.signal],
+  ]);
   expect(authority.fetch).toHaveBeenCalledTimes(1);
   expect(authority.fetch).toHaveBeenCalledWith(
     submitUrl,
@@ -987,7 +1082,7 @@ it('requires the original endpoint genesis and the live wallet owner after admis
     .mockResolvedValueOnce(testnetStatus)
     .mockResolvedValueOnce({ blockHash: '0'.repeat(64) });
   await expect(replay(txid, authority)).rejects.toMatchObject(notDispatched);
-  expect(authority.prepare).not.toHaveBeenCalled();
+  expect(authority.prepare).toHaveBeenCalledTimes(1);
   expect(authority.fetch).not.toHaveBeenCalled();
 
   const hold = deferred();
@@ -1006,6 +1101,44 @@ it('requires the original endpoint genesis and the live wallet owner after admis
   expect(authority.fetch).not.toHaveBeenCalled();
   expect(globalThis.fetch).not.toHaveBeenCalled();
 });
+
+it.each(['healthy', 'wrong-genesis', 'cancelled'])(
+  'checks retained endpoint identity after held durable admission: %s',
+  async (outcome) => {
+    const { txid, authority, replay } = await retainedReplayFixture();
+    const entered = deferred(),
+      release = deferred();
+    const controller = new AbortController();
+    authority.signal = controller.signal;
+    let genesis = testnetGenesis;
+    authority.readJson.mockImplementation(async (url) => {
+      return url === statusUrl ? testnetStatus : { blockHash: genesis };
+    });
+    authority.prepare.mockImplementation(async () => {
+      entered.resolve();
+      await release.promise;
+    });
+    const pending = replay(txid, authority);
+    const result =
+      outcome === 'healthy'
+        ? expect(pending).resolves.toEqual({ txid })
+        : expect(pending).rejects.toMatchObject({
+            transactionNotBroadcast: true,
+          });
+    await entered.promise;
+    expect(authority.readJson).not.toHaveBeenCalled();
+    if (outcome === 'wrong-genesis') genesis = '0'.repeat(64);
+    if (outcome === 'cancelled') controller.abort();
+    release.resolve();
+    await result;
+    expect(authority.fetch).toHaveBeenCalledTimes(
+      outcome === 'healthy' ? 1 : 0
+    );
+    expect(authority.readJson).toHaveBeenCalledTimes(
+      outcome === 'cancelled' ? 0 : 2
+    );
+  }
+);
 
 it('requires the retained journal port and preserves a lost ACK after the original POST', async () => {
   const { txid, authority, replay } = await retainedReplayFixture();

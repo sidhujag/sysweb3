@@ -6,6 +6,7 @@ import {
 } from './constants';
 import * as networkSdk from '../src';
 import {
+  clearRpcCaches,
   isValidChainIdForEthNetworks,
   validateChainId,
   validateEvmRpcBatch,
@@ -34,6 +35,95 @@ describe('rpc tests', () => {
   });
 });
 
+describe('EVM discovery chain cache', () => {
+  const endpoint = 'https://evm-discovery-cache.invalid/';
+  beforeEach(() => {
+    clearRpcCaches();
+  });
+  afterEach(() => {
+    clearRpcCaches();
+    jest.restoreAllMocks();
+    jest.useRealTimers();
+  });
+
+  it.each([
+    [0, 'Invalid RPC URL. Could not get chain ID for network.'],
+    ['0x0', 'Invalid RPC URL. Could not get chain ID for network.'],
+    ['not-a-chain-id', 'Invalid RPC URL. Could not get chain ID for network.'],
+    [undefined, 'Invalid RPC URL. Could not get chain ID for network.'],
+    [-1, 'Invalid chain ID for ethereum networks.'],
+    [1.5, 'Invalid chain ID for ethereum networks.'],
+    [4503599627370477, 'Invalid chain ID for ethereum networks.'],
+    [Number.MAX_SAFE_INTEGER + 1, 'Invalid chain ID for ethereum networks.'],
+  ])(
+    'does not cache rejected discovery result %p before a healthy retry',
+    async (result, message) => {
+      const read = jest
+        .spyOn(globalThis, 'fetch')
+        .mockReset()
+        .mockResolvedValueOnce(Response.json({ jsonrpc: '2.0', id: 1, result }))
+        .mockResolvedValueOnce(
+          Response.json({ jsonrpc: '2.0', id: 1, result: '0x1' })
+        );
+      await expect(validateEthRpc(endpoint, false)).rejects.toThrow(
+        String(message)
+      );
+      await expect(validateEthRpc(endpoint, false)).resolves.toMatchObject({
+        chainId: 1,
+        valid: true,
+      });
+      expect(read).toHaveBeenCalledTimes(2);
+      await expect(validateEthRpc(endpoint, false)).resolves.toMatchObject({
+        chainId: 1,
+        valid: true,
+      });
+      expect(read).toHaveBeenCalledTimes(2);
+    }
+  );
+
+  it('retains a validated discovery for five minutes and replaces it at expiry', async () => {
+    jest.useFakeTimers({ now: 1700000000000 });
+    const read = jest
+      .spyOn(globalThis, 'fetch')
+      .mockReset()
+      .mockResolvedValueOnce(
+        Response.json({ jsonrpc: '2.0', id: 1, result: '0x1' })
+      )
+      .mockResolvedValueOnce(
+        Response.json({ jsonrpc: '2.0', id: 1, result: '0x2' })
+      );
+    await expect(validateEthRpc(endpoint, false)).resolves.toMatchObject({
+      chainId: 1,
+    });
+    jest.setSystemTime(1700000000000 + 5 * 60 * 1000 - 1);
+    await expect(validateEthRpc(endpoint, false)).resolves.toMatchObject({
+      chainId: 1,
+    });
+    expect(read).toHaveBeenCalledTimes(1);
+    jest.setSystemTime(1700000000000 + 5 * 60 * 1000);
+    await expect(validateEthRpc(endpoint, false)).resolves.toMatchObject({
+      chainId: 2,
+    });
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['0x1', '1', 1, 4503599627370476])(
+    'preserves accepted discovery representation %p',
+    async (result) => {
+      jest
+        .spyOn(globalThis, 'fetch')
+        .mockReset()
+        .mockResolvedValueOnce(
+          Response.json({ jsonrpc: '2.0', id: 1, result })
+        );
+      await expect(validateEthRpc(endpoint, false)).resolves.toMatchObject({
+        chainId: Number(result),
+        valid: true,
+      });
+    }
+  );
+});
+
 describe('EVM endpoint latency probe', () => {
   afterEach(() => {
     jest.restoreAllMocks();
@@ -42,15 +132,17 @@ describe('EVM endpoint latency probe', () => {
 
   it('samples the existing two-method EVM batch and checks the selected chain', async () => {
     jest.useFakeTimers();
-    const read = jest.spyOn(globalThis, 'fetch').mockImplementation(
-      async () =>
-        new Response(
-          JSON.stringify([
-            { jsonrpc: '2.0', id: 1, result: '0x539' },
-            { jsonrpc: '2.0', id: 2, result: '0x2' },
-          ])
+    const read = jest
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async (_url, options) =>
+        Response.json(
+          JSON.parse(String(options?.body)).map((request: any) => ({
+            jsonrpc: '2.0',
+            id: request.id,
+            result: request.method === 'eth_chainId' ? '0x539' : '0x2',
+          }))
         )
-    );
+      );
     const endpoint = 'https://evm-catalogue-probe.invalid/';
     const result = validateEvmRpcBatch(endpoint, 1337);
     await jest.runAllTimersAsync();
@@ -63,8 +155,8 @@ describe('EVM endpoint latency probe', () => {
     for (const [, options] of samples) {
       expect(options?.method).toBe('POST');
       expect(JSON.parse(String(options?.body))).toMatchObject([
-        { method: 'eth_chainId', id: 1 },
-        { method: 'eth_blockNumber', id: 2 },
+        { method: 'eth_chainId', id: expect.any(Number) },
+        { method: 'eth_blockNumber', id: expect.any(Number) },
       ]);
     }
   });

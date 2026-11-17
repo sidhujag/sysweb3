@@ -1,4 +1,4 @@
-import { findCoin } from '@sidhujag/sysweb3-network';
+import { findCoin } from '@sidhujag/sysweb3-network/cjs/coin-utils.js';
 import { Buffer } from 'buffer';
 // Import coins data from the relative package in the monorepo
 

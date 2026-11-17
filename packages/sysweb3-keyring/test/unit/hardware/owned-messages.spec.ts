@@ -322,6 +322,33 @@ test('Trezor exports no unowned message signing forwards', () => {
     expect(connection).not.toHaveProperty(method);
 });
 
+test.each(['eth', 'sys'])(
+  'Trezor bounds %s messages before connection or device use',
+  async (coin) => {
+    const device = host(),
+      ring = new TrezorKeyring(createTrezorConnection(device));
+    try {
+      await expect(
+        ring.signMessage(
+          {
+            address: wallet.address,
+            coin,
+            slip44: coin === 'eth' ? 60 : 57,
+            index: 2,
+            message: '雪'.repeat(400000),
+          },
+          authority()
+        )
+      ).rejects.toThrow('Invalid message signing request');
+      expect(device.init).not.toHaveBeenCalled();
+      expect(device.ethereumSignMessage).not.toHaveBeenCalled();
+      expect(device.signMessage).not.toHaveBeenCalled();
+    } finally {
+      await ring.retire();
+    }
+  }
+);
+
 test.each(['personal', 'utxo'] as const)(
   'owned Trezor %s snapshots the original message and derivation target',
   async (kind) => {
@@ -566,5 +593,52 @@ test.each([KeyringAccountType.Ledger, KeyringAccountType.Trezor])(
     ).rejects.toMatchObject({ code: 'HARDWARE_RAW_DIGEST_UNSUPPORTED' });
     expect(privateRead).not.toHaveBeenCalled();
     expect(call).not.toHaveBeenCalled();
+  }
+);
+
+test.each([
+  KeyringAccountType.HDAccount,
+  KeyringAccountType.Ledger,
+  KeyringAccountType.Trezor,
+])(
+  'personal-sign bounds %s payloads before secret access or device work',
+  async (type) => {
+    const owner = authority(),
+      privateRead = jest.fn(() => {
+        throw new Error('Unexpected private-key read');
+      }),
+      device = jest.fn();
+    const network = {
+      kind: 'ethereum',
+      chainId: 1,
+      slip44: 60,
+      url: 'https://offline.invalid',
+    };
+    const transactions = new EthereumTransactions(
+      () => network as any,
+      privateRead,
+      () =>
+        ({
+          activeAccountId: 2,
+          activeAccountType: type,
+          activeNetwork: network,
+          accounts: { [type]: { 2: { address: wallet.address } } },
+        } as any),
+      { evm: { signPersonalMessage: device } } as any,
+      { signMessage: device } as any,
+      () => () => undefined,
+      null
+    );
+    for (const message of [
+      'a'.repeat(1024 * 1024 + 1),
+      '雪'.repeat(400000),
+      '0x' + '61'.repeat(512 * 1024),
+    ]) {
+      await expect(
+        transactions.signPersonalMessage([message, wallet.address], owner)
+      ).rejects.toThrow('Invalid personal message request');
+    }
+    expect(privateRead).not.toHaveBeenCalled();
+    expect(device).not.toHaveBeenCalled();
   }
 );

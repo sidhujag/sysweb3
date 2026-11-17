@@ -10,6 +10,11 @@ import {
 } from './networks';
 import { observeFirstUseUtxoRpc, verifyOwnedUtxoRpc } from './ownedUtxoRpc';
 import { retryableFetch } from './retryUtils';
+import {
+  JsonRpcReadClient,
+  RpcReadError,
+  type RpcReadRequest,
+} from './rpc-read-client';
 
 import type {
   OwnedUtxoRpcFirstUse,
@@ -161,8 +166,15 @@ const getEthChainId = async (
     }
 
     const chainId = Number(data.result);
+    if (!chainId) {
+      throw new Error('Invalid RPC URL. Could not get chain ID for network.');
+    }
 
-    // Cache the result
+    if (!isValidChainIdForEthNetworks(chainId)) {
+      throw new Error('Invalid chain ID for ethereum networks.');
+    }
+
+    // Rejected discovery data must not prevent a fresh, healthy retry.
     ethChainIdCache.set(url, {
       chainId,
       timestamp: Date.now(),
@@ -194,6 +206,8 @@ const getEthChainId = async (
     throw new Error(`Failed to connect to RPC: ${String(error)}`);
   } finally {
     clearTimeout(timeoutId);
+    // Keep ownership of every retry-discarded body through the terminal read.
+    controller.abort();
   }
 };
 
@@ -215,13 +229,6 @@ export const validateEthRpc = async (
 }> => {
   try {
     const { chainId } = await getEthChainId(url, isInCooldown);
-    if (!chainId) {
-      throw new Error('Invalid RPC URL. Could not get chain ID for network.');
-    }
-
-    if (!isValidChainIdForEthNetworks(Number(chainId))) {
-      throw new Error('Invalid chain ID for ethereum networks.');
-    }
 
     const { valid, hexChainId } = validateChainId(chainId);
     const details = getChainById(chainId);
@@ -380,21 +387,22 @@ export const observeSysRpc = async (
 };
 /** end */
 
-/**
- * Validate an EVM RPC endpoint with latency sampling
- * Performs multiple requests to get accurate latency (excluding cold start)
- *
- * @param url - The RPC endpoint URL
- * @param expectedChainId - Optional expected chainId to validate against
- * @param timeout - Request timeout in milliseconds
- * @param minLatency - Minimum latency in milliseconds to ensure quality
- * @returns Success status, chainId if successful, error message if failed, and latency info
- */
+export type EvmRpcQualityOwner = Readonly<{
+  signal?: AbortSignal;
+  assertCurrent?: () => void;
+  readMany?: (
+    requests: readonly RpcReadRequest[],
+    signal: AbortSignal
+  ) => Promise<PromiseSettledResult<unknown>[]>;
+}>;
+
+/** Three independent fresh samples, timed through bounded response consumption. */
 export const validateEvmRpcBatch = async (
   url: string,
   expectedChainId?: number,
   timeout = 5000,
-  minLatency = 500
+  minLatency = 500,
+  owner: EvmRpcQualityOwner = {}
 ): Promise<{
   success: boolean;
   chainId?: number;
@@ -402,305 +410,120 @@ export const validateEvmRpcBatch = async (
   latency?: number;
   requiresAuth?: boolean;
 }> => {
-  // Helper function to perform a single request
-  const performSingleRequest = async (): Promise<{
-    success: boolean;
-    chainId?: number;
-    error?: string;
-    latency: number;
-    requiresAuth?: boolean;
-    response?: any;
-  }> => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeout);
-    const startTime = Date.now();
-
-    try {
-      const response = await retryableFetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify([
-          {
-            jsonrpc: '2.0',
-            method: 'eth_chainId',
-            params: [],
-            id: 1,
-          },
-          {
-            jsonrpc: '2.0',
-            method: 'eth_blockNumber',
-            params: [],
-            id: 2,
-          },
-        ]),
-        signal: controller.signal,
-        cache: 'no-cache', // Force fresh request for testing
+  let client: JsonRpcReadClient | undefined;
+  const latencies: number[] = [];
+  let chainId: number | undefined;
+  const check = () => {
+    if (owner.signal?.aborted)
+      throw Object.assign(new Error('RPC check cancelled'), {
+        name: 'AbortError',
       });
-
-      clearTimeout(timeoutId);
-      const latency = Date.now() - startTime;
-
-      // Check for authentication errors
-      if (response.status === 401 || response.status === 403) {
-        return {
-          success: false,
-          error: `Authentication required (HTTP ${response.status}). This RPC endpoint requires an API key.`,
-          requiresAuth: true,
-          latency,
-        };
-      }
-
-      if (!response.ok) {
-        // Check for rate limiting
-        if (response.status === 429) {
-          return {
-            success: false,
-            error:
-              'Rate limited. Please try again later or use a different RPC endpoint.',
-            latency,
-          };
-        }
-
-        // Check for server errors
-        if (response.status >= 500) {
-          return {
-            success: false,
-            error: `Server error (HTTP ${response.status}). The RPC endpoint is currently unavailable.`,
-            latency,
-          };
-        }
-
-        return {
-          success: false,
-          error: `RPC returned ${response.status}`,
-          latency,
-        };
-      }
-
-      const data = await response.json();
-      return {
-        success: true,
-        latency,
-        response: data,
-      };
-    } catch (error) {
-      clearTimeout(timeoutId);
-      const latency = Date.now() - startTime;
-
-      if (error.name === 'AbortError') {
-        return {
-          success: false,
-          error: 'Request timeout',
-          latency,
-        };
-      }
-
-      // Check for network errors that might indicate authentication issues
-      if (
-        error instanceof TypeError &&
-        error.message.includes('Failed to fetch')
-      ) {
-        return {
-          success: false,
-          error:
-            'Network error: Unable to connect. This might be due to CORS restrictions or authentication requirements.',
-          latency,
-        };
-      }
-
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        latency,
-      };
-    }
+    owner.assertCurrent?.();
   };
-
-  // Perform multiple requests to get accurate latency measurement
-  const requests: Array<{
-    success: boolean;
-    chainId?: number;
-    error?: string;
-    latency: number;
-    requiresAuth?: boolean;
-    response?: any;
-  }> = [];
-  const maxRequests = 3;
-
-  for (let i = 0; i < maxRequests; i++) {
-    try {
-      const result = await performSingleRequest();
-      requests.push(result);
-
-      // If first request fails, don't continue
-      if (!result.success) {
-        return {
+  try {
+    client = owner.readMany
+      ? undefined
+      : new JsonRpcReadClient(url, {
+          signal: owner.signal,
+          timeoutMs: timeout,
+          maxBatchItems: 2,
+          maxResponseBytes: 16 * 1024,
+          requestInit: { cache: 'no-cache' },
+        });
+    for (let sample = 0; sample < 3; sample++) {
+      check();
+      const controller = new AbortController();
+      const abort = () => controller.abort(owner.signal?.reason);
+      owner.signal?.addEventListener('abort', abort, { once: true });
+      const timer = setTimeout(
+        () => controller.abort(new Error('Request timeout')),
+        timeout
+      );
+      const started = Date.now();
+      try {
+        const requests = [
+          { method: 'eth_chainId', params: [] },
+          { method: 'eth_blockNumber', params: [] },
+        ];
+        const results = await (owner.readMany
+          ? owner.readMany(requests, controller.signal)
+          : client!.readMany(requests, {
+              signal: controller.signal,
+              timeoutMs: timeout,
+            }));
+        check();
+        if (controller.signal.aborted) throw controller.signal.reason;
+        if (results.length !== 2) throw new Error('Invalid RPC response');
+        const values = results.map((result) => {
+          if (result.status === 'rejected') throw result.reason;
+          if (
+            typeof result.value !== 'string' ||
+            !/^0x(?:0|[1-9a-f][0-9a-f]*)$/i.test(result.value)
+          )
+            throw new Error('Invalid RPC quantity');
+          return BigInt(result.value);
+        });
+        if (values[0] <= 0n || values[0] > BigInt(Number.MAX_SAFE_INTEGER))
+          throw new Error('Invalid chain ID');
+        const current = Number(values[0]);
+        if (
+          (expectedChainId !== undefined && current !== expectedChainId) ||
+          (chainId !== undefined && current !== chainId)
+        )
+          throw new Error('Chain ID mismatch');
+        chainId = current;
+        latencies.push(Date.now() - started);
+      } finally {
+        clearTimeout(timer);
+        owner.signal?.removeEventListener('abort', abort);
+      }
+      if (sample < 2)
+        await new Promise<void>((resolve, reject) => {
+          const abortDelay = () => {
+            clearTimeout(timer);
+            reject(new Error('RPC check cancelled'));
+          };
+          const timer = setTimeout(() => {
+            owner.signal?.removeEventListener('abort', abortDelay);
+            resolve();
+          }, 1000);
+          owner.signal?.addEventListener('abort', abortDelay, { once: true });
+          if (owner.signal?.aborted) abortDelay();
+        });
+    }
+    check();
+    const latency = (latencies[1] + latencies[2]) / 2;
+    return latency > minLatency
+      ? {
           success: false,
-          chainId: result.chainId,
-          error: result.error,
-          latency: result.latency,
-          requiresAuth: result.requiresAuth,
-        };
-      }
-
-      // Delay between requests to avoid rate limiting (503 errors)
-      if (i < maxRequests - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-      }
-    } catch (error) {
-      // If any request fails, return the error
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        latency: 0,
-      };
-    }
-  }
-
-  // Calculate average latency excluding the first request (cold start)
-  const warmRequests = requests.slice(1); // Skip first request
-  const averageLatency =
-    warmRequests.reduce((sum, req) => sum + req.latency, 0) /
-    warmRequests.length;
-
-  // Use the response from the first successful request for validation
-  const firstSuccessfulRequest = requests.find((req) => req.success);
-  if (!firstSuccessfulRequest) {
-    return {
-      success: false,
-      error: 'All requests failed',
-      latency: averageLatency,
-    };
-  }
-
-  const data = firstSuccessfulRequest.response;
-
-  if (!Array.isArray(data) || data.length !== 2) {
-    // Check for single error response indicating auth issues
-    if (data?.error?.message) {
-      const errorMsg = data.error.message.toLowerCase();
-      if (
-        errorMsg.includes('unauthorized') ||
-        errorMsg.includes('authentication') ||
-        errorMsg.includes('api key') ||
-        errorMsg.includes('access denied') ||
-        errorMsg.includes('forbidden')
-      ) {
-        return {
-          success: false,
-          error:
-            'Authentication required. This RPC endpoint requires an API key.',
-          requiresAuth: true,
-          latency: averageLatency,
-        };
-      }
-    }
-
-    return {
-      success: false,
-      error: 'Invalid batch response format',
-      latency: averageLatency,
-    };
-  }
-
-  const chainIdResult = data.find((r) => r.id === 1);
-  const blockNumberResult = data.find((r) => r.id === 2);
-
-  // Check for JSON-RPC level authentication errors
-  const authErrorPatterns = [
-    'unauthorized',
-    'authentication',
-    'api key',
-    'access denied',
-    'forbidden',
-    'missing key',
-    'invalid key',
-    'subscription',
-    'upgrade',
-    'plan',
-  ];
-
-  if (chainIdResult?.error) {
-    const errorMsg = chainIdResult.error.message?.toLowerCase() || '';
-    const hasAuthError = authErrorPatterns.some((pattern) =>
-      errorMsg.includes(pattern)
-    );
-
-    if (hasAuthError) {
-      return {
-        success: false,
-        error: chainIdResult.error.message || 'Authentication required',
-        requiresAuth: true,
-        latency: averageLatency,
-      };
-    }
-
-    return {
-      success: false,
-      error: chainIdResult.error.message || 'Failed to get chainId',
-      latency: averageLatency,
-    };
-  }
-
-  if (blockNumberResult?.error) {
-    const errorMsg = blockNumberResult.error.message?.toLowerCase() || '';
-    const hasAuthError = authErrorPatterns.some((pattern) =>
-      errorMsg.includes(pattern)
-    );
-
-    if (hasAuthError) {
-      return {
-        success: false,
-        error: blockNumberResult.error.message || 'Authentication required',
-        requiresAuth: true,
-        latency: averageLatency,
-      };
-    }
-
-    return {
-      success: false,
-      error: blockNumberResult.error.message || 'Failed to get block number',
-      latency: averageLatency,
-    };
-  }
-
-  if (!chainIdResult?.result || !blockNumberResult?.result) {
-    return {
-      success: false,
-      error: 'Invalid response: missing required data',
-      latency: averageLatency,
-    };
-  }
-
-  const chainId = parseInt(chainIdResult.result, 16);
-
-  // If expectedChainId is provided, validate it matches
-  if (expectedChainId !== undefined && chainId !== expectedChainId) {
+          chainId,
+          latency,
+          error: `RPC response too slow (${Math.round(
+            latency
+          )}ms avg). Maximum ${minLatency}ms required for quality assurance.`,
+        }
+      : { success: true, chainId, latency };
+  } catch (error: any) {
+    const status = error?.status ?? error?.response?.status;
+    const requiresAuth =
+      status === 401 ||
+      status === 403 ||
+      (status === undefined &&
+        error instanceof RpcReadError &&
+        /unauthorized|authentication|api key|access denied|forbidden|missing key|invalid key|subscription|upgrade|plan/i.test(
+          error.message
+        ));
     return {
       success: false,
       chainId,
-      error: `Chain ID mismatch: expected ${expectedChainId}, got ${chainId}`,
-      latency: averageLatency,
+      error: requiresAuth
+        ? `Authentication required${
+            status === undefined ? '' : ` (HTTP ${status})`
+          }. This RPC endpoint requires an API key.`
+        : error?.message || 'Connection failed',
+      ...(requiresAuth ? { requiresAuth: true } : {}),
     };
+  } finally {
+    client?.destroy();
   }
-
-  // Check minimum latency requirement using the average warm latency
-  if (averageLatency > minLatency) {
-    return {
-      success: false,
-      chainId,
-      error: `RPC response too slow (${Math.round(
-        averageLatency
-      )}ms avg). Maximum ${minLatency}ms required for quality assurance.`,
-      latency: averageLatency,
-    };
-  }
-
-  return {
-    success: true,
-    chainId,
-    latency: averageLatency,
-  };
 };

@@ -12,7 +12,7 @@ import {
   type DmkError,
   type InternalApi,
 } from '@ledgerhq/device-management-kit';
-import { getNetworkConfig } from '@sidhujag/sysweb3-network';
+import { getNetworkConfig } from '@sidhujag/sysweb3-network/cjs/networks.js';
 import { address, payments } from 'bitcoinjs-lib';
 import bs58check from 'bs58check';
 import * as syscoinjs from 'syscoinjs-lib';

@@ -16,9 +16,11 @@ const { Transaction } = jest.requireActual('ethers/transaction');
 const { FetchRequest } = jest.requireActual('ethers/utils');
 const { Wallet } = jest.requireActual('ethers/wallet');
 
-const { CustomJsonRpcProvider, RpcResponseIntegrityError } = jest.requireActual(
-  '../../src/providers'
-);
+const {
+  CustomJsonRpcProvider,
+  RpcResponseIntegrityError,
+  wrapTransactionResponse,
+} = jest.requireActual('../../src/providers');
 const { RpcReadCapabilities } = jest.requireActual('../../src/rpc-read-client');
 const { EthereumTransactions } = jest.requireActual(
   '../../src/transactions/ethereum'
@@ -29,14 +31,64 @@ const RPC_URL = 'https://rpc.example/v1/token?existing=a%2Fb&space=a%20b';
 const FROM = '0x0000000000000000000000000000000000000001';
 const RUNTIME = `0x${'60'.repeat(512)}`;
 const network = { url: RPC_URL, chainId: 5700 };
+const fullFeeBlock = (fields: Record<string, unknown> = {}) => ({
+  hash: `0x${'11'.repeat(32)}`,
+  parentHash: `0x${'22'.repeat(32)}`,
+  number: '0x1',
+  timestamp: '0x1',
+  nonce: '0x0000000000000000',
+  difficulty: '0x0',
+  gasLimit: '0x1c9c380',
+  gasUsed: '0x0',
+  miner: FROM,
+  extraData: '0x',
+  transactions: [],
+  ...fields,
+});
 
 const response = (json: any) => ({
   ok: true,
   status: 200,
   headers: new Headers(),
-  text: async () => JSON.stringify(json),
+  text: async () =>
+    JSON.stringify(json, (_key, value) =>
+      typeof value === 'bigint' ? `0x${value.toString(16)}` : value
+    ),
   json: async () => json,
 });
+const feeResponse = async (body: string, evaluate: (request: any) => any) => {
+  const request = JSON.parse(body);
+  const evaluateFee = async (row: any) => {
+    if (
+      row.method === 'eth_getBlockByNumber' &&
+      row.params[0] === 'latest' &&
+      row.params[1] === false
+    ) {
+      const block = (
+        JsonRpcProvider.prototype.getBlock as any
+      ).getMockImplementation?.();
+      if (block) {
+        return resultFor(row, fullFeeBlock(await block()));
+      }
+    }
+    return evaluate(row);
+  };
+  return response(
+    Array.isArray(request)
+      ? await Promise.all(request.map(evaluateFee))
+      : await evaluateFee(request)
+  );
+};
+const enableBatch = async (provider: any, fetchMock: jest.Mock) => {
+  fetchMock.mockImplementationOnce(async (_url, init) =>
+    response(JSON.parse(init.body).map((request) => resultFor(request, '0x2')))
+  );
+  await provider.readMany([
+    { method: 'eth_gasPrice', params: [] },
+    { method: 'eth_maxPriorityFeePerGas', params: [] },
+  ]);
+  fetchMock.mockClear();
+};
 const resultFor = (request: any, result = '0x5208') => ({
   jsonrpc: '2.0',
   id: request.id,
@@ -78,7 +130,7 @@ describe('JSON-RPC response correlation', () => {
   beforeEach(() => {
     originalFetch = global.fetch;
     fetchMock = jest.fn(async (_url, options) =>
-      response(resultFor(JSON.parse(options.body)))
+      feeResponse(options.body, (request) => resultFor(request))
     );
     global.fetch = fetchMock;
   });
@@ -379,28 +431,102 @@ describe('JSON-RPC response correlation', () => {
     ).toThrow('another endpoint');
   });
 
+  it('exposes only reusable endpoint capabilities while provider request ownership remains independent', async () => {
+    const original = providerFor();
+    fetchMock.mockImplementation(async (_url, init) => {
+      const request = JSON.parse(init.body);
+      return response(
+        Array.isArray(request)
+          ? {
+              jsonrpc: '2.0',
+              id: null,
+              error: { code: -32600, message: 'Batch unsupported' },
+            }
+          : resultFor(request)
+      );
+    });
+    await original.sendBatch('eth_getBalance', [
+      [FROM, 'latest'],
+      [FROM, 'pending'],
+    ]);
+    const child = new CustomJsonRpcProvider(
+      new AbortController().signal,
+      RPC_URL,
+      5700,
+      { capabilities: original.readCapabilities }
+    );
+    providers.push(child);
+    expect(child.readCapabilities).toBe(original.readCapabilities);
+    await child.sendBatch('eth_getBalance', [
+      [FROM, 'latest'],
+      [FROM, 'pending'],
+    ]);
+    expect(requestsFrom(fetchMock).filter(Array.isArray)).toHaveLength(1);
+    let release!: (response: unknown) => void;
+    let wire!: any;
+    fetchMock.mockImplementationOnce((_url, init) => {
+      wire = init;
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    });
+    const cancelled = child.send('eth_getBalance', [FROM, 'latest']);
+    const rejection = expect(cancelled).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    while (!wire) await new Promise((resolve) => setImmediate(resolve));
+    child.destroy();
+    await rejection;
+    expect(wire.signal.aborted).toBe(true);
+    await expect(
+      original.send('eth_getBalance', [FROM, 'pending'])
+    ).resolves.toBe('0x5208');
+    release(response(resultFor(JSON.parse(wire.body))));
+    expect(
+      () =>
+        new CustomJsonRpcProvider(
+          new AbortController().signal,
+          RPC_URL + '&wrong=1',
+          5700,
+          { capabilities: original.readCapabilities }
+        )
+    ).toThrow('another endpoint');
+  });
+
   it('bounds sixty-four ordinary provider reads to four active bodies', async () => {
     let active = 0;
     let peak = 0;
     fetchMock.mockImplementation(async (_url, init) => {
+      const request = JSON.parse(init.body);
+      const rows = Array.isArray(request) ? request : [request];
       active++;
       peak = Math.max(peak, active);
       return {
-        ...response(resultFor(JSON.parse(init.body))),
+        ...response(
+          Array.isArray(request)
+            ? rows.map((row) => resultFor(row))
+            : resultFor(request)
+        ),
         text: async () => {
           await new Promise((resolve) => setTimeout(resolve, 1));
           active--;
-          return JSON.stringify(resultFor(JSON.parse(init.body)));
+          return JSON.stringify(
+            Array.isArray(request)
+              ? rows.map((row) => resultFor(row))
+              : resultFor(request)
+          );
         },
       };
     });
     const provider = providerFor();
+    await enableBatch(provider, fetchMock);
     const results = await Promise.all(
       Array.from({ length: 64 }, () =>
         provider.send('eth_getBalance', [FROM, 'latest'])
       )
     );
-    expect(peak).toBe(4);
+    expect(peak).toBeLessThanOrEqual(4);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(results).toEqual(Array(64).fill('0x5208'));
   });
 
@@ -833,6 +959,740 @@ describe('JSON-RPC response correlation', () => {
     expect(fetchMock.mock.calls[0][0]).toBe(RPC_URL);
   });
 
+  it('rejects an incomplete raw fee header before caching legacy evidence', async () => {
+    const provider = providerFor();
+    fetchMock.mockImplementation(async (_url, init) =>
+      response(
+        JSON.parse(init.body).map((request) =>
+          resultFor(
+            request,
+            request.method === 'eth_getBlockByNumber' ? {} : '0x2'
+          )
+        )
+      )
+    );
+    await expect(provider.getFeeData()).rejects.toMatchObject({
+      code: 'BAD_DATA',
+    });
+    expect(provider.feeBlock).toBeUndefined();
+    expect(provider.feeDataCache).toBeNull();
+  });
+
+  it.each([null, '0x0', '0x1'])(
+    'normalizes one complete remote fee block with base fee %p',
+    async (baseFeePerGas) => {
+      const provider = providerFor();
+      fetchMock.mockImplementation(async (_url, init) =>
+        response(
+          JSON.parse(init.body).map((request) =>
+            resultFor(
+              request,
+              request.method === 'eth_getBlockByNumber'
+                ? fullFeeBlock({ baseFeePerGas })
+                : '0x2'
+            )
+          )
+        )
+      );
+      const value = await provider.getFeeData();
+      expect(value.maxFeePerGas?.toString() ?? null).toBe(
+        baseFeePerGas === null ? null : String(BigInt(baseFeePerGas) * 2n + 2n)
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(
+        requestsFrom(fetchMock)
+          .flat()
+          .filter((request) => request.method === 'eth_getBlockByNumber')
+      ).toHaveLength(1);
+    }
+  );
+
+  it.each([
+    [1, 'ascii'],
+    [1, 'unicode'],
+    [undefined, 'ascii'],
+    [undefined, 'unicode'],
+  ])(
+    'keeps automatic collection within a custom aggregate request budget for network %p and %s',
+    async (network, encoding) => {
+      const fetcher = jest.fn(async (_url, init) => {
+        expect(
+          new TextEncoder().encode(init.body).byteLength
+        ).toBeLessThanOrEqual(1024);
+        const requests = JSON.parse(init.body);
+        return response(
+          Array.isArray(requests)
+            ? requests.map((request) =>
+                resultFor(request, request.params[0].data)
+              )
+            : resultFor(requests, requests.params[0].data)
+        );
+      });
+      const provider = new CustomJsonRpcProvider(
+        new AbortController().signal,
+        RPC_URL,
+        network,
+        { fetch: fetcher, maxRequestBytes: 1024 }
+      );
+      providers.push(provider);
+      expect(provider._getOption('batchMaxSize')).toBe(
+        Math.floor((1024 * 16) / 3)
+      );
+      const values = Array.from({ length: 100 }, (_, index) =>
+        encoding === 'ascii'
+          ? `0x${index.toString(16).padStart(2, '0')}${'ab'.repeat(100)}`
+          : `value${index}${'界'.repeat(85)}`
+      );
+      await expect(
+        Promise.all(
+          values.map((data) =>
+            provider.send('eth_call', [{ to: FROM, data }, 'latest'])
+          )
+        )
+      ).resolves.toEqual(values);
+    }
+  );
+
+  it('captures endpoint fetch policy consistently for reads and controls', async () => {
+    const headers = new Headers({ Authorization: 'Bearer fixture' });
+    const init: RequestInit = {
+      headers,
+      credentials: 'include',
+      cache: 'no-store',
+      referrerPolicy: 'no-referrer',
+      redirect: 'follow',
+    };
+    const provider = new CustomJsonRpcProvider(
+      new AbortController().signal,
+      RPC_URL,
+      1,
+      { requestInit: init }
+    );
+    providers.push(provider);
+    headers.set('Authorization', 'changed');
+    await provider.send('eth_getBalance', [FROM, 'latest']);
+    await provider.send('eth_newBlockFilter', []);
+    for (const [, actual] of fetchMock.mock.calls) {
+      expect(actual).toMatchObject({
+        credentials: 'include',
+        cache: 'no-store',
+        referrerPolicy: 'no-referrer',
+        redirect: 'error',
+      });
+      expect(new Headers(actual.headers).get('Authorization')).toBe(
+        'Bearer fixture'
+      );
+    }
+  });
+
+  it.each([307, 308])(
+    'refuses an actual HTTP %s stateful redirect without a second POST',
+    async (status) => {
+      const http = jest.requireActual('http');
+      const nodeFetch = jest.requireActual('node-fetch');
+      const redirected: string[] = [];
+      const target = http.createServer((request, reply) => {
+        redirected.push(request.method);
+        reply.end('{}');
+      });
+      await new Promise<void>((resolve) =>
+        target.listen(0, '127.0.0.1', resolve)
+      );
+      const endpoint = http.createServer((request, reply) => {
+        request.resume();
+        reply.writeHead(status, {
+          Location: `http://127.0.0.1:${target.address().port}/redirected`,
+        });
+        reply.end();
+      });
+      await new Promise<void>((resolve) =>
+        endpoint.listen(0, '127.0.0.1', resolve)
+      );
+      const fetcher = jest.fn(nodeFetch.default ?? nodeFetch);
+      const provider = new CustomJsonRpcProvider(
+        new AbortController().signal,
+        `http://127.0.0.1:${endpoint.address().port}/rpc`,
+        1,
+        { fetch: fetcher }
+      );
+      try {
+        await expect(
+          provider.send('eth_sendRawTransaction', ['0xdeadbeef'])
+        ).rejects.toBeDefined();
+        expect(fetcher).toHaveBeenCalledTimes(1);
+        expect(redirected).toEqual([]);
+      } finally {
+        provider.destroy();
+        await Promise.all([
+          new Promise<void>((resolve) => endpoint.close(resolve)),
+          new Promise<void>((resolve) => target.close(resolve)),
+        ]);
+      }
+    }
+  );
+
+  it('cancels only the owned control request and keeps the shared provider usable', async () => {
+    const provider = providerFor();
+    const owner = new AbortController();
+    let ready!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let physical!: AbortSignal;
+    fetchMock.mockImplementationOnce(async (_url, init) => {
+      physical = init.signal;
+      ready();
+      await held;
+      return response(resultFor(JSON.parse(init.body), '0x1'));
+    });
+    const request = provider.send('eth_newBlockFilter', [], {
+      signal: owner.signal,
+    });
+    const failed = expect(request).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    await started;
+    owner.abort();
+    await failed;
+    expect(physical.aborted).toBe(true);
+    expect(provider.signal.aborted).toBe(false);
+    await expect(provider.send('eth_blockNumber', [])).resolves.toBe('0x5208');
+    release();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps exact bigint chain configuration out of serializable provider state', async () => {
+    const chainId = 9007199254740993n;
+    const provider = new CustomJsonRpcProvider(
+      new AbortController().signal,
+      RPC_URL,
+      chainId
+    );
+    providers.push(provider);
+    expect(() => JSON.stringify(provider)).not.toThrow();
+    const transaction = {
+      provider,
+      chainId,
+      value: 0n,
+      gasLimit: 1n,
+      gasPrice: 1n,
+      maxFeePerGas: null,
+      maxPriorityFeePerGas: null,
+      wait: async () => ({}),
+    };
+    expect(() =>
+      JSON.stringify(wrapTransactionResponse(transaction))
+    ).not.toThrow();
+    fetchMock.mockImplementation(async (_url, init) =>
+      response(resultFor(JSON.parse(init.body), `0x${chainId.toString(16)}`))
+    );
+    await expect(
+      provider.verifyConfiguredChainId(true)
+    ).resolves.toBeUndefined();
+    fetchMock.mockImplementation(async (_url, init) =>
+      response(
+        resultFor(JSON.parse(init.body), `0x${(chainId - 1n).toString(16)}`)
+      )
+    );
+    await expect(provider.verifyConfiguredChainId(true)).rejects.toThrow(
+      'does not match'
+    );
+  });
+
+  it('shares physical capacity across read, stateful and fee HTTP requests', async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const requests: string[] = [];
+    const rpc = jest.fn(async (_url, init) => {
+      const row = JSON.parse(init.body);
+      if (Array.isArray(row)) {
+        requests.push('fee-reads');
+        return feeResponse(init.body, (request) =>
+          resultFor(
+            request,
+            request.method === 'eth_getBlockByNumber'
+              ? fullFeeBlock({ baseFeePerGas: '0x7' })
+              : '0x2'
+          )
+        );
+      }
+      requests.push(row.method);
+      if (row.method === 'eth_getBalance')
+        return {
+          ...response(resultFor(row)),
+          text: async () => {
+            started();
+            await held;
+            return JSON.stringify(resultFor(row));
+          },
+        };
+      return response(resultFor(row));
+    });
+    const provider = new CustomJsonRpcProvider(
+      new AbortController().signal,
+      RPC_URL,
+      137,
+      { fetch: rpc, maxConcurrency: 1 }
+    );
+    providers.push(provider);
+    jest.spyOn(provider, 'getNetwork').mockResolvedValue(Network.from(137));
+    jest.spyOn(provider, '_perform').mockResolvedValue('0x2');
+    const block = jest
+      .spyOn(JsonRpcProvider.prototype, 'getBlock')
+      .mockResolvedValue({ baseFeePerGas: 7n });
+    fetchMock.mockImplementation(async () => {
+      requests.push('fee-http');
+      return new Response(
+        JSON.stringify({ standard: { maxFee: 3, maxPriorityFee: 1 } }),
+        { headers: { 'content-type': 'application/json' } }
+      );
+    });
+    try {
+      const reading = provider.readMany([
+        { method: 'eth_getBalance', params: [FROM, 'latest'] },
+      ]);
+      await ready;
+      const writing = provider.send('eth_sendRawTransaction', ['0x01']);
+      const fees = provider.getFeeData();
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      expect(requests).toEqual(['eth_getBalance']);
+      release();
+      await Promise.all([reading, writing, fees]);
+      expect(requests).toEqual([
+        'eth_getBalance',
+        'eth_sendRawTransaction',
+        'fee-http',
+        'fee-reads',
+      ]);
+    } finally {
+      release();
+      block.mockRestore();
+    }
+  });
+
+  it('captures nested request input once before the ethers collection delay', async () => {
+    const provider = providerFor();
+    let captures = 0;
+    const transaction = {
+      toJSON: () => {
+        captures++;
+        return { to: FROM, data: '0x01' };
+      },
+    };
+    const call = provider.send('eth_call', [transaction, 'latest']);
+    transaction.toJSON = () => ({ to: FROM, data: '0xff' });
+    await call;
+    expect(captures).toBe(1);
+    expect(requestsFrom(fetchMock)[0].params[0].data).toBe('0x01');
+  });
+
+  it('reuses the original fee block when a plugin invokes its callback twice', async () => {
+    const provider = providerFor();
+    const block = jest
+      .spyOn(JsonRpcProvider.prototype, 'getBlock')
+      .mockResolvedValue({ baseFeePerGas: 7n });
+    const plugin = {
+      url: 'https://fees.example',
+      processFunc: async (read) => {
+        const first = await read();
+        expect(await read()).toBe(first);
+        return first;
+      },
+    };
+    jest
+      .spyOn(provider, 'getNetwork')
+      .mockResolvedValue({ getPlugin: () => plugin });
+    fetchMock.mockImplementation(async (_url, init) =>
+      feeResponse(init.body, (row) => resultFor(row, '0x2'))
+    );
+    try {
+      await expect(provider.getFeeData()).resolves.toMatchObject({
+        maxFeePerGas: BigNumber.from(16),
+      });
+      expect(
+        requestsFrom(fetchMock)
+          .flat()
+          .filter((request) => request.method === 'eth_getBlockByNumber')
+      ).toHaveLength(1);
+      expect(requestsFrom(fetchMock).flat()).toHaveLength(3);
+    } finally {
+      block.mockRestore();
+    }
+  });
+
+  it('cancels ordinary fee RPC bodies at the quote deadline', async () => {
+    let started!: () => void;
+    let release!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let observedSignal!: AbortSignal;
+    const fetcher = jest.fn(async (_url, init) => {
+      observedSignal = init.signal;
+      return {
+        ...response([]),
+        text: async () => {
+          started();
+          await held;
+          return '[]';
+        },
+      };
+    });
+    const provider = new CustomJsonRpcProvider(
+      new AbortController().signal,
+      RPC_URL,
+      1,
+      { fetch: fetcher, timeoutMs: 40 }
+    );
+    providers.push(provider);
+    const originalNetwork = provider.getNetwork.bind(provider);
+    jest.spyOn(provider, 'getNetwork').mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      return originalNetwork();
+    });
+    const reading = provider.getFeeData();
+    const rejected = expect(reading).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    await ready;
+    await rejected;
+    expect(observedSignal.aborted).toBe(true);
+    expect(provider.signal.aborted).toBe(false);
+    release();
+  });
+
+  it.each(['invalid', [], 3])(
+    'rejects malformed fee block %p',
+    async (block) => {
+      const provider = providerFor();
+      fetchMock.mockImplementation(async (_url, init) =>
+        response(
+          JSON.parse(init.body).map((request) =>
+            resultFor(
+              request,
+              request.method === 'eth_getBlockByNumber' ? block : '0x2'
+            )
+          )
+        )
+      );
+      await expect(provider.getFeeData()).rejects.toMatchObject({
+        code: SENTINEL,
+      });
+    }
+  );
+
+  it('preserves a fee request-size failure even when a plugin supplies a fallback', async () => {
+    const provider = new CustomJsonRpcProvider(
+      new AbortController().signal,
+      RPC_URL,
+      1,
+      { maxRequestBytes: 200 }
+    );
+    providers.push(provider);
+    jest.spyOn(provider, 'getNetwork').mockResolvedValue({
+      getPlugin: () => ({
+        url: 'https://fees.example',
+        processFunc: async (_read, _provider, request) => {
+          request.body = 'x'.repeat(201);
+          try {
+            await request.send();
+          } catch {
+            /* The original transport error must survive fallback. */
+          }
+          return { gasPrice: 1n, maxFeePerGas: 2n, maxPriorityFeePerGas: 1n };
+        },
+      }),
+    });
+    const reader = {
+      getBlock: async () => ({ baseFeePerGas: 0n }),
+      send: async () => '0x1',
+    };
+    await expect(provider.getFeeData(reader)).rejects.toThrow(
+      'request exceeded size limit'
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('uses one header and no market fee reads for a legacy type-zero estimate', async () => {
+    const provider = providerFor();
+    const block = jest
+      .spyOn(JsonRpcProvider.prototype, 'getBlock')
+      .mockResolvedValue({ baseFeePerGas: null });
+    try {
+      await provider.estimateGas({ from: FROM, to: FROM, type: 0 });
+      expect(block).toHaveBeenCalledTimes(1);
+      expect(requestsFrom(fetchMock).map((row) => row.method)).toEqual([
+        'eth_estimateGas',
+      ]);
+      expect(requestsFrom(fetchMock)[0].params[0].type).toBeUndefined();
+    } finally {
+      block.mockRestore();
+    }
+  });
+
+  it('reuses bounded ordinary fee block evidence for a type-zero estimate', async () => {
+    const provider = providerFor();
+    fetchMock.mockImplementation(async (_url, init) =>
+      response(
+        (Array.isArray(JSON.parse(init.body))
+          ? JSON.parse(init.body)
+          : [JSON.parse(init.body)]
+        ).map((request) =>
+          resultFor(
+            request,
+            request.method === 'eth_getBlockByNumber'
+              ? fullFeeBlock({ baseFeePerGas: null })
+              : '0x2'
+          )
+        )
+      )
+    );
+    await provider.getFeeData();
+    fetchMock
+      .mockClear()
+      .mockImplementation(async (_url, init) =>
+        feeResponse(init.body, (request) => resultFor(request, '0x5208'))
+      );
+    await provider.estimateGas({ from: FROM, to: FROM, type: 0 });
+    expect(requestsFrom(fetchMock).map((request) => request.method)).toEqual([
+      'eth_estimateGas',
+    ]);
+  });
+
+  it('keeps send bound when passed to a caller as a callback', async () => {
+    const provider = providerFor();
+    const send = provider.send;
+    await expect(send('eth_getBalance', [FROM, 'latest'])).resolves.toBe(
+      '0x5208'
+    );
+    await enableBatch(provider, fetchMock);
+    await expect(send('eth_getBalance', [FROM, 'latest'])).resolves.toBe(
+      '0x5208'
+    );
+  });
+
+  it('uses the ethers queue for distinct reads across adjacent message turns', async () => {
+    fetchMock.mockImplementation(async (_url, init) =>
+      feeResponse(init.body, (row) => resultFor(row, row.params[0]))
+    );
+    const provider = providerFor();
+    await enableBatch(provider, fetchMock);
+    const first = provider.send('eth_getBalance', ['0x01', 'latest']);
+    await new Promise((resolve) => setImmediate(resolve));
+    const second = provider.send('eth_getBalance', ['0x02', 'latest']);
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      '0x01',
+      '0x02',
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(requestsFrom(fetchMock)[0]).toHaveLength(2);
+  });
+
+  it('preserves mixed batch results and normalizes genuine RPC reverts', async () => {
+    fetchMock.mockImplementation(async (_url, init) =>
+      feeResponse(init.body, (row) =>
+        row.params[0].data === 'bad'
+          ? {
+              jsonrpc: '2.0',
+              id: row.id,
+              error: { code: 3, message: 'reverted', data: '0x1234' },
+            }
+          : resultFor(row, row.params[0].data)
+      )
+    );
+    const provider = providerFor();
+    await enableBatch(provider, fetchMock);
+    const result = await Promise.allSettled(
+      ['good', 'bad'].map((value) =>
+        provider.send('eth_call', [{ to: FROM, data: value }, 'latest'])
+      )
+    );
+    expect(result[0]).toEqual({ status: 'fulfilled', value: 'good' });
+    expect(result[1]).toMatchObject({
+      status: 'rejected',
+      reason: {
+        code: 'CALL_EXCEPTION',
+        data: '0x1234',
+        info: { error: { code: 3, message: 'reverted' } },
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a large singleton failure isolated inside the ethers queue', async () => {
+    const provider = new CustomJsonRpcProvider(
+      new AbortController().signal,
+      RPC_URL,
+      5700,
+      { maxResponseBytes: 200 }
+    );
+    providers.push(provider);
+    await enableBatch(provider, fetchMock);
+    fetchMock.mockImplementation(async (_url, init) =>
+      feeResponse(init.body, (row) =>
+        resultFor(
+          row,
+          row.params[0].data === 'large' ? 'x'.repeat(300) : 'small'
+        )
+      )
+    );
+    const result = await Promise.allSettled(
+      ['small', 'large'].map((value) =>
+        provider.send('eth_call', [{ to: FROM, data: value }, 'latest'])
+      )
+    );
+    expect(result[0]).toEqual({ status: 'fulfilled', value: 'small' });
+    expect(result[1]).toMatchObject({
+      status: 'rejected',
+      reason: { code: SENTINEL, retryable: false },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(['owner', 'destroy'])(
+    'rejects a queued read on %s cancellation before dispatch',
+    async (mode) => {
+      const owner = new AbortController();
+      const provider = new CustomJsonRpcProvider(owner.signal, RPC_URL, 5700);
+      providers.push(provider);
+      const reading = provider.send('eth_getBalance', [FROM, 'latest']);
+      const rejected = expect(reading).rejects.toMatchObject({
+        name: 'AbortError',
+      });
+      if (mode === 'destroy') provider.destroy();
+      else owner.abort(new DOMException('Owner ended', 'AbortError'));
+      await rejected;
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
+  );
+
+  it('keeps writes out of the ordinary read queue', async () => {
+    const provider = providerFor();
+    await enableBatch(provider, fetchMock);
+    fetchMock.mockImplementation(async (_url, init) =>
+      feeResponse(init.body, (row) => resultFor(row, row.method))
+    );
+    const reading = provider.send('eth_getBalance', [FROM, 'latest']);
+    const writing = provider.send('eth_sendRawTransaction', ['0x01']);
+    await expect(writing).resolves.toBe('eth_sendRawTransaction');
+    expect(requestsFrom(fetchMock)).toEqual([
+      expect.objectContaining({ method: 'eth_sendRawTransaction' }),
+    ]);
+    await expect(reading).resolves.toBe('eth_getBalance');
+    expect(requestsFrom(fetchMock)).toHaveLength(2);
+  });
+
+  it('does not start background network discovery for an unconfigured provider', async () => {
+    const provider = providerFor(RPC_URL, null);
+    await expect(
+      provider.send('eth_getBalance', [FROM, 'latest'])
+    ).resolves.toBe('0x5208');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(requestsFrom(fetchMock).map((row) => row.method)).toEqual([
+      'eth_getBalance',
+    ]);
+  });
+
+  it.each([false, true])(
+    'learns cold endpoint batching and expires negative capability (unsupported=%s)',
+    async (unsupported) => {
+      let now = Date.now();
+      const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+      const provider = providerFor();
+      fetchMock.mockImplementation(async (_url, init) => {
+        const payload = JSON.parse(init.body);
+        if (Array.isArray(payload) && unsupported)
+          return response({
+            jsonrpc: '2.0',
+            id: null,
+            error: { code: -32600, message: 'Batch unsupported' },
+          });
+        return feeResponse(init.body, (row) => resultFor(row, '0x2'));
+      });
+      const observe = async () => {
+        const start = fetchMock.mock.calls.length;
+        await Promise.all(
+          Array.from({ length: 20 }, () =>
+            provider.send('eth_getBalance', [FROM, 'latest'])
+          )
+        );
+        const sent = requestsFrom(fetchMock).slice(start);
+        return { methods: sent.flat().length, posts: sent.length };
+      };
+      try {
+        await expect(observe()).resolves.toEqual({
+          methods: unsupported ? 40 : 20,
+          posts: unsupported ? 21 : 1,
+        });
+        await expect(observe()).resolves.toEqual({
+          methods: 20,
+          posts: unsupported ? 20 : 1,
+        });
+        await provider.readMany([
+          { method: 'eth_gasPrice', params: [] },
+          { method: 'eth_maxPriorityFeePerGas', params: [] },
+        ]);
+        await expect(observe()).resolves.toEqual({
+          methods: 20,
+          posts: unsupported ? 20 : 1,
+        });
+        now += 30001;
+        await expect(observe()).resolves.toEqual({
+          methods: unsupported ? 40 : 20,
+          posts: unsupported ? 21 : 1,
+        });
+      } finally {
+        clock.mockRestore();
+      }
+    }
+  );
+
+  it.each(['json', 'id'])(
+    'does not classify invalid %s responses as batch refusal',
+    async (failure) => {
+      const provider = providerFor();
+      fetchMock.mockImplementation(async (_url, init) =>
+        failure === 'json'
+          ? new Response('{', {
+              headers: { 'content-type': 'application/json' },
+            })
+          : response(
+              JSON.parse(init.body).map((row) => resultFor({ ...row, id: -1 }))
+            )
+      );
+      const result = await provider.readMany([
+        { method: 'eth_gasPrice', params: [] },
+        { method: 'eth_maxPriorityFeePerGas', params: [] },
+      ]);
+      expect(result.every((row) => row.status === 'rejected')).toBe(true);
+      fetchMock
+        .mockReset()
+        .mockImplementation(async (_url, init) =>
+          feeResponse(init.body, (row) => resultFor(row, '0x2'))
+        );
+      await Promise.all(
+        Array.from({ length: 20 }, () =>
+          provider.send('eth_getBalance', [FROM, 'latest'])
+        )
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(requestsFrom(fetchMock)[0]).toHaveLength(20);
+    }
+  );
+
   it('reserves distinct IDs before concurrent requests settle', async () => {
     const deferred: Array<{ request: any; resolve: (value: any) => void }> = [];
     fetchMock.mockImplementation(
@@ -842,13 +1702,20 @@ describe('JSON-RPC response correlation', () => {
         })
     );
     const provider = providerFor();
+    await enableBatch(provider, fetchMock);
     const first = provider.send('eth_call', [{ data: '0x01' }, 'latest']);
     const second = provider.send('eth_call', [{ data: '0x02' }, 'latest']);
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(deferred).toHaveLength(2);
-    expect(deferred[0].request.id).not.toBe(deferred[1].request.id);
-    deferred[1].resolve(response(resultFor(deferred[1].request, '0x02')));
-    deferred[0].resolve(response(resultFor(deferred[0].request, '0x01')));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(deferred).toHaveLength(1);
+    expect(deferred[0].request).toHaveLength(2);
+    expect(deferred[0].request[0].id).not.toBe(deferred[0].request[1].id);
+    deferred[0].resolve(
+      response(
+        deferred[0].request
+          .map((request) => resultFor(request, request.params[0].data))
+          .reverse()
+      )
+    );
     await expect(Promise.all([first, second])).resolves.toEqual([
       '0x01',
       '0x02',
@@ -927,7 +1794,7 @@ describe('JSON-RPC response correlation', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
-  it('preserves a matched RPC error and advances the next request ID', async () => {
+  it('normalizes a matched RPC error and advances the next request ID', async () => {
     fetchMock.mockImplementationOnce(async (_url, options) => {
       const request = JSON.parse(options.body);
       return response({
@@ -940,9 +1807,9 @@ describe('JSON-RPC response correlation', () => {
     await expect(
       provider.send('eth_call', [{ data: '0x01' }, 'latest'])
     ).rejects.toMatchObject({
-      code: 3,
-      message: 'execution reverted',
+      code: 'CALL_EXCEPTION',
       data: '0x1234',
+      info: { error: { code: 3, message: 'execution reverted' } },
     });
     await expect(
       provider.send('eth_getBalance', [FROM, 'latest'])
@@ -1075,6 +1942,7 @@ describe('JSON-RPC response correlation', () => {
 
   it('preserves inherited caller IDs while rejecting mixed-batch retries', async () => {
     const provider = providerFor();
+    await enableBatch(provider, fetchMock);
     fetchMock.mockImplementation(async (_url, options) => {
       const requests = JSON.parse(options.body);
       return response(
@@ -1323,7 +2191,8 @@ describe('JSON-RPC response correlation', () => {
       let corrupt = true;
       fetchMock.mockImplementation(async (_url, init) => {
         const request = JSON.parse(init.body);
-        if (corrupt && request.method === method)
+        const requests = Array.isArray(request) ? request : [request];
+        if (corrupt && requests.some((row) => row.method === method))
           return new Response(
             new ReadableStream({
               start(controller) {
@@ -1333,14 +2202,16 @@ describe('JSON-RPC response correlation', () => {
             }),
             { headers: { 'content-type': 'application/json' } }
           );
-        return response(resultFor(request, '0x2'));
+        return feeResponse(init.body, (row) => resultFor(row, '0x2'));
       });
       try {
         await expect(provider.getFeeData()).rejects.toMatchObject({
           code: SENTINEL,
         });
         expect(
-          requestsFrom(fetchMock).filter((request) => request.method === method)
+          requestsFrom(fetchMock)
+            .flat()
+            .filter((request) => request.method === method)
         ).toHaveLength(1);
         corrupt = false;
         await expect(provider.getFeeData()).resolves.toMatchObject({
@@ -1349,7 +2220,9 @@ describe('JSON-RPC response correlation', () => {
           maxFeePerGas: BigNumber.from(16),
         });
         expect(
-          requestsFrom(fetchMock).filter((request) => request.method === method)
+          requestsFrom(fetchMock)
+            .flat()
+            .filter((request) => request.method === method)
         ).toHaveLength(2);
       } finally {
         parentGetBlock.mockRestore();
@@ -1406,9 +2279,13 @@ describe('JSON-RPC response correlation', () => {
       .mockResolvedValue({ baseFeePerGas: 7n });
     fetchMock.mockImplementation(async (_url, options) => {
       const request = JSON.parse(options.body);
-      if (request.method === 'eth_maxPriorityFeePerGas')
+      if (
+        (Array.isArray(request) ? request : [request]).some(
+          (row) => row.method === 'eth_maxPriorityFeePerGas'
+        )
+      )
         throw new DOMException('Priority fee aborted', 'AbortError');
-      return response(resultFor(request, '0x7'));
+      return feeResponse(options.body, (row) => resultFor(row, '0x7'));
     });
     try {
       await expect(providerFor().getFeeData()).rejects.toMatchObject({
@@ -1659,8 +2536,7 @@ describe('JSON-RPC response correlation', () => {
         .spyOn(JsonRpcProvider.prototype, 'getBlock')
         .mockResolvedValue({ baseFeePerGas: 7n });
       fetchMock.mockImplementation(async (_url, options) => {
-        const request = JSON.parse(options.body);
-        return response(
+        return feeResponse(options.body, (request) =>
           resultFor({ id: request.method === method ? -1 : request.id }, '0x2')
         );
       });
@@ -1679,8 +2555,7 @@ describe('JSON-RPC response correlation', () => {
       .spyOn(JsonRpcProvider.prototype, 'getBlock')
       .mockResolvedValue({ baseFeePerGas: 7n });
     fetchMock.mockImplementation(async (_url, options) => {
-      const request = JSON.parse(options.body);
-      return response(
+      return feeResponse(options.body, (request) =>
         request.method === 'eth_maxPriorityFeePerGas'
           ? {
               jsonrpc: '2.0',
@@ -1694,7 +2569,7 @@ describe('JSON-RPC response correlation', () => {
       await expect(providerFor().getFeeData()).rejects.toThrow(
         'fee data unavailable'
       );
-      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     } finally {
       parentGetBlock.mockRestore();
     }
@@ -1927,8 +2802,7 @@ describe('JSON-RPC response correlation', () => {
         .spyOn(JsonRpcProvider.prototype, 'getBlock')
         .mockResolvedValue({ baseFeePerGas: 7n });
       fetchMock.mockImplementation(async (_url, options) => {
-        const request = JSON.parse(options.body);
-        return response(
+        return feeResponse(options.body, (request) =>
           resultFor(request, request.method === 'eth_gasPrice' ? value : '0x2')
         );
       });
@@ -1951,8 +2825,7 @@ describe('JSON-RPC response correlation', () => {
         .spyOn(JsonRpcProvider.prototype, 'getBlock')
         .mockResolvedValue({ baseFeePerGas: 7n });
       fetchMock.mockImplementation(async (_url, options) => {
-        const request = JSON.parse(options.body);
-        return response(
+        return feeResponse(options.body, (request) =>
           resultFor(
             request,
             request.method === 'eth_maxPriorityFeePerGas' ? value : '0x7'
@@ -1976,8 +2849,7 @@ describe('JSON-RPC response correlation', () => {
         .spyOn(JsonRpcProvider.prototype, 'getBlock')
         .mockResolvedValue({ baseFeePerGas });
       fetchMock.mockImplementation(async (_url, options) => {
-        const request = JSON.parse(options.body);
-        return response(
+        return feeResponse(options.body, (request) =>
           resultFor(
             request,
             request.method === 'eth_maxPriorityFeePerGas' ? '0x0' : '0x7'
@@ -1990,7 +2862,7 @@ describe('JSON-RPC response correlation', () => {
           maxFeePerGas: BigNumber.from(baseFeePerGas * 2n),
           maxPriorityFeePerGas: BigNumber.from(0),
         });
-        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
       } finally {
         parentGetBlock.mockRestore();
       }
@@ -2012,21 +2884,19 @@ describe('JSON-RPC response correlation', () => {
       jest.spyOn(provider, 'getNetwork').mockResolvedValue(Network.from(137));
       fetchMock.mockImplementation(async (_url, options) => {
         const request = JSON.parse(options.body);
-        if (request.method === 'eth_maxPriorityFeePerGas') {
+        if (
+          (Array.isArray(request) ? request : [request]).some(
+            (row) => row.method === 'eth_maxPriorityFeePerGas'
+          )
+        ) {
           if (failure === 'abort')
             throw new DOMException('Fee read cancelled', 'AbortError');
           return response(resultFor({ id: -1 }, '0x2'));
         }
-        return response(resultFor(request, '0x7'));
+        return feeResponse(options.body, (row) => resultFor(row, '0x7'));
       });
       try {
-        await expect(
-          sdkFor(provider).getTxGasLimit({
-            from: FROM,
-            data: '0x6000',
-            type: 0,
-          })
-        ).rejects.toMatchObject(
+        await expect(provider.getFeeData()).rejects.toMatchObject(
           failure === 'integrity' ? { code: SENTINEL } : { name: 'AbortError' }
         );
         expect(gasStation).toHaveBeenCalledTimes(1);
@@ -2059,5 +2929,532 @@ describe('JSON-RPC response correlation', () => {
       gasStation.mockRestore();
       parentGetBlock.mockRestore();
     }
+  });
+
+  describe('Polygon fee plugin HTTP ownership', () => {
+    const station = 'https://gasstation.polygon.technology/v2';
+    const payload = JSON.stringify({
+      standard: { maxFee: 3, maxPriorityFee: 1 },
+    });
+    const setup = (
+      options: Record<string, unknown> = {},
+      owner = new AbortController()
+    ) => {
+      const provider = new CustomJsonRpcProvider(
+        owner.signal,
+        RPC_URL,
+        137,
+        options
+      );
+      providers.push(provider);
+      jest.spyOn(provider, 'getNetwork').mockResolvedValue(Network.from(137));
+      jest.spyOn(provider, '_perform').mockResolvedValue('0x2');
+      const block = jest
+        .spyOn(JsonRpcProvider.prototype, 'getBlock')
+        .mockResolvedValue({ baseFeePerGas: 7n });
+      const reader = {
+        getBlock: async () => ({ baseFeePerGas: 7n }),
+        send: async () => '0x2',
+      };
+      const originalFees = provider.getFeeData.bind(provider);
+      provider.getFeeData = (override?: any) =>
+        originalFees(override ?? reader);
+      return { provider, owner, block };
+    };
+
+    it.each(['owner', 'destroy', 'deadline'])(
+      'stops actual HTTP retries after %s cancellation',
+      async (kind) => {
+        jest.useFakeTimers();
+        const { provider, owner, block } = setup({ timeoutMs: 100 });
+        fetchMock.mockResolvedValue(
+          new Response('', { status: 429, headers: { 'retry-after': '25' } })
+        );
+        try {
+          const reading = provider.getFeeData();
+          const rejected = expect(reading).rejects.toMatchObject({
+            name: 'AbortError',
+          });
+          await jest.advanceTimersByTimeAsync(0);
+          expect(fetchMock).toHaveBeenCalledTimes(1);
+          if (kind === 'owner')
+            owner.abort(new DOMException('Owner ended', 'AbortError'));
+          if (kind === 'destroy') provider.destroy();
+          await jest.advanceTimersByTimeAsync(kind === 'deadline' ? 100 : 0);
+          await rejected;
+          const attemptsAtCancellation = fetchMock.mock.calls.length;
+          await jest.advanceTimersByTimeAsync(1000);
+          expect(fetchMock).toHaveBeenCalledTimes(attemptsAtCancellation);
+          expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(true);
+        } finally {
+          block.mockRestore();
+          jest.useRealTimers();
+        }
+      }
+    );
+
+    it('preserves a healthy bounded Polygon request and HTTP429 retry', async () => {
+      const { provider, block } = setup();
+      fetchMock
+        .mockResolvedValueOnce(
+          new Response('', { status: 429, headers: { 'retry-after': '1' } })
+        )
+        .mockResolvedValueOnce(
+          new Response(payload, {
+            headers: { 'content-type': 'application/json' },
+          })
+        );
+      try {
+        await expect(provider.getFeeData()).resolves.toEqual({
+          gasPrice: BigNumber.from(2),
+          maxFeePerGas: BigNumber.from('3000000000'),
+          maxPriorityFeePerGas: BigNumber.from('1000000000'),
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(
+          fetchMock.mock.calls.every(
+            ([url, init]) =>
+              url === station &&
+              init.method === 'GET' &&
+              init.redirect === 'manual'
+          )
+        ).toBe(true);
+        expect(fetchMock.mock.calls[0][1].headers['user-agent']).toBe('ethers');
+      } finally {
+        block.mockRestore();
+      }
+    });
+
+    it.each(['seconds', 'date'])(
+      'honors %s Retry-After before retrying fee HTTP',
+      async (kind) => {
+        jest.useFakeTimers();
+        jest.setSystemTime(new Date('2026-11-15T12:00:00Z'));
+        const { provider, block } = setup();
+        const retryAfter =
+          kind === 'seconds' ? '1' : new Date(Date.now() + 1000).toUTCString();
+        fetchMock
+          .mockResolvedValueOnce(
+            new Response('', {
+              status: 429,
+              headers: { 'retry-after': retryAfter },
+            })
+          )
+          .mockResolvedValueOnce(
+            new Response(payload, {
+              headers: { 'content-type': 'application/json' },
+            })
+          );
+        try {
+          const reading = provider.getFeeData();
+          await jest.advanceTimersByTimeAsync(0);
+          expect(fetchMock).toHaveBeenCalledTimes(1);
+          await jest.advanceTimersByTimeAsync(999);
+          expect(fetchMock).toHaveBeenCalledTimes(1);
+          await jest.advanceTimersByTimeAsync(1);
+          await expect(reading).resolves.toMatchObject({
+            maxFeePerGas: BigNumber.from('3000000000'),
+          });
+          expect(fetchMock).toHaveBeenCalledTimes(2);
+        } finally {
+          provider.destroy();
+          block.mockRestore();
+          jest.useRealTimers();
+        }
+      }
+    );
+
+    it.each(['0', 'invalid', 'Sun, 15 Nov 2020 12:00:00 GMT'])(
+      'keeps bounded retry behavior for Retry-After %s',
+      async (retryAfter) => {
+        jest.useFakeTimers();
+        const { provider, block } = setup();
+        fetchMock
+          .mockResolvedValueOnce(
+            new Response('', {
+              status: 429,
+              headers: { 'retry-after': retryAfter },
+            })
+          )
+          .mockResolvedValueOnce(
+            new Response(payload, {
+              headers: { 'content-type': 'application/json' },
+            })
+          );
+        try {
+          const reading = provider.getFeeData();
+          await jest.advanceTimersByTimeAsync(0);
+          await jest.advanceTimersByTimeAsync(1000);
+          await expect(reading).resolves.toMatchObject({
+            maxFeePerGas: BigNumber.from('3000000000'),
+          });
+          expect(fetchMock).toHaveBeenCalledTimes(2);
+        } finally {
+          provider.destroy();
+          block.mockRestore();
+          jest.useRealTimers();
+        }
+      }
+    );
+
+    it.each(['1', '9'.repeat(400)])(
+      'does not retry beyond the operation deadline for Retry-After %s',
+      async (retryAfter) => {
+        jest.useFakeTimers();
+        const { provider, block } = setup({ timeoutMs: 50 });
+        fetchMock.mockResolvedValue(
+          new Response('', {
+            status: 429,
+            headers: { 'retry-after': retryAfter },
+          })
+        );
+        try {
+          const reading = provider.getFeeData();
+          const failed = expect(reading).rejects.toMatchObject({
+            name: 'AbortError',
+          });
+          await jest.advanceTimersByTimeAsync(50);
+          await failed;
+          await jest.advanceTimersByTimeAsync(1000);
+          expect(fetchMock).toHaveBeenCalledTimes(1);
+        } finally {
+          provider.destroy();
+          block.mockRestore();
+          jest.useRealTimers();
+        }
+      }
+    );
+
+    it('stops fee-plugin retries when its read phase ends while the provider stays alive', async () => {
+      jest.useFakeTimers();
+      const { provider, block } = setup();
+      const phase = new AbortController();
+      const reader = {
+        signal: phase.signal,
+        getBlock: jest.fn().mockResolvedValue({ baseFeePerGas: 7n }),
+        send: jest.fn().mockResolvedValue('0x2'),
+      };
+      fetchMock.mockResolvedValue(
+        new Response('', { status: 429, headers: { 'retry-after': '25' } })
+      );
+      try {
+        const reading = provider.getFeeData(reader);
+        const rejected = expect(reading).rejects.toMatchObject({
+          name: 'AbortError',
+        });
+        await jest.advanceTimersByTimeAsync(0);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        phase.abort(new DOMException('Read phase expired', 'AbortError'));
+        await jest.advanceTimersByTimeAsync(0);
+        await rejected;
+        await jest.advanceTimersByTimeAsync(100);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(true);
+        expect(provider.signal.aborted).toBe(false);
+        fetchMock.mockResolvedValue(
+          new Response(payload, {
+            headers: { 'content-type': 'application/json' },
+          })
+        );
+        const healthy = provider.getFeeData();
+        await jest.advanceTimersByTimeAsync(10);
+        await expect(healthy).resolves.toMatchObject({
+          maxFeePerGas: BigNumber.from('3000000000'),
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+      } finally {
+        phase.abort();
+        provider.destroy();
+        await jest.runOnlyPendingTimersAsync();
+        block.mockRestore();
+        jest.useRealTimers();
+      }
+    });
+
+    it('does not start fee reads for an expired phase or after delayed network discovery', async () => {
+      const { provider, block } = setup();
+      const phase = new AbortController();
+      let release!: (value: unknown) => void;
+      const networkReady = new Promise((resolve) => {
+        release = resolve;
+      });
+      jest.spyOn(provider, 'getNetwork').mockReturnValue(networkReady);
+      const reader = {
+        signal: phase.signal,
+        getBlock: jest.fn(),
+        send: jest.fn(),
+      };
+      try {
+        const reading = provider.getFeeData(reader);
+        const rejected = expect(reading).rejects.toMatchObject({
+          name: 'AbortError',
+        });
+        phase.abort(new DOMException('Read phase expired', 'AbortError'));
+        release(Network.from(137));
+        await rejected;
+        await expect(provider.getFeeData(reader)).rejects.toMatchObject({
+          name: 'AbortError',
+        });
+        expect(reader.send).not.toHaveBeenCalled();
+        expect(reader.getBlock).not.toHaveBeenCalled();
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(provider.signal.aborted).toBe(false);
+      } finally {
+        block.mockRestore();
+      }
+    });
+
+    it.each(['declared', 'stream', 'json', 'utf8', 'content-type', 'http'])(
+      'rejects a %s response without retry or fee fallback',
+      async (kind) => {
+        const { provider, block } = setup({ maxResponseBytes: 100 });
+        const cleanup = jest.fn();
+        let value: Response;
+        if (kind === 'declared')
+          value = new Response(payload, {
+            headers: { 'content-length': '101' },
+          });
+        else if (kind === 'stream')
+          value = new Response(
+            new ReadableStream({
+              pull(controller) {
+                controller.enqueue(new Uint8Array(101));
+              },
+              cancel: cleanup,
+            })
+          );
+        else if (kind === 'utf8') value = new Response(new Uint8Array([0xff]));
+        else
+          value = new Response(kind === 'json' ? '{' : payload, {
+            status: kind === 'http' ? 503 : 200,
+            headers: {
+              'content-type':
+                kind === 'content-type' ? 'text/html' : 'application/json',
+            },
+          });
+        fetchMock.mockResolvedValue(value);
+        try {
+          await expect(provider.getFeeData()).rejects.toMatchObject(
+            kind === 'http'
+              ? { status: 503 }
+              : { code: SENTINEL, retryable: false }
+          );
+          expect(fetchMock).toHaveBeenCalledTimes(1);
+          if (kind === 'stream') expect(cleanup).toHaveBeenCalledTimes(1);
+          expect(provider.feeDataCache).toBeNull();
+        } finally {
+          block.mockRestore();
+        }
+      }
+    );
+
+    it('keeps redirects inside the bounded transport', async () => {
+      const { provider, block } = setup({ maxResponseBytes: 100 });
+      fetchMock
+        .mockResolvedValueOnce(
+          new Response('', {
+            status: 302,
+            headers: { location: 'https://fees.example/redirected' },
+          })
+        )
+        .mockResolvedValueOnce(
+          new Response('x'.repeat(101), {
+            headers: { 'content-type': 'application/json' },
+          })
+        );
+      try {
+        await expect(provider.getFeeData()).rejects.toMatchObject({
+          code: SENTINEL,
+          retryable: false,
+        });
+        expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+          station,
+          'https://fees.example/redirected',
+        ]);
+        expect(
+          fetchMock.mock.calls.every(([, init]) => init.redirect === 'manual')
+        ).toBe(true);
+      } finally {
+        block.mockRestore();
+      }
+    });
+
+    it.each([
+      'Window',
+      'ServiceWorkerGlobalScope',
+      'DedicatedWorkerGlobalScope',
+    ])(
+      'preserves %s browser-managed redirects and validates the final URL',
+      async (tag) => {
+        const { provider, block } = setup();
+        const originalTag = Object.getOwnPropertyDescriptor(
+          window,
+          Symbol.toStringTag
+        );
+        Object.defineProperty(window, Symbol.toStringTag, {
+          value: tag,
+          configurable: true,
+        });
+        const redirected = new Response(payload, {
+          headers: { 'content-type': 'application/json' },
+        });
+        Object.defineProperty(redirected, 'url', {
+          value: 'https://fees.example/final',
+        });
+        fetchMock.mockResolvedValue(redirected);
+        try {
+          await expect(provider.getFeeData()).resolves.toMatchObject({
+            maxFeePerGas: BigNumber.from('3000000000'),
+          });
+          expect(fetchMock.mock.calls[0][1].redirect).toBe('follow');
+          provider.feeDataCache = null;
+          const downgrade = new Response(payload, {
+            headers: { 'content-type': 'application/json' },
+          });
+          Object.defineProperty(downgrade, 'url', {
+            value: 'http://fees.example/final',
+          });
+          fetchMock.mockResolvedValue(downgrade);
+          await expect(provider.getFeeData()).rejects.toThrow(
+            'unsupported redirect'
+          );
+        } finally {
+          if (originalTag)
+            Object.defineProperty(window, Symbol.toStringTag, originalTag);
+          else delete window[Symbol.toStringTag];
+          block.mockRestore();
+        }
+      }
+    );
+
+    it('preserves a transport failure when a plugin attempts its own fallback', async () => {
+      const { provider, block } = setup();
+      const plugin = {
+        url: station,
+        processFunc: async (_read, _provider, request) => {
+          try {
+            await request.send();
+          } catch {
+            /* A plugin may offer a fallback. */
+          }
+          return { gasPrice: 1n, maxFeePerGas: 2n, maxPriorityFeePerGas: 1n };
+        },
+      };
+      jest
+        .spyOn(provider, 'getNetwork')
+        .mockResolvedValue({ getPlugin: () => plugin });
+      fetchMock.mockResolvedValue(
+        new Response('{', { headers: { 'content-type': 'application/json' } })
+      );
+      try {
+        await expect(provider.getFeeData()).rejects.toMatchObject({
+          code: SENTINEL,
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      } finally {
+        block.mockRestore();
+      }
+    });
+
+    it('cancels a noncooperative plugin body without accepting its late result', async () => {
+      const { provider, block } = setup();
+      let release!: (value: { done: boolean; value?: Uint8Array }) => void;
+      let started!: () => void;
+      const readingBody = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const held = new Promise<{ done: boolean; value?: Uint8Array }>(
+        (resolve) => {
+          release = resolve;
+        }
+      );
+      const cancel = jest.fn().mockResolvedValue(undefined);
+      const unlock = jest.fn();
+      fetchMock.mockResolvedValue({
+        status: 200,
+        statusText: 'OK',
+        headers: new Headers({ 'content-type': 'application/json' }),
+        body: {
+          getReader: () => ({
+            read: () => {
+              started();
+              return held;
+            },
+            cancel,
+            releaseLock: unlock,
+          }),
+        },
+      });
+      try {
+        const reading = provider.getFeeData();
+        const rejected = expect(reading).rejects.toMatchObject({
+          name: 'AbortError',
+        });
+        await readingBody;
+        provider.destroy();
+        await rejected;
+        expect(cancel).toHaveBeenCalledTimes(1);
+        release({ done: false, value: new TextEncoder().encode(payload) });
+        for (let i = 0; i < 20; i++) await Promise.resolve();
+        expect(cancel).toHaveBeenCalledTimes(1);
+        expect(unlock).toHaveBeenCalledTimes(1);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(provider.feeDataCache).toBeNull();
+      } finally {
+        block.mockRestore();
+      }
+    });
+
+    it('keeps redirect credential and downgrade restrictions', async () => {
+      const { provider, block } = setup();
+      const polygon = Network.from(137).getPlugin(
+        'org.ethers.plugins.network.FetchUrlFeeDataPlugin'
+      );
+      const plugin = {
+        ...polygon,
+        url: 'https://fees.example/start',
+        processFunc: (read, observed, request) => {
+          request.setCredentials('user', 'password');
+          return polygon.processFunc(read, observed, request);
+        },
+      };
+      jest
+        .spyOn(provider, 'getNetwork')
+        .mockResolvedValue({ getPlugin: () => plugin });
+      fetchMock
+        .mockResolvedValueOnce(
+          new Response('', {
+            status: 302,
+            headers: { location: 'https://other.example/fees' },
+          })
+        )
+        .mockResolvedValueOnce(
+          new Response(payload, {
+            headers: { 'content-type': 'application/json' },
+          })
+        );
+      try {
+        await expect(provider.getFeeData()).resolves.toMatchObject({
+          maxFeePerGas: BigNumber.from('3000000000'),
+        });
+        expect(fetchMock.mock.calls[0][1].headers.authorization).toBeDefined();
+        expect(
+          fetchMock.mock.calls[1][1].headers.authorization
+        ).toBeUndefined();
+        provider.feeDataCache = null;
+        fetchMock.mockReset().mockResolvedValue(
+          new Response('', {
+            status: 302,
+            headers: { location: 'http://other.example/fees' },
+          })
+        );
+        await expect(provider.getFeeData()).rejects.toThrow(
+          'unsupported redirect'
+        );
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      } finally {
+        block.mockRestore();
+      }
+    });
   });
 });

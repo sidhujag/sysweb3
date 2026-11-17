@@ -3,7 +3,6 @@ import {
   TypedMessage,
   SignTypedDataVersion,
 } from '@metamask/eth-sig-util';
-import { INetwork, INetworkType } from '@sidhujag/sysweb3-network';
 import { ITxid } from '@sidhujag/sysweb3-utils';
 import { CustomJsonRpcProvider } from 'providers';
 
@@ -26,7 +25,11 @@ import { TrezorKeyring } from './trezor';
 
 import type { KeyringCore, PreparedSessionTransfer } from './keyring-core';
 import type { PreparedEvmTransaction } from './transactions/evm-envelope';
-import type { OwnedUtxoRpcVerification } from '@sidhujag/sysweb3-network';
+import type {
+  INetwork,
+  INetworkType,
+  OwnedUtxoRpcVerification,
+} from '@sidhujag/sysweb3-network';
 
 export type AccessListish =
   | Array<{ address: string; storageKeys: string[] }>
@@ -259,7 +262,14 @@ export type SyscoinOwnedReadOptions = Readonly<{
   assertCurrent: () => void;
   fetch: typeof globalThis.fetch;
   signal: AbortSignal;
+  allocateUtxoAddress?: import('./utils/utxo-address-discovery').AllocateUtxoAddress;
 }>;
+export type {
+  AllocateUtxoAddress,
+  UtxoAddressDiscoveryState,
+  UtxoAddressSelection,
+  UtxoIssuedAddress,
+} from './utils/utxo-address-discovery';
 
 /** Exact signed bytes presented to a wallet host before the only POST. */
 export type SyscoinSubmissionDescriptor = Readonly<{

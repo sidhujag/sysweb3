@@ -995,6 +995,10 @@ export class TrezorKeyring {
       typeof message !== 'string'
     )
       throw new Error('Invalid message signing request');
+    captureHardwareSigningData(
+      message,
+      () => new Error('Invalid message signing request')
+    );
     const path = isEvmCoin(coin, slip44)
       ? getAddressDerivationPath(coin, slip44, 0, false, index)
       : getAccountDerivationPath(coin, slip44, index);

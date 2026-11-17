@@ -41,6 +41,12 @@
   },
   "typesVersions": {
     "*": {
+      "cjs/networks": [
+        "types/networks.d.ts"
+      ],
+      "cjs/networks.js": [
+        "types/networks.d.ts"
+      ],
       "cjs/coin-utils": [
         "types/coin-utils.d.ts"
       ],
@@ -58,6 +64,18 @@
       ],
       "cjs/ownedUtxoRpc.js": [
         "types/ownedUtxoRpc.d.ts"
+      ],
+      "cjs/rpc-transport": [
+        "types/rpc-transport.d.ts"
+      ],
+      "cjs/rpc-transport.js": [
+        "types/rpc-transport.d.ts"
+      ],
+      "cjs/rpc-read-client": [
+        "types/rpc-read-client.d.ts"
+      ],
+      "cjs/rpc-read-client.js": [
+        "types/rpc-read-client.d.ts"
       ]
     }
   }

@@ -1,4 +1,4 @@
-import { FeeData } from 'ethers/providers';
+import { FeeData, Network } from 'ethers/providers';
 import { FetchRequest, getBigInt } from 'ethers/utils';
 
 import { handleStatusCodeError } from './errorUtils';
@@ -17,8 +17,10 @@ import {
 } from './rpc-read-client';
 import {
   isReadOnlyRpcMethod,
-  cancelRpcResponse,
-  readJsonRpcResponse,
+  RpcHttpExecutor,
+  captureRpcRequests,
+  checkRpcSignal,
+  RpcResponseIntegrityError,
   requestJsonRpc,
 } from './rpc-transport';
 
@@ -27,6 +29,7 @@ import type { JsonRpcPayload } from 'ethers/providers';
 export { RpcResponseIntegrityError } from './rpc-transport';
 export type RpcProviderOptions = Omit<RpcReadClientOptions, 'signal'>;
 export type RpcFeeReadTransport = Readonly<{
+  signal?: AbortSignal;
   getBlock(tag: 'latest'): Promise<{ baseFeePerGas?: unknown } | null>;
   send(
     method: 'eth_gasPrice' | 'eth_maxPriorityFeePerGas',
@@ -54,21 +57,7 @@ const TRANSACTION_RECEIPT_BIG_NUMBER_FIELDS = new Set([
 ]);
 
 const FEE_DATA_CACHE_TTL_MS = 5000;
-
-const getChainIdFromNetworkish = (network?: Networkish): number | undefined => {
-  if (network == null) return undefined;
-  if (typeof network === 'number') return network;
-  if (typeof network === 'bigint') return Number(network);
-  const chainId = (network as { chainId?: bigint | number | string }).chainId;
-  if (chainId == null) return undefined;
-  return typeof chainId === 'bigint' ? Number(chainId) : Number(chainId);
-};
-
-const parseChainId = (chainId: bigint | number | string): number => {
-  if (typeof chainId === 'number') return chainId;
-  if (typeof chainId === 'bigint') return Number(chainId);
-  return Number(BigInt(chainId));
-};
+const queuedReadFailure = Symbol('queuedReadFailure');
 
 const defineValue = (target: any, field: string, value: any) => {
   Object.defineProperty(target, field, {
@@ -149,50 +138,32 @@ export const wrapTransactionResponse = (transaction: any) => {
   });
 };
 
-// Preserve JSON-RPC error details (code, revert data) on thrown errors so
-// consumers can decode custom contract errors instead of only seeing
-// "execution reverted".
-const makeRpcError = (rpcError: {
-  code?: number;
-  data?: unknown;
-  message: string;
-}): Error => {
-  const error = new Error(rpcError.message) as Error & {
-    code?: number;
-    data?: unknown;
-  };
-  if (rpcError.code !== undefined) {
-    error.code = rpcError.code;
-  }
-  if (rpcError.data !== undefined) {
-    error.data = rpcError.data;
-  }
-  return error;
-};
-
-class BaseProvider extends JsonRpcProvider {
+export class CustomJsonRpcProvider extends JsonRpcProvider {
   private cooldownTime = 120 * 1000;
   private cooldownUntil = 0;
   private readonly fetcher: NonNullable<RpcReadClientOptions['fetch']>;
-  private readonly maximumResponseBytes: number;
-  private readonly requestTimeoutMs: number;
+  private readonly requestInit: NonNullable<
+    RpcReadClientOptions['requestInit']
+  >;
+  private readonly http: RpcHttpExecutor;
   private feeDataCache: { expiresAt: number; value: any } | null = null;
-  private feeDataPromise: Promise<any> | null = null;
-  private readonly configuredChainId?: number;
+  private feeBlock?: {
+    expiresAt: number;
+    block: { baseFeePerGas?: unknown } | null;
+  };
+  private readonly configuredChainId?: bigint;
   private chainIdVerificationPromise: Promise<void> | null = null;
   private readonly readClient: JsonRpcReadClient;
   private readonly lifetime = new AbortController();
+  private readonly ccipReads = new WeakMap<
+    string[],
+    { signal: AbortSignal; failure?: unknown }
+  >();
   private releaseExternalSignal: () => void;
   public isInCooldown = false;
   public errorMessage: any = '';
   public serverHasAnError = false;
   signal: AbortSignal;
-  _pendingBatchAggregator: NodeJS.Timer | null;
-  _pendingBatch: Array<{
-    reject: (error: Error) => void;
-    request: { id: number; jsonrpc: '2.0'; method: string; params: Array<any> };
-    resolve: (result: any) => void;
-  }> | null;
 
   constructor(
     signal: AbortSignal,
@@ -200,12 +171,18 @@ class BaseProvider extends JsonRpcProvider {
     network?: Networkish,
     options: RpcProviderOptions = {}
   ) {
-    super(
-      typeof url === 'string' ? url : url?.url,
-      network,
-      network == null ? undefined : { staticNetwork: true }
-    );
-    this.configuredChainId = getChainIdFromNetworkish(network);
+    super(typeof url === 'string' ? url : url?.url, network, {
+      ...(network == null ? {} : { staticNetwork: true }),
+      batchStallTime: 4,
+      // Ethers counts UTF-16 code units; the executor enforces UTF-8 bytes.
+      batchMaxSize: Math.min(
+        1024 * 1024,
+        Math.floor(((options.maxRequestBytes ?? 256 * 1024) * 16) / 3)
+      ),
+    });
+    Object.defineProperty(this, 'configuredChainId', {
+      value: network == null ? undefined : Network.from(network).chainId,
+    });
     this.signal = this.lifetime.signal;
     const abort = () => this.lifetime.abort(signal.reason);
     this.releaseExternalSignal = () =>
@@ -213,17 +190,33 @@ class BaseProvider extends JsonRpcProvider {
     if (signal.aborted) abort();
     else signal.addEventListener('abort', abort, { once: true });
     this.fetcher = options.fetch ?? ((address, init) => fetch(address, init));
-    this.maximumResponseBytes = options.maxResponseBytes ?? 2 * 1024 * 1024;
-    this.requestTimeoutMs = options.timeoutMs ?? 12000;
-    this.readClient = new JsonRpcReadClient(this._getConnection().url, {
+    this.requestInit = {
+      ...options.requestInit,
+      headers: new Headers(options.requestInit?.headers),
+    };
+    this.http = new RpcHttpExecutor({
       ...options,
       fetch: (address, init) => this.fetchRpc(address, init),
       signal: this.lifetime.signal,
     });
-    this._pendingBatchAggregator = null;
-    this._pendingBatch = null;
+    this.readClient = new JsonRpcReadClient(
+      this._getConnection().url,
+      {
+        ...options,
+        requestInit: this.requestInit,
+        fetch: (address, init) => this.fetchRpc(address, init),
+        signal: this.lifetime.signal,
+      },
+      this.http
+    );
+    this.send = this.send.bind(this);
+    // The former base-class constructor bound an external subclass's own methods.
+    if (new.target !== CustomJsonRpcProvider) this.bindMethods();
+  }
 
-    this.bindMethods();
+  /** Share endpoint capability metadata without sharing requests or their owners. */
+  get readCapabilities() {
+    return this.readClient.capabilities;
   }
 
   private bindMethods() {
@@ -254,10 +247,13 @@ class BaseProvider extends JsonRpcProvider {
     return response;
   }
 
-  private assertActive(): void {
-    if (this.lifetime.signal.aborted)
-      throw this.lifetime.signal.reason instanceof Error
-        ? this.lifetime.signal.reason
+  private assertActive(reader?: RpcFeeReadTransport): void {
+    const ended = [this.lifetime.signal, reader?.signal].find(
+      (signal) => signal?.aborted
+    );
+    if (ended)
+      throw ended.reason instanceof Error
+        ? ended.reason
         : Object.assign(new Error('RPC provider aborted'), {
             name: 'AbortError',
           });
@@ -277,7 +273,7 @@ class BaseProvider extends JsonRpcProvider {
 
   private async fetchAndVerifyConfiguredChainId(): Promise<void> {
     const actual = await this.readChainId(true);
-    const actualChainId = parseChainId(actual);
+    const actualChainId = BigInt(actual);
     if (actualChainId !== this.configuredChainId) {
       throw new Error(
         `Configured EVM chainId ${this.configuredChainId} does not match RPC eth_chainId ${actualChainId}`
@@ -291,71 +287,49 @@ class BaseProvider extends JsonRpcProvider {
 
   private async requestRpc(
     inputs: Array<Pick<JsonRpcPayload, 'method' | 'params'>>,
-    batch: boolean
+    batch: boolean,
+    signal?: AbortSignal
   ): Promise<any[]> {
     this.assertActive();
-    const controller = new AbortController();
-    const abort = () => controller.abort(this.lifetime.signal.reason);
-    this.lifetime.signal.addEventListener('abort', abort, { once: true });
-    const signal = controller.signal;
-    const timer = setTimeout(
-      () =>
-        controller.abort(
-          Object.assign(new Error('RPC request deadline exceeded'), {
-            name: 'AbortError',
-          })
-        ),
-      this.requestTimeoutMs
+    const captured = captureRpcRequests(inputs as RpcReadRequest[]);
+    const headers = new Headers(this.requestInit.headers);
+    headers.set('Content-Type', 'application/json');
+    headers.set('Accept', 'application/json');
+    return this.http.run([signal], (signal) =>
+      requestJsonRpc(
+        this._getConnection().url,
+        captured,
+        batch,
+        signal,
+        (url, body) =>
+          this.http.request(
+            url,
+            {
+              ...this.requestInit,
+              method: 'POST',
+              headers,
+              body,
+              redirect: 'error',
+            },
+            signal,
+            {
+              process: (json, response) => {
+                if (!response.ok) {
+                  this.errorMessage =
+                    json?.error || json?.message || 'No message from Provider';
+                  handleStatusCodeError(response.status, this.errorMessage);
+                }
+                if (response.status !== 200)
+                  throw new Error(
+                    `Unexpected HTTP status code: ${response.status}`
+                  );
+                return json;
+              },
+            }
+          ),
+        false
+      )
     );
-    const work = requestJsonRpc(
-      this._getConnection().url,
-      inputs,
-      batch,
-      signal,
-      async (url, body, signal) => {
-        const response = await this.fetchRpc(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body,
-          signal,
-        });
-        let readingBody = false;
-        try {
-          if (signal.aborted) throw signal.reason;
-          readingBody = true;
-          const json: any = await readJsonRpcResponse(
-            response,
-            this.maximumResponseBytes,
-            signal
-          );
-          if (signal.aborted) throw signal.reason;
-          if (!response.ok) {
-            this.errorMessage =
-              json?.error || json?.message || 'No message from Provider';
-            handleStatusCodeError(response.status, this.errorMessage);
-          }
-          if (response.status !== 200)
-            throw new Error(`Unexpected HTTP status code: ${response.status}`);
-          return json;
-        } finally {
-          if (!readingBody) await cancelRpcResponse(response);
-        }
-      },
-      false
-    );
-    try {
-      return await new Promise<any[]>((resolve, reject) => {
-        const cancel = () => reject(signal.reason);
-        signal.addEventListener('abort', cancel, { once: true });
-        if (signal.aborted) cancel();
-        void work
-          .then(resolve, reject)
-          .finally(() => signal.removeEventListener('abort', cancel));
-      });
-    } finally {
-      clearTimeout(timer);
-      this.lifetime.signal.removeEventListener('abort', abort);
-    }
   }
 
   async readMany(inputs: readonly RpcReadRequest[], options?: RpcReadOptions) {
@@ -382,15 +356,33 @@ class BaseProvider extends JsonRpcProvider {
     const callerIds = inputs.map(({ id }) => id);
     if (inputs.every(({ method }) => isReadOnlyRpcMethod(method))) {
       const results = await this.readMany(inputs);
+      if (
+        !Array.isArray(payload) &&
+        results[0].status === 'rejected' &&
+        !(results[0].reason instanceof RpcReadError)
+      )
+        throw results[0].reason;
       return results.map((result, index) => {
         if (result.status === 'fulfilled')
           return { jsonrpc: '2.0', id: callerIds[index], result: result.value };
-        if (!(result.reason instanceof RpcReadError)) throw result.reason;
-        const { code, message, data } = result.reason;
         return {
           jsonrpc: '2.0',
           id: callerIds[index],
-          error: { code, message, data },
+          error: {
+            code:
+              result.reason instanceof RpcReadError
+                ? result.reason.code
+                : -32603,
+            message:
+              result.reason instanceof Error
+                ? result.reason.message
+                : 'RPC read failed',
+            data:
+              result.reason instanceof RpcReadError
+                ? result.reason.data
+                : undefined,
+            [queuedReadFailure]: result.reason,
+          },
         };
       });
     }
@@ -401,20 +393,61 @@ class BaseProvider extends JsonRpcProvider {
     }));
   }
 
-  override send = async (method: string, params: any[]) => {
-    if (method === 'eth_chainId') return this.readChainId(false);
+  override getRpcError(payload: JsonRpcPayload, response: any): Error {
+    if (
+      response.error &&
+      queuedReadFailure in response.error &&
+      !(response.error[queuedReadFailure] instanceof RpcReadError)
+    )
+      return response.error[queuedReadFailure];
+    return super.getRpcError(payload, response);
+  }
+
+  override async send(
+    method: string,
+    params: any[],
+    options: Pick<RpcReadOptions, 'signal'> = {}
+  ) {
+    if (method === 'eth_chainId') return this.readClient.getChainId(options);
     if (isReadOnlyRpcMethod(method)) {
-      const [result] = await this.readMany([{ method, params }]);
-      if (result.status === 'rejected') throw result.reason;
-      return result.value;
+      this.assertActive();
+      if (
+        options.signal ||
+        this.configuredChainId == null ||
+        !this.readClient.supportsBatch
+      ) {
+        const [result] = await this.readMany([{ method, params }], options);
+        if (result.status === 'rejected') {
+          if (!(result.reason instanceof RpcReadError)) throw result.reason;
+          throw this.getRpcError(
+            { jsonrpc: '2.0', id: 1, method, params },
+            { error: result.reason }
+          );
+        }
+        return result.value;
+      }
+      const [{ params: snapshot }] = captureRpcRequests([{ method, params }]);
+      let result;
+      try {
+        result = await super.send(method, snapshot);
+      } catch (error) {
+        this.assertActive();
+        throw error;
+      }
+      this.assertActive();
+      return result;
     }
-    const [json] = await this.requestRpc([{ method, params }], false);
+    const [json] = await this.requestRpc(
+      [{ method, params }],
+      false,
+      options.signal
+    );
     if (json.error) {
       this.errorMessage = json.error.message;
-      throw makeRpcError(json.error);
+      throw new RpcReadError(json.error);
     }
     return json.result;
-  };
+  }
 
   async sendBatch(method: string, params: Array<any[]>): Promise<any[]> {
     if (!params.length) return [];
@@ -434,7 +467,7 @@ class BaseProvider extends JsonRpcProvider {
     return responses.map((json) => {
       if (json.error) {
         this.errorMessage = json.error.message;
-        throw makeRpcError(json.error);
+        throw new RpcReadError(json.error);
       }
       return json.result;
     });
@@ -449,183 +482,387 @@ class BaseProvider extends JsonRpcProvider {
     super.destroy();
   }
 
+  override ccipReadFetch(
+    transaction: Parameters<JsonRpcProvider['ccipReadFetch']>[0],
+    calldata: string,
+    urls: string[]
+  ): Promise<string | null> {
+    const capturedUrls = [...urls];
+    return this.http.run([], async (signal) => {
+      const owner = { signal, failure: undefined as unknown };
+      this.ccipReads.set(capturedUrls, owner);
+      try {
+        const value = await super.ccipReadFetch(
+          transaction,
+          calldata,
+          capturedUrls
+        );
+        checkRpcSignal(signal);
+        if (owner.failure) throw owner.failure;
+        return value;
+      } catch (error) {
+        checkRpcSignal(signal);
+        throw owner.failure ?? error;
+      } finally {
+        this.ccipReads.delete(capturedUrls);
+      }
+    });
+  }
+
+  override emit(
+    event: Parameters<JsonRpcProvider['emit']>[0],
+    ...args: unknown[]
+  ): Promise<boolean> {
+    const value = args[0] as
+      | { action?: string; request?: FetchRequest; urls?: string[] }
+      | undefined;
+    if (event === 'debug' && value?.action === 'sendCcipReadFetchRequest') {
+      const owner = value.urls && this.ccipReads.get(value.urls);
+      if (owner && value.request instanceof FetchRequest) {
+        const request = value.request;
+        checkRpcSignal(owner.signal);
+        if (owner.failure) throw owner.failure;
+        request.timeout = this.http.timeoutMs;
+        request.setThrottleParams({ maxAttempts: 1 });
+        request.getUrlFunc = async (wire) => {
+          try {
+            checkRpcSignal(owner.signal);
+            if (owner.failure) throw owner.failure;
+            const url = new URL(wire.url);
+            if (
+              wire.url.length > 4096 ||
+              url.username ||
+              url.password ||
+              url.hash ||
+              (url.protocol !== 'https:' &&
+                !(
+                  url.protocol === 'http:' &&
+                  ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+                )) ||
+              !['GET', 'POST'].includes(wire.method)
+            )
+              throw new RpcResponseIntegrityError(
+                'Invalid CCIP gateway request',
+                false
+              );
+            return await this.http.request(
+              wire.url,
+              {
+                method: wire.method,
+                headers: wire.headers,
+                body: wire.body ? Uint8Array.from(wire.body).buffer : undefined,
+                credentials: 'omit',
+                redirect: 'error',
+                cache: 'no-store',
+                referrerPolicy: 'no-referrer',
+              },
+              owner.signal,
+              {
+                fetch: (url, init) => fetch(url, init),
+                format: 'text',
+                validate: (response) => {
+                  if (
+                    response.redirected ||
+                    (response.url && response.url !== wire.url) ||
+                    (response.status >= 300 && response.status < 400)
+                  )
+                    throw new RpcResponseIntegrityError(
+                      'CCIP gateway redirect refused',
+                      false
+                    );
+                },
+                process: (text, response) => {
+                  const headers: Record<string, string> = {};
+                  response.headers.forEach((value, name) => {
+                    headers[name] = value;
+                  });
+                  return {
+                    statusCode: response.status,
+                    statusMessage: response.statusText,
+                    headers,
+                    body: new TextEncoder().encode(text),
+                  };
+                },
+              }
+            );
+          } catch (error) {
+            if (error instanceof RpcResponseIntegrityError)
+              owner.failure = error;
+            throw error;
+          }
+        };
+      }
+    }
+    return super.emit(event, ...args);
+  }
+
   async getGasPrice() {
     return BigNumber.from(await this.send('eth_gasPrice', []));
   }
 
   async getFeeData(reader?: RpcFeeReadTransport): Promise<any> {
-    this.assertActive();
-    // A host-owned observation must read through its own phase and lifetime.
-    if (reader) return this.fetchFeeDataWithinLifetime(reader);
-    const now = Date.now();
-    if (this.feeDataCache && this.feeDataCache.expiresAt > now) {
-      return this.feeDataCache.value;
-    }
-    if (this.feeDataPromise) {
-      return this.feeDataPromise;
-    }
-
-    this.feeDataPromise = this.fetchFeeDataWithinLifetime();
-    try {
-      const value = await this.feeDataPromise;
-      this.assertActive();
-      this.feeDataCache = {
-        expiresAt: Date.now() + FEE_DATA_CACHE_TTL_MS,
-        value,
+    this.assertActive(reader);
+    if (reader)
+      return this.http.run([reader.signal], (signal) =>
+        this.readFeeData(reader, signal)
+      );
+    if (!this.feeDataCache || this.feeDataCache.expiresAt <= Date.now()) {
+      const cached = {
+        expiresAt: Infinity,
+        value: this.http.run([], (signal) =>
+          this.readFeeData(undefined, signal)
+        ),
       };
-      return value;
-    } finally {
-      this.feeDataPromise = null;
+      this.feeDataCache = cached;
+      void cached.value.then(
+        () => {
+          cached.expiresAt = Date.now() + FEE_DATA_CACHE_TTL_MS;
+        },
+        () => {
+          if (this.feeDataCache === cached) this.feeDataCache = null;
+        }
+      );
     }
+    return this.feeDataCache.value;
   }
 
-  private fetchFeeDataWithinLifetime(
-    reader?: RpcFeeReadTransport
+  private async readFeeData(
+    reader: RpcFeeReadTransport | undefined,
+    signal: AbortSignal
   ): Promise<any> {
-    return new Promise((resolve, reject) => {
-      const cancel = () => reject(this.lifetime.signal.reason);
-      this.lifetime.signal.addEventListener('abort', cancel, { once: true });
-      void this.fetchFeeData(reader)
-        .then((value) => {
-          this.assertActive();
-          return value;
-        })
-        .then(resolve, reject)
-        .finally(() =>
-          this.lifetime.signal.removeEventListener('abort', cancel)
-        );
-    });
-  }
-
-  private async readFeeData(reader?: RpcFeeReadTransport): Promise<FeeData> {
     const network = await this.getNetwork();
-    this.assertActive();
-    // Ethers tolerates unavailable optional fee methods; keep that behavior,
-    // but never convert a response-integrity failure into an invented quote.
-    const optionalFee = async (method: 'getGasPrice' | 'getPriorityFee') => {
+    checkRpcSignal(signal);
+    let raw: Promise<PromiseSettledResult<unknown>[]> | undefined;
+    const read = (index: number) => {
+      raw ??= this.readMany(
+        [
+          { method: 'eth_getBlockByNumber', params: ['latest', false] },
+          { method: 'eth_gasPrice', params: [] },
+          { method: 'eth_maxPriorityFeePerGas', params: [] },
+        ],
+        { signal }
+      );
+      return raw.then((results) => {
+        const result = results[index];
+        if (result.status === 'rejected') throw result.reason;
+        if (
+          index === 0 &&
+          result.value !== null &&
+          (typeof result.value !== 'object' || Array.isArray(result.value))
+        )
+          throw new RpcResponseIntegrityError('Invalid fee block', false);
+        if (index === 0 && result.value !== null)
+          return this._wrapBlock(
+            result.value as Parameters<typeof this._wrapBlock>[0],
+            network
+          );
+        return result.value;
+      });
+    };
+    const optionalFee = async (
+      method: 'eth_gasPrice' | 'eth_maxPriorityFeePerGas'
+    ) => {
       try {
-        this.assertActive();
+        checkRpcSignal(signal);
         return getBigInt(
           reader
-            ? await reader.send(
-                method === 'getGasPrice'
-                  ? 'eth_gasPrice'
-                  : 'eth_maxPriorityFeePerGas',
-                []
-              )
-            : await this._perform({ method }),
+            ? await reader.send(method, [])
+            : ((await read(method === 'eth_gasPrice' ? 1 : 2)) as any),
           '%response'
         );
       } catch (error) {
+        checkRpcSignal(signal);
         if (
           error?.code === 'SYSWEB3_RPC_RESPONSE_INVALID' ||
-          error?.name === 'AbortError' ||
-          this.signal.aborted
+          error?.name === 'AbortError'
         )
           throw error;
         return null;
       }
     };
-    const getFeeData = async () => {
-      this.assertActive();
-      const [block, gasPrice, priorityFee] = await Promise.all([
-        reader ? reader.getBlock('latest') : super.getBlock('latest'),
-        optionalFee('getGasPrice'),
-        optionalFee('getPriorityFee'),
-      ]);
-      this.assertActive();
-      let maxFeePerGas: bigint | null = null;
-      let maxPriorityFeePerGas: bigint | null = null;
-      if (block?.baseFeePerGas != null && priorityFee != null) {
-        maxPriorityFeePerGas = priorityFee;
-        maxFeePerGas =
-          getBigInt(block.baseFeePerGas as any, '%response') * 2n +
-          maxPriorityFeePerGas;
-      }
-      return new FeeData(gasPrice, maxFeePerGas, maxPriorityFeePerGas);
-    };
-    // Preserve network-specific fee plugins, including Polygon's fee reader.
+    let observation:
+      | Promise<{ block: { baseFeePerGas?: unknown } | null; fees: FeeData }>
+      | undefined;
+    const observe = () =>
+      (observation ??= (async () => {
+        checkRpcSignal(signal);
+        const [block, gasPrice, priorityFee] = await Promise.all([
+          reader
+            ? reader.getBlock('latest')
+            : (read(0) as Promise<{ baseFeePerGas?: unknown } | null>),
+          optionalFee('eth_gasPrice'),
+          optionalFee('eth_maxPriorityFeePerGas'),
+        ]);
+        checkRpcSignal(signal);
+        const present = block?.baseFeePerGas != null && priorityFee != null;
+        return {
+          block,
+          fees: new FeeData(
+            gasPrice,
+            present
+              ? getBigInt(block!.baseFeePerGas as any) * 2n + priorityFee!
+              : null,
+            present ? priorityFee : null
+          ),
+        };
+      })());
     const plugin = network.getPlugin(
       'org.ethers.plugins.network.FetchUrlFeeDataPlugin'
     ) as any;
+    let fees: FeeData;
     if (plugin) {
-      // Polygon wraps reader failures in SERVER_ERROR. Preserve this
-      // invocation's integrity/cancellation failure through that wrapper.
-      let readerFailure: any;
-      const pluginReader = async () => {
+      const request = new FetchRequest(plugin.url);
+      request.timeout = this.http.timeoutMs;
+      let failure: unknown;
+      let attempts = 0;
+      let redirected: FetchRequest | undefined;
+      const cancel = () => {
         try {
-          return await getFeeData();
-        } catch (error) {
-          if (
-            error?.code === 'SYSWEB3_RPC_RESPONSE_INVALID' ||
-            error?.name === 'AbortError' ||
-            this.signal.aborted
-          ) {
-            readerFailure = error;
-          }
-          throw error;
+          request.cancel();
+        } catch {
+          /* The plugin may not have sent its request. */
         }
       };
-      let result;
+      signal.addEventListener('abort', cancel, { once: true });
+      const browser =
+        /^\[object (?:Window|DedicatedWorkerGlobalScope|SharedWorkerGlobalScope|ServiceWorkerGlobalScope)\]$/.test(
+          Object.prototype.toString.call(globalThis)
+        );
+      request.getUrlFunc = async (initial, cancellation) => {
+        let current = redirected ?? initial;
+        for (;;) {
+          checkRpcSignal(signal);
+          cancellation?.checkSignal();
+          const protocol = new URL(current.url).protocol;
+          if (!['http:', 'https:'].includes(protocol))
+            throw new Error('Unsupported fee request protocol');
+          if (
+            protocol !== 'https:' &&
+            current.credentials &&
+            !current.allowInsecureAuthentication
+          )
+            throw new Error('Insecure fee request credentials');
+          const body = current.body;
+          const response = await this.http.request(
+            current.url,
+            {
+              method: current.method,
+              headers: current.headers,
+              body: body ? Uint8Array.from(body).buffer : undefined,
+              redirect: browser ? 'follow' : 'manual',
+            },
+            signal,
+            {
+              fetch: (url, init) => fetch(url, init),
+              format: 'text',
+              before: () => {
+                if (++attempts > 12)
+                  throw new Error('Fee request attempt limit exceeded');
+              },
+              validate: (response) => {
+                if (browser && response.url && response.url !== current.url)
+                  current.redirect(response.url);
+              },
+              process: (text, response) => {
+                if (![200, 301, 302, 307, 308, 429].includes(response.status))
+                  throw Object.assign(
+                    new Error(`Fee HTTP ${response.status}`),
+                    { status: response.status }
+                  );
+                const headers: Record<string, string> = {};
+                response.headers.forEach((value, key) => {
+                  headers[key.toLowerCase()] = value;
+                });
+                if (response.status === 429 && headers['retry-after']) {
+                  const retry = headers['retry-after'].trim();
+                  const delay = /^\d+$/.test(retry)
+                    ? Number(retry) * 1000
+                    : Date.parse(retry) - Date.now();
+                  if (delay > 0)
+                    headers['retry-after'] = String(
+                      Math.min(Math.ceil(delay), this.http.timeoutMs + 1)
+                    );
+                  else if (delay === 0) headers['retry-after'] = '1';
+                  else delete headers['retry-after'];
+                }
+                return {
+                  statusCode: response.status,
+                  statusMessage: response.statusText,
+                  headers,
+                  body: new TextEncoder().encode(text),
+                };
+              },
+              failed: (error) => {
+                failure = error;
+                return error;
+              },
+            }
+          );
+          if (![301, 302, 307, 308].includes(response.statusCode))
+            return response;
+          current = current.redirect(response.headers.location ?? '');
+          redirected = current;
+        }
+      };
       try {
-        this.assertActive();
-        result = await plugin.processFunc(
-          pluginReader,
+        const result = await plugin.processFunc(
+          async () => {
+            try {
+              return (await observe()).fees;
+            } catch (error) {
+              failure = error;
+              throw error;
+            }
+          },
           this,
-          new FetchRequest(plugin.url)
+          request
+        );
+        checkRpcSignal(signal);
+        if (failure) throw failure;
+        fees = new FeeData(
+          result.gasPrice,
+          result.maxFeePerGas,
+          result.maxPriorityFeePerGas
         );
       } catch (error) {
-        throw readerFailure ?? error;
+        throw failure ?? error;
+      } finally {
+        signal.removeEventListener('abort', cancel);
+        cancel();
       }
-      this.assertActive();
-      if (readerFailure) throw readerFailure;
-      return new FeeData(
-        result.gasPrice,
-        result.maxFeePerGas,
-        result.maxPriorityFeePerGas
-      );
-    }
-    return getFeeData();
-  }
-
-  private async fetchFeeData(reader?: RpcFeeReadTransport): Promise<any> {
-    const feeData = await this.readFeeData(reader);
-    this.assertActive();
-    const maxFeePerGas =
-      feeData.maxFeePerGas == null
-        ? null
-        : BigNumber.from(feeData.maxFeePerGas);
-    const maxPriorityFeePerGas =
-      feeData.maxPriorityFeePerGas == null
-        ? null
-        : BigNumber.from(feeData.maxPriorityFeePerGas);
-
-    if (maxFeePerGas == null || maxPriorityFeePerGas == null) {
-      const block = reader
-        ? await reader.getBlock('latest')
-        : await super.getBlock('latest');
-      if (!block) throw new Error('Block not found');
-      if (block?.baseFeePerGas != null) {
-        throw new Error('EIP-1559 fee data unavailable');
-      }
-    }
-
+    } else fees = (await observe()).fees;
+    const { block } = await observe();
+    checkRpcSignal(signal);
     if (
-      (maxFeePerGas != null && maxFeePerGas.isNegative()) ||
-      (maxPriorityFeePerGas != null && maxPriorityFeePerGas.isNegative()) ||
-      (maxFeePerGas != null &&
-        maxPriorityFeePerGas != null &&
-        maxPriorityFeePerGas.gt(maxFeePerGas))
+      !block &&
+      (fees.maxFeePerGas == null || fees.maxPriorityFeePerGas == null)
+    )
+      throw new Error('Block not found');
+    if (
+      block?.baseFeePerGas != null &&
+      (fees.maxFeePerGas == null || fees.maxPriorityFeePerGas == null)
+    )
+      throw new Error('EIP-1559 fee data unavailable');
+    if (
+      (fees.maxFeePerGas != null && fees.maxFeePerGas < 0n) ||
+      (fees.maxPriorityFeePerGas != null &&
+        (fees.maxPriorityFeePerGas < 0n ||
+          (fees.maxFeePerGas != null &&
+            fees.maxPriorityFeePerGas > fees.maxFeePerGas)))
     )
       throw new Error('Invalid EIP-1559 fee data');
-
-    const gasPrice =
-      feeData.gasPrice == null ? null : BigNumber.from(feeData.gasPrice);
-    if (gasPrice?.isNegative()) throw new Error('Invalid gas price');
+    if (fees.gasPrice != null && fees.gasPrice < 0n)
+      throw new Error('Invalid gas price');
+    if (!reader)
+      this.feeBlock = { expiresAt: Date.now() + FEE_DATA_CACHE_TTL_MS, block };
     return {
-      gasPrice,
-      maxFeePerGas,
-      maxPriorityFeePerGas,
+      gasPrice: fees.gasPrice == null ? null : BigNumber.from(fees.gasPrice),
+      maxFeePerGas:
+        fees.maxFeePerGas == null ? null : BigNumber.from(fees.maxFeePerGas),
+      maxPriorityFeePerGas:
+        fees.maxPriorityFeePerGas == null
+          ? null
+          : BigNumber.from(fees.maxPriorityFeePerGas),
     };
   }
 
@@ -644,13 +881,12 @@ class BaseProvider extends JsonRpcProvider {
       normalized.maxFeePerGas == null &&
       normalized.maxPriorityFeePerGas == null
     ) {
-      const feeData = await this.readFeeData();
-      if (
-        feeData.maxFeePerGas == null &&
-        feeData.maxPriorityFeePerGas == null
-      ) {
-        delete normalized.type;
-      }
+      const block =
+        this.feeBlock && this.feeBlock.expiresAt > Date.now()
+          ? this.feeBlock.block
+          : await super.getBlock('latest');
+      this.assertActive();
+      if (block && block.baseFeePerGas == null) delete normalized.type;
     }
 
     return normalized;
@@ -671,10 +907,6 @@ class BaseProvider extends JsonRpcProvider {
     return BigNumber.from(await super.estimateGas(normalized));
   }
 
-  async getBlock(blockHashOrBlockTag: any): Promise<any> {
-    return await super.getBlock(blockHashOrBlockTag);
-  }
-
   async getTransaction(hash: string): Promise<any> {
     return wrapTransactionResponse(await super.getTransaction(hash));
   }
@@ -689,16 +921,5 @@ class BaseProvider extends JsonRpcProvider {
   override async broadcastTransaction(signedTransaction: string) {
     this.assertActive();
     return super.broadcastTransaction(signedTransaction);
-  }
-}
-
-export class CustomJsonRpcProvider extends BaseProvider {
-  constructor(
-    signal: AbortSignal,
-    url?: string | { url: string },
-    network?: Networkish,
-    options: RpcProviderOptions = {}
-  ) {
-    super(signal, url, network, options);
   }
 }

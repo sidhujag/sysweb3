@@ -253,7 +253,15 @@ export function createLedgerEvmAdapter(
       const owner = captureHardwareTransactionAuthority(options);
       const path = accountPath(request.accountIndex);
       const address = expectedAddress(request.expectedAddress);
-      const bytes = hexBytes(request.messageHex, 'personal message');
+      const message = request.messageHex;
+      if (typeof message !== 'string')
+        throw invalid('Invalid personal message');
+      const bytes = hexBytes(
+        captureHardwareSigningData(message, () =>
+          invalid('Invalid personal message')
+        ),
+        'personal message'
+      );
       const digest = hashMessage(bytes);
       return session.runExclusive(
         async (operation) => {

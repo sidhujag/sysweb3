@@ -18,6 +18,8 @@ jobs:
           for package in sysweb3-core sysweb3-network sysweb3-utils sysweb3-keyring; do
             yarn --cwd "packages/$package" install --frozen-lockfile --ignore-scripts
           done
+      - name: Build and stage reviewed workspace dependencies
+        run: node scripts/stage-workspace-packages.cjs
       - run: |
           touch .env
           echo SEED_LAW_COOK=${{ secrets.SEED_LAW_COOK }} >> .env

@@ -1,10 +1,12 @@
 import * as ecc from '@bitcoinerlab/secp256k1';
-import { getNetworkConfig, INetwork } from '@sidhujag/sysweb3-network';
+import { getNetworkConfig } from '@sidhujag/sysweb3-network/cjs/networks.js';
 import { BIP32Factory } from 'bip32';
 import { address, networks, payments, Psbt, Transaction } from 'bitcoinjs-lib';
 
 import { KeyringAccountType } from '../types';
 import { getAccountDerivationPath } from './derivation-paths';
+
+import type { INetwork } from '@sidhujag/sysweb3-network';
 
 const bip32 = BIP32Factory(ecc);
 const SCOPE_ERROR = 'PSBT input is outside the approved account';

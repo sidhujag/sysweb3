@@ -7,7 +7,7 @@ import ABI1155 from './abi/erc1155.json';
 import abi20 from './abi/erc20.json';
 import ABI721 from './abi/erc721.json';
 
-import type { JsonRpcProvider } from 'ethers/providers';
+import type { JsonRpcProvider, ContractRunner } from 'ethers/providers';
 
 const COINGECKO_API = 'https://api.coingecko.com/api/v3';
 
@@ -176,76 +176,82 @@ export const getERC721StandardBalance = async (
 
 export const fetchStandardNftContractData = async (
   contractAddress: Address,
-  provider: JsonRpcProvider
+  provider: ContractRunner,
+  verifiedType?: 'ERC-721' | 'ERC-1155'
 ): Promise<NftMetadata> => {
-  // First try to determine the contract type
-  let contractType = 'UNKNOWN';
+  // Callers may supply a classification verified in this same observation.
+  let contractType: string = verifiedType ?? 'UNKNOWN';
   let contract: NftContract;
 
-  try {
-    // Try ERC-721 first
-    const erc721Contract = new Contract(
+  if (verifiedType) {
+    contract = new Contract(
       contractAddress,
-      ABI721,
+      verifiedType === 'ERC-721' ? ABI721 : ABI1155,
       provider
     ) as NftContract;
-
-    // Check if it supports ERC-721 interface
-    const isERC721 = await erc721Contract.supportsInterface('0x80ac58cd');
-    if (isERC721) {
-      contractType = 'ERC-721';
-      contract = erc721Contract;
-    } else {
-      // Try ERC-1155
-      const erc1155Contract = new Contract(
+  } else {
+    try {
+      // Try ERC-721 first
+      const erc721Contract = new Contract(
         contractAddress,
-        ABI1155,
+        ABI721,
         provider
       ) as NftContract;
 
-      const isERC1155 = await erc1155Contract.supportsInterface('0xd9b67a26');
-      if (isERC1155) {
-        contractType = 'ERC-1155';
-        contract = erc1155Contract;
+      // Check if it supports ERC-721 interface
+      const isERC721 = await erc721Contract.supportsInterface('0x80ac58cd');
+      if (isERC721) {
+        contractType = 'ERC-721';
+        contract = erc721Contract;
       } else {
-        throw new Error('Contract does not support ERC-721 or ERC-1155');
+        // Try ERC-1155
+        const erc1155Contract = new Contract(
+          contractAddress,
+          ABI1155,
+          provider
+        ) as NftContract;
+
+        const isERC1155 = await erc1155Contract.supportsInterface('0xd9b67a26');
+        if (isERC1155) {
+          contractType = 'ERC-1155';
+          contract = erc1155Contract;
+        } else {
+          throw new Error('Contract does not support ERC-721 or ERC-1155');
+        }
       }
+    } catch (error) {
+      // If supportsInterface fails, try to detect by calling methods
+      // This is a fallback for contracts that don't implement ERC-165
+      contract = new Contract(
+        contractAddress,
+        [...ABI721, ...ABI1155], // Combined ABI
+        provider
+      ) as NftContract;
     }
-  } catch (error) {
-    // If supportsInterface fails, try to detect by calling methods
-    // This is a fallback for contracts that don't implement ERC-165
-    contract = new Contract(
-      contractAddress,
-      [...ABI721, ...ABI1155], // Combined ABI
-      provider
-    ) as NftContract;
   }
 
-  // Try to get name and symbol
-  let name = '';
-  let symbol = '';
-
-  try {
-    // Try to get name
-    name = await contract.name();
-  } catch (error) {
-    // Name might not be implemented (optional in ERC-1155)
-    console.warn(
-      `NFT contract ${contractAddress} does not implement name()`,
-      error
-    );
-  }
-
-  try {
-    // Try to get symbol
-    symbol = await contract.symbol();
-  } catch (error) {
-    // Symbol might not be implemented (optional in ERC-1155)
-    console.warn(
-      `NFT contract ${contractAddress} does not implement symbol()`,
-      error
-    );
-  }
+  // Optional methods may be absent, but transport failure must not become a
+  // successful long-lived metadata observation in a caller's cache.
+  let metadataUnavailable = false;
+  const optional = async (method: 'name' | 'symbol'): Promise<string> => {
+    try {
+      return await contract[method]();
+    } catch (error) {
+      if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR')
+        throw error;
+      const absent =
+        (error?.code === 'CALL_EXCEPTION' && error?.data === '0x') ||
+        (error?.code === 'BAD_DATA' && error?.value === '0x');
+      if (!absent) metadataUnavailable = true;
+      console.warn(
+        `NFT contract ${contractAddress} ${method}() is unavailable`,
+        error
+      );
+      return '';
+    }
+  };
+  let name = await optional('name');
+  let symbol = await optional('symbol');
 
   // If neither name nor symbol is available, use a default
   if (!name && !symbol) {
@@ -256,6 +262,7 @@ export const fetchStandardNftContractData = async (
   return {
     name: name || symbol || `${contractType} Collection`,
     symbol: cleanTokenSymbol(symbol || 'NFT'),
+    ...(metadataUnavailable ? { metadataUnavailable: true as const } : {}),
   };
 };
 
@@ -276,6 +283,26 @@ export const cleanTokenSymbol = (symbol: string): string => {
   }
 
   return symbol;
+};
+
+/** Metadata only; adding an asset does not require a holder balance read. */
+export const fetchStandardTokenMetadata = async (
+  contractAddress: Address,
+  provider: ContractRunner
+): Promise<{ decimals: number; tokenSymbol: string }> => {
+  const contract = new Contract(
+    contractAddress,
+    ERC20ABI,
+    provider
+  ) as TokenContract;
+  const [decimals, symbol] = await Promise.all([
+    contract.decimals(),
+    contract.symbol(),
+  ]);
+  return {
+    decimals: toNumber(decimals),
+    tokenSymbol: cleanTokenSymbol(symbol),
+  };
 };
 
 export const fetchStandardTokenContractData = async (
@@ -404,11 +431,18 @@ export const getTokenStandardMetadata = async (
 
 export const getNftStandardMetadata = async (
   contractAddress: string,
-  provider: JsonRpcProvider
+  provider: ContractRunner,
+  verifiedType?: 'ERC-721' | 'ERC-1155'
 ) => {
   try {
-    return await fetchStandardNftContractData(contractAddress, provider);
+    return await fetchStandardNftContractData(
+      contractAddress,
+      provider,
+      verifiedType
+    );
   } catch (error) {
+    if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR')
+      throw error;
     // Check if it's a network error
     if (error?.code === 'CALL_EXCEPTION' || error?.code === 'NETWORK_ERROR') {
       throw new Error(
@@ -759,6 +793,8 @@ export interface IEtherscanNFT {
 export interface NftMetadata {
   name: string;
   symbol: string;
+  /** Retry descriptive metadata on a later request; optional methods remain optional. */
+  metadataUnavailable?: true;
 }
 
 export type IErc20Token = {

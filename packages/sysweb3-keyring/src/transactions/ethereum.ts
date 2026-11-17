@@ -266,7 +266,9 @@ export class EthereumTransactions<
   public trezorSigner: TTrezor;
   public ledgerSigner: TLedger;
   private getNetwork: () => INetwork;
-  private readonly captureSigningContext: () => () => void;
+  private readonly captureSigningContext: (
+    targetAccount?: IEvmReplacementOptions['targetAccount']
+  ) => () => void;
   private readonly captureSubmissionLifecycle: CaptureEvmSubmission | null;
   private abortController: AbortController;
   private getDecryptedPrivateKey: (
@@ -316,7 +318,9 @@ export class EthereumTransactions<
     },
     ledgerSigner: TLedger,
     trezorSigner: TTrezor,
-    captureSigningContext: () => () => void,
+    captureSigningContext: (
+      targetAccount?: IEvmReplacementOptions['targetAccount']
+    ) => () => void,
     captureSubmissionLifecycle: CaptureEvmSubmission | null
   ) {
     if (typeof captureSigningContext !== 'function')
@@ -368,8 +372,10 @@ export class EthereumTransactions<
       this.requireTrezorSigner();
   };
 
-  private captureSessionGuard = () => {
-    const guard = this.captureSigningContext();
+  private captureSessionGuard = (
+    targetAccount: NonNullable<IEvmReplacementOptions['targetAccount']>
+  ) => {
+    const guard = this.captureSigningContext(targetAccount);
     if (typeof guard !== 'function') {
       void Promise.resolve(guard).catch(() => undefined);
       throw new TypeError('Signing context must return a synchronous guard');
@@ -397,7 +403,10 @@ export class EthereumTransactions<
       throw new Error('Active account not found');
     const account = { address: selectedAccount.address };
     const network = { ...state.activeNetwork };
-    const assertSession = this.captureSessionGuard();
+    const assertSession = this.captureSessionGuard({
+      type: activeAccountType,
+      id: activeAccountId,
+    });
     const assertCurrent = () => {
       assertSession();
       const current = this.getState();
@@ -869,12 +878,15 @@ export class EthereumTransactions<
     const owner = captured.authority;
     if (!Array.isArray(params) || params.length !== 2)
       throw new Error('Invalid personal message request');
-    params = [0, 1].map((index) => {
-      const field = Object.getOwnPropertyDescriptor(params, String(index));
-      if (!field || !('value' in field) || typeof field.value !== 'string')
-        throw new Error('Invalid personal message request');
-      return field.value;
-    });
+    params = captureHardwareSigningData(
+      [0, 1].map((index) => {
+        const field = Object.getOwnPropertyDescriptor(params, String(index));
+        if (!field || !('value' in field) || typeof field.value !== 'string')
+          throw new Error('Invalid personal message request');
+        return field.value;
+      }),
+      () => new Error('Invalid personal message request')
+    );
     const { address, decryptedPrivateKey } = this.getDecryptedPrivateKey();
     owner.assertCurrent();
     const { activeAccountId, activeAccountType, activeNetwork, activeAccount } =
@@ -1396,7 +1408,10 @@ export class EthereumTransactions<
     }
     if (!previewOnly) this.assertHardwareSignerAvailable(targetAccount);
     const provider = this.web3Provider;
-    const assertSession = this.captureSessionGuard();
+    const assertSession = this.captureSessionGuard({
+      type: activeAccountType,
+      id: activeAccountId,
+    });
     const assertKeyringContext = () => {
       assertSession();
       const current = this.getState();
