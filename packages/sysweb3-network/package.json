@@ -1,6 +1,6 @@
 {
   "name": "@sidhujag/sysweb3-network",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "A network management tool for multi-chain accounts.",
   "main": "cjs/index.js",
   "types": "types/index.d.ts",

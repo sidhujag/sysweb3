@@ -553,10 +553,10 @@
   resolved "https://registry.yarnpkg.com/@scure/base/-/base-1.2.6.tgz#ca917184b8231394dd8847509c67a0be522e59f6"
   integrity sha512-g/nm5FgUa//MCj1gV09zTJTaM6KBAHqLN907YVQqf7zC49+DcO4B1so4ZX07Ef10Twr6nuqYEH9GEggFXA4Fmg==
 
-"@sidhujag/sysweb3-network@2.0.0":
-  version "2.0.0"
-  resolved "https://registry.npmjs.org/@sidhujag/sysweb3-network/-/sysweb3-network-2.0.0.tgz#4cc1c658f9e9691b1fbb344eddc8f19db5e5d7bc"
-  integrity sha512-9WN1ymL3AydYsj2pk6/xUuTABxLVhxqUS7Av/baS3vTUqhjFKvKWnGiJhzAkw6MYTR8p6NRR2H9op3ef/kbIAQ==
+"@sidhujag/sysweb3-network@2.0.1":
+  version "2.0.1"
+  resolved "https://registry.npmjs.org/@sidhujag/sysweb3-network/-/sysweb3-network-2.0.1.tgz#ec7851667d46a82115b6e71e1999bc33fbd66f9e"
+  integrity sha512-UnwaJZZR7lekD2vqaqNaccK3o4nITCRbRSvPJiQglvPiNpivTH8VC163Rgchovc4ds47IsAxqe9WOgjyOrgQFg==
   dependencies:
     eth-chains "^1.0.0"
     ethers "^6.17.0"
