@@ -206,6 +206,8 @@ const getEthChainId = async (
     throw new Error(`Failed to connect to RPC: ${String(error)}`);
   } finally {
     clearTimeout(timeoutId);
+    // Keep ownership of every retry-discarded body through the terminal read.
+    controller.abort();
   }
 };
 

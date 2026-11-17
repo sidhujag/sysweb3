@@ -80,6 +80,10 @@ export async function retryableFetch(
       // Check for retryable status codes and throw appropriate errors
       if (!response.ok) {
         if (response.status === 503 || response.status === 429) {
+          // This attempt will never expose its body to a caller. Initiate
+          // cancellation without waiting on an uncooperative body source.
+          void response.body?.cancel().catch(() => undefined);
+          abortController?.abort();
           const error = new Error(
             `HTTP ${response.status}: ${response.statusText}`
           );
