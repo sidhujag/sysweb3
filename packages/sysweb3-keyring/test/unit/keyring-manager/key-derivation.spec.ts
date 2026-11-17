@@ -765,18 +765,8 @@ describe('KeyringManager - Key Derivation', () => {
         expect(pubkey).toMatch(/^[0-9a-fA-F]{66}$/); // 33 bytes = 66 hex chars
         expect(pubkey.length).toBe(66); // Compressed public key
 
-        // Verify fetchBackendAccount was called with correct params
-        expect(mockFetchBackendAccount).toHaveBeenCalledWith(
-          expect.any(String), // blockbook URL
-          account.xpub,
-          'tokens=used&details=tokens',
-          true,
-          undefined,
-          expect.objectContaining({
-            fetch: expect.any(Function),
-            signal: expect.any(AbortSignal),
-          })
-        );
+        // Read-only derivation uses the owned local cursor, not backend indexes.
+        expect(mockFetchBackendAccount).not.toHaveBeenCalled();
       });
 
       it('should return public key for change address', async () => {
@@ -870,8 +860,9 @@ describe('KeyringManager - Key Derivation', () => {
           ownedUtxoTestRead() // receiving address
         );
 
-        // Should return path for index 3 (2 + 1)
-        expect(path).toBe("m/84'/57'/0'/0/3");
+        // No owned cursor exists yet; ignore the advertised index and reuse zero.
+        expect(path).toBe("m/84'/57'/0'/0/0");
+        expect(mockFetchBackendAccount).not.toHaveBeenCalled();
       });
 
       it('should return correct BIP32 path for change address', async () => {
@@ -893,8 +884,8 @@ describe('KeyringManager - Key Derivation', () => {
           ownedUtxoTestRead() // change address
         );
 
-        // Should return path for index 5 (4 + 1)
-        expect(path).toBe("m/84'/57'/0'/1/5");
+        expect(path).toBe("m/84'/57'/0'/1/0");
+        expect(mockFetchBackendAccount).not.toHaveBeenCalled();
       });
 
       it('should use account ID from active account', async () => {
@@ -1039,8 +1030,16 @@ describe('KeyringManager - Key Derivation', () => {
         expect(address).toMatch(/^(sys1|tsys1)/);
         expect(pubkey).toMatch(/^[0-9a-fA-F]{66}$/);
 
-        // They should have been called with the same backend data
-        expect(mockFetchBackendAccount).toHaveBeenCalledTimes(2);
+        // Both are local and bind to the same initial owned path.
+        expect(
+          await keyringManager.getCurrentAddressBip32Path(
+            account.xpub,
+            false,
+            ownedUtxoTestRead()
+          )
+        ).toBe("m/84'/57'/0'/0/0");
+        expect(address).toBe(account.address);
+        expect(mockFetchBackendAccount).not.toHaveBeenCalled();
       });
     });
   });
@@ -1115,8 +1114,8 @@ describe('KeyringManager - Key Derivation', () => {
         true,
         ownedUtxoTestRead()
       );
-      expect(receivingPath).toBe("m/84'/57'/0'/0/3"); // index 2 + 1
-      expect(changePath).toBe("m/84'/57'/0'/1/2"); // index 1 + 1
+      expect(receivingPath).toBe("m/84'/57'/0'/0/0");
+      expect(changePath).toBe("m/84'/57'/0'/1/0");
 
       // 3. Test getAddress (used by getChangeAddress)
       const receivingAddress = await keyringManager.getAddress(
@@ -1139,6 +1138,9 @@ describe('KeyringManager - Key Derivation', () => {
         ownedUtxoTestRead()
       );
       expect(changeAddr).toMatch(/^(sys1|tsys1)/);
+      expect(changeAddr).toBe(changeAddress);
+      expect(receivingAddress).toBe(account.address);
+      expect(mockFetchBackendAccount).not.toHaveBeenCalled();
 
       // All these methods work with just xpub, making them hardware wallet compatible
     });
