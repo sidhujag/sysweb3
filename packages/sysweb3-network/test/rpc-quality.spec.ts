@@ -13,6 +13,18 @@ afterEach(() => {
   jest.useRealTimers();
 });
 
+it.each(['not-a-url', '', 'https://', 'file:///rpc'])(
+  'returns a validation failure for invalid endpoint %p without making a request',
+  async (endpoint) => {
+    const fetch = jest.spyOn(global, 'fetch');
+    await expect(validateEvmRpcBatch(endpoint, 1)).resolves.toMatchObject({
+      success: false,
+      error: expect.any(String),
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  }
+);
+
 it.each(['batch', 'http400', 'rpc32600'])(
   'observes three complete samples with %s support',
   async (mode) => {

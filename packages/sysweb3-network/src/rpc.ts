@@ -410,15 +410,7 @@ export const validateEvmRpcBatch = async (
   latency?: number;
   requiresAuth?: boolean;
 }> => {
-  const client = owner.readMany
-    ? undefined
-    : new JsonRpcReadClient(url, {
-        signal: owner.signal,
-        timeoutMs: timeout,
-        maxBatchItems: 2,
-        maxResponseBytes: 16 * 1024,
-        requestInit: { cache: 'no-cache' },
-      });
+  let client: JsonRpcReadClient | undefined;
   const latencies: number[] = [];
   let chainId: number | undefined;
   const check = () => {
@@ -429,6 +421,15 @@ export const validateEvmRpcBatch = async (
     owner.assertCurrent?.();
   };
   try {
+    client = owner.readMany
+      ? undefined
+      : new JsonRpcReadClient(url, {
+          signal: owner.signal,
+          timeoutMs: timeout,
+          maxBatchItems: 2,
+          maxResponseBytes: 16 * 1024,
+          requestInit: { cache: 'no-cache' },
+        });
     for (let sample = 0; sample < 3; sample++) {
       check();
       const controller = new AbortController();
