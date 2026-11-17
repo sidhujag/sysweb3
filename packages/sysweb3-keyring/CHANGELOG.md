@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.21
+
+- Share bounded JSON-RPC reads across the SDK and use ethers for standard provider behavior while preserving chain validation, fee handling, and cancellation.
+- Bind transaction signing to the effective account and constrain UTXO change discovery using the wallet's saved state.
+- Update the shared Network and Utils dependencies for bounded endpoint checks and token metadata reads.
+
 ## 2.1.20
 
 - Split read-only batches when their combined response exceeds the local byte limit, retaining per-response limits, cancellation, request ordering and endpoint capability state.
