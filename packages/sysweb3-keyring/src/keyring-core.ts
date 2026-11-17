@@ -3015,11 +3015,13 @@ export class KeyringCore<
     }
   };
 
-  private captureEthereumSigningContext = (): (() => void) => {
-    const { activeAccount } = this.getVault();
+  private captureEthereumSigningContext = (
+    targetAccount?: IEvmReplacementOptions['targetAccount']
+  ): (() => void) => {
+    const effectiveAccount = targetAccount ?? this.getVault().activeAccount;
     if (
-      activeAccount.type === KeyringAccountType.Ledger ||
-      activeAccount.type === KeyringAccountType.Trezor
+      effectiveAccount.type === KeyringAccountType.Ledger ||
+      effectiveAccount.type === KeyringAccountType.Trezor
     )
       return this.capturePublicWalletContext();
     return this.capturePsbtSigningContext();
