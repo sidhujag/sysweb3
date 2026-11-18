@@ -273,6 +273,138 @@ describe('source SDK account-scoped replacement signing', () => {
   });
   afterEach(() => jest.restoreAllMocks());
 
+  it.each([0, 1, 2])(
+    'reprices retained unsigned type %s after RPC misses',
+    async (type) => {
+      const original = Transaction.from({
+        type,
+        chainId: CHAIN,
+        nonce: 8,
+        to: TARGET,
+        data: '0x1234',
+        value: 7,
+        gasLimit: 21000,
+        ...(type === 2
+          ? { maxFeePerGas: 100, maxPriorityFeePerGas: 10 }
+          : { gasPrice: 100 }),
+        ...(type !== 0 ? { accessList: ACCESS_LIST } : {}),
+      });
+      original.signature = hardwareWallet.signingKey.sign(
+        original.unsignedHash
+      );
+      const hash = useOriginal(
+        transaction({
+          type,
+          ...(type !== 0 ? { accessList: ACCESS_LIST } : {}),
+        })
+      );
+      expect(original.hash).toBe(hash);
+      const retainedIntent = {
+        hash,
+        from: PAYER,
+        nonce: 8,
+        unsignedTransaction: original.unsignedSerialized,
+      };
+      const preview = {
+        ...options(),
+        previewOnly: true as const,
+        approvedMaximumFee: undefined,
+        retainedIntent,
+      };
+      const indexed = await sdk.sendTransactionWithEditedFee(
+        hash,
+        type === 2,
+        preview
+      );
+      provider.getTransaction.mockResolvedValue(null);
+      const missing = await sdk.sendTransactionWithEditedFee(
+        hash,
+        type === 2,
+        preview
+      );
+      expect(missing.maximumFee).toBe(indexed.maximumFee);
+      expect(missing.maximumFee).toBe(String(21000 * 120));
+      provider.getBlock.mockResolvedValueOnce({
+        baseFeePerGas: 50,
+        gasLimit: 20999,
+      });
+      await expect(
+        sdk.sendTransactionWithEditedFee(hash, type === 2, preview)
+      ).rejects.toThrow();
+      provider.getBlock.mockResolvedValueOnce({
+        baseFeePerGas: 200,
+        gasLimit: 21000,
+      });
+      const repriced = await sdk.sendTransactionWithEditedFee(
+        hash,
+        type === 2,
+        preview
+      );
+      expect(repriced.maximumFee).toBe(
+        String(21000 * (type === 2 ? 212 : 200))
+      );
+      await expect(
+        sdk.sendTransactionWithEditedFee(hash, type === 2, {
+          ...options(),
+          retainedIntent,
+          approvedMaximumFee: '1',
+        })
+      ).rejects.toThrow('exceeds approval');
+      expect(getKey).not.toHaveBeenCalled();
+      await expect(
+        sdk.sendTransactionWithEditedFee(hash, type === 2, {
+          ...options(),
+          retainedIntent,
+          approvedMaximumFee: missing.maximumFee!,
+        })
+      ).resolves.toMatchObject({ isSpeedUp: true });
+      const candidate = jest.mocked(sendLocalEvmTransaction).mock
+        .calls[0][2] as any;
+      expect(candidate).toMatchObject({
+        from: PAYER,
+        to: TARGET,
+        nonce: 8,
+        data: '0x1234',
+      });
+      expect(candidate.gasLimit.toString()).toBe('21000');
+      expect(candidate.value.toString()).toBe('7');
+      expect((candidate.gasPrice ?? candidate.maxFeePerGas).toString()).toBe(
+        '120'
+      );
+      if (type !== 0) expect(candidate.accessList).toEqual(ACCESS_LIST);
+      for (const invalid of [
+        { hash: REPLACEMENT },
+        { from: TARGET },
+        { nonce: 9 },
+        { unsignedTransaction: original.serialized },
+      ]) {
+        await expect(
+          sdk.sendTransactionWithEditedFee(hash, type === 2, {
+            ...preview,
+            retainedIntent: { ...retainedIntent, ...invalid },
+          })
+        ).rejects.toThrow('Invalid retained transaction intent');
+      }
+      provider.getTransaction.mockResolvedValue(
+        transaction({
+          type,
+          ...(type !== 0 ? { accessList: ACCESS_LIST } : {}),
+        })
+      );
+      original.signature = null;
+      original.value = 8n;
+      await expect(
+        sdk.sendTransactionWithEditedFee(hash, type === 2, {
+          ...preview,
+          retainedIntent: {
+            ...retainedIntent,
+            unsignedTransaction: original.unsignedSerialized,
+          },
+        })
+      ).rejects.toThrow('does not match original');
+    }
+  );
+
   it.each([0, 2])(
     'reprices a verified retained type %s cancellation without changing gas',
     async (type) => {

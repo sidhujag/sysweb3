@@ -119,6 +119,13 @@ export type IEvmReplacementOptions = EvmReplacementFeeApproval &
     beforeBroadcast?: () => void;
     /** Exact signed original obtained from the host's protected cancellation lineage. */
     retainedCancellation?: string;
+    /** The host authenticates this association in its protected signing journal. */
+    retainedIntent?: Readonly<{
+      hash: string;
+      from: string;
+      nonce: number;
+      unsignedTransaction: string;
+    }>;
   };
 
 export type EvmRetainedCancellationOrigin = Readonly<{
@@ -145,6 +152,7 @@ export type IEvmCancellationOptions = EvmReplacementFeeApproval &
 // Version type is now replaced by SignTypedDataVersion from @metamask/eth-sig-util
 
 export interface IEthereumTransactions {
+  readonly supportsRetainedSpeedUpIntent?: true;
   cancelSentTransaction: (
     txHash: string,
     isLegacy: boolean | undefined,

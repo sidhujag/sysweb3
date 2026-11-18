@@ -199,7 +199,8 @@ const authenticateReplacementOriginal = (
   transaction: TransactionResponse,
   requestedHash: string,
   expectedSender: string,
-  chainId: number
+  chainId: number,
+  expectedUnsigned?: string
 ): TransactionResponse => {
   const fields = normalizeTransactionRequest(transaction);
   if (fields.hash != null) fields.hash = fields.hash.toLowerCase();
@@ -226,6 +227,8 @@ const authenticateReplacementOriginal = (
   ) {
     throw new Error('Original transaction is not authenticated');
   }
+  if (expectedUnsigned && original.unsignedSerialized !== expectedUnsigned)
+    throw new Error('Retained transaction intent does not match original');
   // Do not retain mutable RPC fields across subsequent asynchronous work.
   return wrapTransactionResponse({
     ...original.toJSON(),
@@ -261,6 +264,7 @@ export class EthereumTransactions<
   TTrezor extends EthereumTrezorSigner | undefined = TrezorKeyring
 > implements IEthereumTransactions
 {
+  public readonly supportsRetainedSpeedUpIntent = true;
   private _web3Provider: CustomJsonRpcProvider;
   private _web3ProviderKey?: string;
   public trezorSigner: TTrezor;
@@ -1245,6 +1249,7 @@ export class EthereumTransactions<
     bounds: Readonly<{
       chainId: bigint;
       retainedCancellationGasLimit?: bigint;
+      preserveOriginalGasLimit?: boolean;
       sampledBlockGasLimit: bigint;
       sampledBaseFeePerGas: bigint | null;
     }>
@@ -2548,15 +2553,36 @@ export class EthereumTransactions<
           { originalHash: txHash }
         );
     const assertCurrent = submission?.assertCurrent ?? assertSigningCurrent;
-    const validateLookup = (transaction: TransactionResponse | null) => {
+    const retainedIntent = options.retainedIntent;
+    let intent: Transaction | undefined;
+    if (retainedIntent !== undefined) {
       assertCurrent();
-      if (!transaction) return null;
-      const authenticated = authenticateReplacementOriginal(
-        transaction,
-        requestedHash,
-        expectedSender,
-        activeNetwork.chainId
-      );
+      if (!retainedIntent || typeof retainedIntent !== 'object')
+        throw new Error('Invalid retained transaction intent');
+      const retained = { ...retainedIntent };
+      if (
+        cancellation ||
+        typeof retained.hash !== 'string' ||
+        !/^0x[0-9a-f]{64}$/.test(requestedHash) ||
+        retained.hash.toLowerCase() !== requestedHash ||
+        typeof retained.from !== 'string' ||
+        retained.from.toLowerCase() !== expectedSender ||
+        typeof retained.unsignedTransaction !== 'string' ||
+        retained.unsignedTransaction.length > 32 * 1024 * 1024 + 2
+      )
+        throw new Error('Invalid retained transaction intent');
+      intent = Transaction.from(retained.unsignedTransaction);
+      if (
+        intent.isSigned() ||
+        intent.unsignedSerialized !== retained.unsignedTransaction ||
+        intent.chainId !== BigInt(activeNetwork.chainId) ||
+        intent.nonce !== retained.nonce ||
+        (intent.type !== 0 && intent.type !== 1 && intent.type !== 2)
+      )
+        throw new Error('Invalid retained transaction intent');
+    }
+    const admitOriginal = (authenticated: TransactionResponse) => {
+      assertCurrent();
       const type = authenticated.type;
       if (
         cancellation &&
@@ -2567,7 +2593,7 @@ export class EthereumTransactions<
           ) !== cancellation.gasLimit)
       )
         throw new Error('Retained cancellation does not match original');
-      if (type !== 1) isLegacy = type === 0;
+      if (intent || type !== 1) isLegacy = type === 0 || type === 1;
       if (
         isLegacy &&
         type === 1 &&
@@ -2579,15 +2605,40 @@ export class EthereumTransactions<
       assertCurrent();
       return authenticated;
     };
+    const validateLookup = (transaction: TransactionResponse | null) => {
+      assertCurrent();
+      if (!transaction) return null;
+      const authenticated = authenticateReplacementOriginal(
+        transaction,
+        requestedHash,
+        expectedSender,
+        activeNetwork.chainId,
+        intent?.unsignedSerialized
+      );
+      return admitOriginal(authenticated);
+    };
     let tx = validateLookup(await provider.getTransaction(txHash));
     if (!tx) {
       // Retry a couple of times in case the node hasn't indexed the pending tx yet
-      for (let attempt = 0; attempt < 2 && !tx; attempt++) {
+      for (let attempt = 0; attempt < 2 && !tx && !intent; attempt++) {
         await new Promise((resolve) =>
           setTimeout(resolve, 500 * (attempt + 1))
         );
         assertCurrent();
         tx = validateLookup(await provider.getTransaction(txHash));
+      }
+      if (!tx && intent) {
+        tx = admitOriginal(
+          wrapTransactionResponse({
+            ...intent.toJSON(),
+            hash: requestedHash,
+            from: activeAccount.address,
+            gasPrice: intent.gasPrice ?? 0,
+            maxFeePerGas: intent.maxFeePerGas ?? 0,
+            maxPriorityFeePerGas: intent.maxPriorityFeePerGas ?? 0,
+            blockNumber: null,
+          })
+        );
       }
       if (!tx) {
         return {
@@ -2604,6 +2655,7 @@ export class EthereumTransactions<
     assertCurrent();
     const bounds = Object.freeze({
       chainId: BigInt(activeNetwork.chainId),
+      preserveOriginalGasLimit: intent !== undefined,
       ...(cancellation
         ? { retainedCancellationGasLimit: cancellation.gasLimit }
         : {}),
