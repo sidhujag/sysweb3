@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.22
+
+- Speed up an EVM send using the unsigned transaction details retained by the wallet when the RPC has no transaction. Preserve the original transaction intent and enforce the approved replacement fee.
+
 ## 2.1.21
 
 - Share bounded JSON-RPC reads across the SDK and use ethers for standard provider behavior while preserving chain validation, fee handling, and cancellation.
