@@ -181,6 +181,7 @@ export type EvmSpeedUpFeeInput = Readonly<
     gasLimit: bigint;
     /** Present only after authenticating the retained signed cancellation. */
     retainedCancellationGasLimit?: bigint;
+    preserveOriginalGasLimit?: boolean;
     sampledBlockGasLimit: bigint;
     sampledBaseFeePerGas: bigint | null;
   } & (
@@ -214,7 +215,10 @@ export function planEvmSpeedUpFees(input: EvmSpeedUpFeeInput) {
   const retained = input.retainedCancellationGasLimit;
   if (retained !== undefined && retained !== originalGasLimit)
     throw new Error('Retained cancellation gas limit does not match original');
-  const gasLimit = retained ?? bufferedEvmGasLimit(originalGasLimit);
+  const gasLimit =
+    retained !== undefined || input.preserveOriginalGasLimit === true
+      ? originalGasLimit
+      : bufferedEvmGasLimit(originalGasLimit);
   if (gasLimit > MAX_REPLACEMENT_GAS)
     throw new Error('Invalid replacement gas limit');
   // Bounds are mandatory even on chains without a protocol-specific ceiling.
