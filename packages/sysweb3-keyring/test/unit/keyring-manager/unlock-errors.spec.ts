@@ -400,6 +400,22 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
     }
   );
 
+  it('recovers a password-wrapped backup and rejects invalid plaintext or wrapped contents', async () => {
+    await keyring.unlock('correct');
+    const wrap = (value: string) =>
+      CryptoJS.AES.encrypt(value, 'correct').toString();
+    await setEncryptedVault({ mnemonic: wrap(mnemonic) }, key);
+    await expect(keyring.getSeed('correct')).resolves.toBe(mnemonic);
+
+    const badChecksum = 'abandon '.repeat(11) + 'abandon';
+    for (const invalid of [badChecksum, wrap(badChecksum)]) {
+      await setEncryptedVault({ mnemonic: invalid }, key);
+      await expect(keyring.getSeed('correct')).rejects.toThrow(
+        'Failed to recover a valid vault secret'
+      );
+    }
+  });
+
   it.each(['password', 'session'])(
     'migrates a double-encrypted legacy mnemonic using its %s key',
     async (keyType) => {
@@ -491,5 +507,6 @@ describe('KeyringManager unlock error classification with real WebCrypto', () =>
     await expect(getDecryptedVault(key)).resolves.toEqual({
       mnemonic: extendedKey,
     });
+    await expect(keyring.getSeed('correct')).resolves.toBe(extendedKey);
   });
 });
