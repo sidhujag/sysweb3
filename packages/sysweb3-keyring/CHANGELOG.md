@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.23
+
+- Recover BIP39 phrase backups for all five supported lengths, including 15, 18 and 21 words. Validate recovered legacy vault secrets before returning them.
+
 ## 2.1.22
 
 - Speed up an EVM send using the unsigned transaction details retained by the wallet when the RPC has no transaction. Preserve the original transaction intent and enforce the approved replacement fee.
