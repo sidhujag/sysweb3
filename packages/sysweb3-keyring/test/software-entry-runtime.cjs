@@ -76,6 +76,52 @@ const storage = () => {
       SmartAccount: {},
     },
   });
+  const backupPassword = 'synthetic phrase backup fixture';
+  // Fixed BIP39 examples with synthetic entropy make the backup regression deterministic.
+  const backupPhrases = [
+    [12, 'abandon '.repeat(11) + 'about'],
+    [15, 'abandon '.repeat(14) + 'address'],
+    [
+      18,
+      'advice cage absurd amount doctor acoustic avoid letter advice cage absurd amount doctor acoustic avoid letter advice cake',
+    ],
+    [
+      21,
+      'absurd amount doctor acoustic avoid letter advice cage absurd amount doctor acoustic avoid letter advice cage absurd amount doctor acoustic banana',
+    ],
+    [24, 'abandon '.repeat(23) + 'art'],
+  ];
+  for (const [words, phrase] of backupPhrases) {
+    const host = createKeyringHost(storage());
+    const state = makeState();
+    const open = () => {
+      const ring = new SoftwareKeyring(host, { captureEvmSubmission: null });
+      ring.setVaultStateGetter(() => state);
+      return ring;
+    };
+    const writer = open();
+    try {
+      assert.equal(phrase.split(' ').length, words);
+      state.accounts.HDAccount[0] = await writer.initializeWalletSecurely(
+        phrase,
+        backupPassword
+      );
+      assert.equal(await writer.getSeed(backupPassword), phrase);
+    } finally {
+      await writer.destroy();
+    }
+    const reader = open();
+    try {
+      assert.equal((await reader.unlock(backupPassword)).canLogin, true);
+      assert.equal(await reader.getSeed(backupPassword), phrase);
+      await assert.rejects(
+        reader.getSeed('incorrect password'),
+        /Invalid password/
+      );
+    } finally {
+      await reader.destroy();
+    }
+  }
   const first = storage();
   const second = storage();
   const firstHost = createKeyringHost(first);
@@ -246,7 +292,7 @@ const storage = () => {
     global.fetch = originalFetch;
   }
   process.stdout.write(
-    'Software entry: browser/device-free import, no timers, isolated vaults, EVM signing and restart passed.\n'
+    'Software entry: browser/device-free import, no timers, isolated vaults, EVM signing, phrase backups and restart passed.\n'
   );
 })().catch((error) => {
   process.stderr.write(`${error.stack}\n`);

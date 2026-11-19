@@ -120,6 +120,23 @@ import type {
   UtxoIssuedAddress,
 } from './utils/utxo-address-discovery';
 
+function isValidVaultSecret(value: unknown): value is string {
+  if (typeof value !== 'string' || !value) return false;
+  if (BIP84.validateMnemonic(value)) return true;
+  // Imported extended private keys can also be stored as the secret.
+  if (!/^(xprv|yprv|zprv|tprv|uprv|vprv)/.test(value)) return false;
+  try {
+    const decoded = bs58check.decode(value);
+    return (
+      decoded.length === 78 &&
+      decoded[45] === 0 &&
+      ecc.isPrivate(decoded.subarray(46))
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Explicit asynchronous host storage; no browser or global DI fallback. */
 export interface KeyringStoragePort extends VaultStoragePort {
   get(key: string): Promise<any>;
@@ -1504,32 +1521,18 @@ export class KeyringCore<
         assertCurrent();
         authenticated = true;
 
-        const isValidSecret = (value: unknown): value is string => {
-          if (typeof value !== 'string' || !value) return false;
-          if (this.isSeedValid(value)) return true;
-          // Imported extended private keys can also be stored as the secret.
-          if (!/^(xprv|yprv|zprv|tprv|uprv|vprv)/.test(value)) return false;
-          try {
-            const decoded = bs58check.decode(value);
-            return (
-              decoded.length === 78 &&
-              decoded[45] === 0 &&
-              ecc.isPrivate(decoded.subarray(46))
-            );
-          } catch {
-            return false;
-          }
-        };
-
         let decryptedMnemonic = mnemonic;
-        if (!isValidSecret(decryptedMnemonic) && typeof mnemonic === 'string') {
+        if (
+          !isValidVaultSecret(decryptedMnemonic) &&
+          typeof mnemonic === 'string'
+        ) {
           for (const legacyKey of [password, oldSessionPassword]) {
             try {
               const candidate = CryptoJS.AES.decrypt(
                 mnemonic,
                 legacyKey
               ).toString(CryptoJS.enc.Utf8);
-              if (isValidSecret(candidate)) {
+              if (isValidVaultSecret(candidate)) {
                 decryptedMnemonic = candidate;
                 break;
               }
@@ -1538,7 +1541,7 @@ export class KeyringCore<
             }
           }
         }
-        if (!isValidSecret(decryptedMnemonic)) {
+        if (!isValidVaultSecret(decryptedMnemonic)) {
           throw new Error(
             'Legacy vault secret could not be recovered. Existing vault preserved.'
           );
@@ -1932,38 +1935,26 @@ export class KeyringCore<
       throw new Error('Invalid password');
     }
     // v4 vault is encrypted with the derived session password key (PBKDF2 output)
-    let { mnemonic } = await this.vaultPersistence.getDecryptedVault(genPwd);
+    const { mnemonic } = await this.vaultPersistence.getDecryptedVault(genPwd);
+    if (isValidVaultSecret(mnemonic)) return mnemonic;
 
-    if (!mnemonic) {
+    // Historical vaults may wrap the secret with an additional password AES layer.
+    if (typeof mnemonic !== 'string' || !mnemonic) {
       throw new Error('Mnemonic not found in vault or is empty');
     }
 
-    // Try to detect if mnemonic is encrypted or plain text
-    const isLikelyPlainMnemonic =
-      mnemonic.includes(' ') &&
-      (mnemonic.split(' ').length === 12 || mnemonic.split(' ').length === 24);
-
-    if (!isLikelyPlainMnemonic) {
-      try {
-        mnemonic = CryptoJS.AES.decrypt(mnemonic, pwd).toString(
-          CryptoJS.enc.Utf8
-        );
-      } catch (decryptError) {
-        // If decryption fails, assume mnemonic is already decrypted
-        console.warn(
-          'Mnemonic decryption failed in getSeed, using as-is:',
-          decryptError.message
-        );
-      }
-    }
-
-    if (!mnemonic) {
-      throw new Error(
-        'Failed to decrypt mnemonic or mnemonic is empty after decryption'
+    let recovered: string;
+    try {
+      recovered = CryptoJS.AES.decrypt(mnemonic, pwd).toString(
+        CryptoJS.enc.Utf8
       );
+    } catch {
+      throw new Error('Failed to recover a valid vault secret');
     }
-
-    return mnemonic;
+    if (!isValidVaultSecret(recovered)) {
+      throw new Error('Failed to recover a valid vault secret');
+    }
+    return recovered;
   };
 
   public deriveSLHDSASetupSecretForAccount = async ({
