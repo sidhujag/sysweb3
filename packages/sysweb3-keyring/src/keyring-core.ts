@@ -2298,19 +2298,12 @@ export class KeyringCore<
   public isSeedValid = (seedPhrase: string) =>
     BIP84.validateMnemonic(seedPhrase);
 
-  public createNewSeed = (wordCount?: number) => {
-    // Map BIP39 word counts to entropy strength
-    const wordCountToStrength: Record<number, number> = {
-      12: 128,
-      15: 160,
-      18: 192,
-      21: 224,
-      24: 256,
-    };
-    const strength = wordCount ? wordCountToStrength[wordCount] : 128;
-    return strength
-      ? BIP84.generateMnemonic(strength)
-      : BIP84.generateMnemonic();
+  public createNewSeed = (wordCount = 12) => {
+    if (![12, 15, 18, 21, 24].includes(wordCount)) {
+      throw new RangeError('Unsupported BIP39 word count');
+    }
+    // BIP39 uses 32 bits of entropy per three words, plus an appended checksum.
+    return BIP84.generateMnemonic((wordCount / 3) * 32);
   };
 
   public getUTXOState = () => {
