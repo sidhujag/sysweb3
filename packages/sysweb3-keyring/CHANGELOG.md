@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.24
+
+- Reject unsupported word counts in `createNewSeed` before requesting randomness. Omitting the word count still generates a 12-word recovery phrase.
+
 ## 2.1.23
 
 - Recover BIP39 phrase backups for all five supported lengths, including 15, 18 and 21 words. Validate recovered legacy vault secrets before returning them.
