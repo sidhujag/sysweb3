@@ -1,4 +1,5 @@
 import { INetworkType } from '@sidhujag/sysweb3-network';
+import { webcrypto } from 'crypto';
 import * as syscoinjs from 'syscoinjs-lib';
 
 import { KeyringManager, KeyringAccountType } from '../../../src';
@@ -46,6 +47,8 @@ describe('KeyringManager Initialization', () => {
   });
 
   describe('Seed Management', () => {
+    afterEach(() => jest.restoreAllMocks());
+
     it('should create a new valid seed phrase', () => {
       keyringManager = createTestKeyring();
       const seed = keyringManager.createNewSeed();
@@ -53,6 +56,45 @@ describe('KeyringManager Initialization', () => {
       expect(seed).toBeDefined();
       expect(seed.split(' ')).toHaveLength(12);
       expect(keyringManager.isSeedValid(seed)).toBe(true);
+    });
+
+    it.each([undefined, 12, 15, 18, 21, 24])(
+      'uses the expected number of random bytes for a word count of %s',
+      (wordCount) => {
+        const keyring = createTestKeyring();
+        const randomValues = jest.spyOn(webcrypto, 'getRandomValues');
+        const phrase = keyring.createNewSeed(wordCount);
+        const expectedWords = wordCount ?? 12;
+        expect(randomValues).toHaveBeenCalledTimes(1);
+        expect(randomValues.mock.calls[0][0]).toHaveLength(
+          (expectedWords / 3) * 4
+        );
+        expect(phrase.split(' ')).toHaveLength(expectedWords);
+        expect(keyring.isSeedValid(phrase)).toBe(true);
+      }
+    );
+
+    it('rejects unsupported values before requesting entropy', () => {
+      const keyring = createTestKeyring();
+      const randomValues = jest.spyOn(webcrypto, 'getRandomValues');
+      for (const value of [0, -1, 13, 12.5, 256, NaN, Infinity, '24', null]) {
+        expect(() => keyring.createNewSeed(value as number)).toThrow(
+          RangeError
+        );
+      }
+      expect(randomValues).not.toHaveBeenCalled();
+    });
+
+    it('propagates an entropy provider failure without retrying', () => {
+      const keyring = createTestKeyring();
+      const unavailable = new Error('Entropy provider unavailable');
+      const randomValues = jest
+        .spyOn(webcrypto, 'getRandomValues')
+        .mockImplementation(() => {
+          throw unavailable;
+        });
+      expect(() => keyring.createNewSeed(24)).toThrow(unavailable);
+      expect(randomValues).toHaveBeenCalledTimes(1);
     });
 
     it('should validate seed phrases correctly', () => {
